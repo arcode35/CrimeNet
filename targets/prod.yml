@@ -1,0 +1,20 @@
+targets:
+  prod:
+    mode: production
+
+    git:
+      branch: main
+
+    workspace:
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+
+    variables:
+      catalog: crimenet_prod
+
+    # Replace this with a service principal before production deployment.
+    run_as:
+      user_name: ${workspace.current_user.userName}
+
+    permissions:
+      - user_name: ${workspace.current_user.userName}
+        level: CAN_MANAGE

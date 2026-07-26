@@ -1,0 +1,51 @@
+bundle:
+  name: crimenet
+  databricks_cli_version: ">=0.218.0"
+
+include:
+  - resources/jobs/*.yml
+  - targets/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog for the deployment target
+
+  bronze_schema:
+    description: Bronze table schema
+    default: bronze
+
+  silver_schema:
+    description: Silver table schema
+    default: silver
+
+  gold_schema:
+    description: Gold table schema
+    default: gold
+
+  ops_schema:
+    description: Operational metadata schema
+    default: ops
+
+  data_quality_schema:
+    description: Data-quality and quarantine schema
+    default: data_quality
+
+  raw_files_schema:
+    description: Schema containing raw-file volumes
+    default: raw_files
+
+  landing_volume:
+    description: Volume containing downloaded source files
+    default: landing
+
+artifacts:
+  default:
+    type: whl
+    path: .
+    build: uv build
+
+sync:
+  exclude:
+    - tests/**
+    - docs/**
+    - notebooks/**

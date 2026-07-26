@@ -1,0 +1,29 @@
+# Databricks
+.databricks/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Testing and linting
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors
+.idea/
+.vscode/
+
+# Operating systems
+.DS_Store
+
+# Local environment files
+.env
+.env.*
+!.env.example
