@@ -134,6 +134,28 @@ resources:
 
               - --write-mode
               - append
+        - task_key: silver_weather_hourly
+
+          depends_on:
+            - task_key: bronze_open_meteo_weather
+
+          environment_key: default
+
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: silver_weather
+            parameters:
+              - --catalog
+              - ${var.catalog}
+
+              - --bronze-schema
+              - ${var.bronze_schema}
+
+              - --silver-schema
+              - ${var.silver_schema}
+
+              - --checkpoint-path
+              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/silver/weather_hourly
         - task_key: gold_refresh
           environment_key: default
 

@@ -10,7 +10,7 @@ bronze_ingestion = "crimenet.jobs.bronze_ingestion:main"
 silver_transform = "crimenet.jobs.silver_transform:main"
 quality_checks = "crimenet.jobs.quality_checks:main"
 gold_refresh = "crimenet.jobs.gold_refresh:main"
-
+silver_weather = "crimenet.jobs.silver_weather_job:main"
 [dependency-groups]
 dev = [
     "pytest>=8.0",

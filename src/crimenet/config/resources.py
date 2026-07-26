@@ -44,6 +44,14 @@ class CrimeNetTables:
         )
 
     @property
+    def weather_hourly_silver(self) -> str:
+        return (
+            f"{self.catalog}."
+            f"{self.silver_schema}."
+            "weather_hourly"
+        )
+        
+    @property
     def crime_offenses_silver(self) -> str:
         return (
             f"{self.catalog}."
