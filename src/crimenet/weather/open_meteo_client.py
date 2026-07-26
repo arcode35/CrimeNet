@@ -4,7 +4,46 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Mapping
 
-import requests
+import logging
+
+from requests import Session
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+logger = logging.getLogger(__name__)
+
+
+def _build_open_meteo_session() -> Session:
+    retry_policy = Retry(
+        total=5,
+        connect=5,
+        read=5,
+        status=5,
+        allowed_methods=frozenset({"GET"}),
+        status_forcelist=(
+            429,
+            500,
+            502,
+            503,
+            504,
+        ),
+        backoff_factor=1.0,
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
+
+    adapter = HTTPAdapter(
+        max_retries=retry_policy,
+        pool_connections=1,
+        pool_maxsize=1,
+    )
+
+    session = Session()
+    session.mount("https://", adapter)
+
+    return session
+
+
+OPEN_METEO_SESSION = _build_open_meteo_session()
 
 OPEN_METEO_ARCHIVE_URL = (
     "https://archive-api.open-meteo.com/v1/archive"
@@ -68,10 +107,10 @@ def fetch_historical_weather(
     }
 
     try:
-        response = requests.get(
+        response = OPEN_METEO_SESSION.get(
             OPEN_METEO_ARCHIVE_URL,
             params=params,
-            timeout=(10, 120),
+            timeout=(30, 180),
         )
         response.raise_for_status()
     except requests.Timeout as exc:

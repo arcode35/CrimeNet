@@ -38,6 +38,12 @@ variables:
     description: Volume containing downloaded source files
     default: landing
 
+  autoloader_schemas_volume:
+    default: autoloader_schemas
+
+  checkpoints_volume:
+    default: checkpoints
+
 artifacts:
   default:
     type: whl

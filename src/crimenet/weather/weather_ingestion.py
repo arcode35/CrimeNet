@@ -18,6 +18,7 @@ from crimenet.weather.request_mapping import (
 
 
 logger = logging.getLogger(__name__)
+
 def fetch_weather_manifest(
     weather_request_manifest: DataFrame,
     *,
@@ -27,15 +28,35 @@ def fetch_weather_manifest(
 
     completed_count = 0
     cached_count = 0
+    processed_count = 0
 
-    for row in (
-        weather_request_manifest
-        .toLocalIterator()
-    ):
-        request = (
-            weather_request_from_manifest_row(
-                row.asDict(recursive=True)
-            )
+    logger.info(
+        "Starting weather manifest ingestion: cache_directory=%s",
+        cache_directory,
+    )
+
+    rows = weather_request_manifest.toLocalIterator()
+
+    logger.info(
+        "Spark iterator initialized; waiting for manifest rows"
+    )
+
+    for row in rows:
+        request = weather_request_from_manifest_row(
+            row.asDict(recursive=True)
+        )
+
+        processed_count += 1
+
+        logger.info(
+            "Processing weather request: "
+            "number=%d, request_id=%s, cell=%s, "
+            "start=%s, end=%s",
+            processed_count,
+            request.request_id,
+            request.weather_query_cell_id,
+            request.start_date,
+            request.end_date,
         )
 
         cache_path = get_weather_cache_path(
@@ -48,18 +69,25 @@ def fetch_weather_manifest(
 
             logger.info(
                 "Skipping cached weather request: "
-                "request_id=%s, cell=%s, "
-                "start=%s, end=%s",
+                "request_id=%s, path=%s",
                 request.request_id,
-                request.weather_query_cell_id,
-                request.start_date,
-                request.end_date,
+                cache_path,
             )
             continue
 
         try:
+            logger.info(
+                "Calling Open-Meteo: request_id=%s",
+                request.request_id,
+            )
+
             response = fetch_historical_weather(
                 request
+            )
+
+            logger.info(
+                "Open-Meteo response received: request_id=%s",
+                request.request_id,
             )
 
             write_weather_cache(
@@ -69,17 +97,13 @@ def fetch_weather_manifest(
 
             completed_count += 1
 
-            hourly_count = len(
-                response["hourly"]["time"]
-            )
-
             logger.info(
                 "Cached weather request: "
                 "request_id=%s, cell=%s, "
                 "hours=%d, path=%s",
                 request.request_id,
                 request.weather_query_cell_id,
-                hourly_count,
+                len(response["hourly"]["time"]),
                 cache_path,
             )
 
@@ -97,7 +121,8 @@ def fetch_weather_manifest(
 
     logger.info(
         "Weather ingestion finished: "
-        "downloaded=%d, already_cached=%d",
+        "processed=%d, downloaded=%d, already_cached=%d",
+        processed_count,
         completed_count,
         cached_count,
     )
