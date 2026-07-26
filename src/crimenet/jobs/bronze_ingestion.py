@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable
+from typing import Protocol
 
 from pyspark.sql import DataFrame, SparkSession
 
@@ -19,6 +20,7 @@ from crimenet.ingestion.readers import (
     read_fort_worth_raw,
     read_houston_raw,
     read_weather_raw,
+    read_acs5_tract_raw,
 )
 
 
@@ -28,17 +30,37 @@ Reader = Callable[
 ]
 
 
+class StreamingReader(Protocol):
+    def __call__(
+        self,
+        spark: SparkSession,
+        input_path: str,
+        *,
+        schema_path: str,
+    ) -> DataFrame:
+        ...
+
+
 BATCH_READERS: dict[str, Reader] = {
     "dallas": read_dallas_raw,
     "houston": read_houston_raw,
     "fort_worth": read_fort_worth_raw,
 }
 
-SUPPORTED_SOURCES = (
-    *BATCH_READERS,
-    "open_meteo_weather",
-)
+STREAMING_READERS = {
+    "open_meteo_weather": read_weather_raw,
+    "acs5_tract": read_acs5_tract_raw,
+}
 
+SOURCE_SYSTEMS = {
+    "open_meteo_weather": "open_meteo",
+    "acs5_tract": "census_acs5",
+}
+
+SUPPORTED_SOURCES = (
+    *BATCH_READERS.keys(),
+    *STREAMING_READERS.keys(),
+)
 
 COLUMN_OVERRIDES: dict[
     str,
@@ -153,15 +175,16 @@ def _run_batch_ingestion(
     writer.saveAsTable(
         tables.bronze_for_source(source)
     )
-def _run_weather_ingestion(
+def _run_streaming_ingestion(
     spark: SparkSession,
     *,
     tables: CrimeNetTables,
+    source: str,
     input_path: str,
     schema_path: str,
     checkpoint_path: str,
 ) -> None:
-    raw_dataframe = read_weather_raw(
+    raw_dataframe = STREAMING_READERS[source](
         spark,
         input_path,
         schema_path=schema_path,
@@ -176,7 +199,7 @@ def _run_weather_ingestion(
     bronze_dataframe = (
         add_ingestion_metadata(
             normalized_dataframe,
-            source_system="open_meteo",
+            source_system=SOURCE_SYSTEMS[source],
         )
     )
 
@@ -195,12 +218,14 @@ def _run_weather_ingestion(
             availableNow=True,
         )
         .toTable(
-            tables.open_meteo_weather_bronze
+            tables.bronze_for_source(
+                source
+            )
         )
     )
 
     query.awaitTermination()
-
+    
 def run(
     spark: SparkSession,
     *,
@@ -217,22 +242,21 @@ def run(
         bronze_schema=bronze_schema,
     )
 
-    if source == "open_meteo_weather":
+    if source in STREAMING_READERS:
         if schema_path is None:
             raise ValueError(
-                "schema_path is required for "
-                "open_meteo_weather"
+                f"schema_path is required for {source}"
             )
 
         if checkpoint_path is None:
             raise ValueError(
-                "checkpoint_path is required for "
-                "open_meteo_weather"
+                f"checkpoint_path is required for {source}"
             )
 
-        _run_weather_ingestion(
+        _run_streaming_ingestion(
             spark,
             tables=tables,
+            source=source,
             input_path=input_path,
             schema_path=schema_path,
             checkpoint_path=checkpoint_path,

@@ -172,7 +172,56 @@ resources:
               - ${var.silver_schema}
               - --gold-schema
               - ${var.gold_schema}
+        - task_key: land_acs5_tracts
+          environment_key: default
 
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: acs5_landing
+            parameters:
+              - --landing-path
+              - /Volumes/${var.catalog}/${var.raw_files_schema}/${var.landing_volume}/socioeconomic
+
+              - --start-vintage
+              - "2012"
+
+              - --end-vintage
+              - "2024"
+
+              - --state-fips
+              - "48"
+
+        - task_key: bronze_acs5_tracts
+
+          depends_on:
+            - task_key: land_acs5_tracts
+
+          environment_key: default
+
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: bronze_ingestion
+            parameters:
+              - --catalog
+              - ${var.catalog}
+
+              - --bronze-schema
+              - ${var.bronze_schema}
+
+              - --source
+              - acs5_tract
+
+              - --input-path
+              - /Volumes/${var.catalog}/${var.raw_files_schema}/${var.landing_volume}/socioeconomic/acs5/tract
+
+              - --schema-path
+              - /Volumes/${var.catalog}/${var.ops_schema}/${var.autoloader_schemas_volume}/acs5_tract
+
+              - --checkpoint-path
+              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/bronze/acs5_tract
+
+              - --write-mode
+              - append
       environments:
         - environment_key: default
           spec:

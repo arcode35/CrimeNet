@@ -50,7 +50,7 @@ class CrimeNetTables:
             f"{self.silver_schema}."
             "weather_hourly"
         )
-        
+
     @property
     def crime_offenses_silver(self) -> str:
         return (
@@ -66,11 +66,12 @@ class CrimeNetTables:
         table_by_source = {
             "dallas": self.dallas_bronze,
             "houston": self.houston_bronze,
-            "fort_worth": (
-                self.fort_worth_bronze
-            ),
+            "fort_worth": self.fort_worth_bronze,
             "open_meteo_weather": (
                 self.open_meteo_weather_bronze
+            ),
+            "acs5_tract": (
+                self.acs5_tract_bronze
             ),
         }
 
@@ -80,3 +81,11 @@ class CrimeNetTables:
             raise ValueError(
                 f"Unsupported source: {source!r}"
             ) from exc
+
+    @property
+    def acs5_tract_bronze(self) -> str:
+        return (
+            f"{self.catalog}."
+            f"{self.bronze_schema}."
+            "acs5_tract_socioeconomic"
+        )

@@ -100,3 +100,39 @@ def read_weather_raw(
     )
 
     return _with_source_file(dataframe)
+
+def read_acs5_tract_raw(
+        spark: SparkSession,
+        input_path: str,
+        *,
+        schema_path: str,
+    ) -> DataFrame:
+        """Incrementally read landed ACS tract JSON Lines files."""
+
+        dataframe = (
+            spark.readStream
+            .format("cloudFiles")
+            .option(
+                "cloudFiles.format",
+                "json",
+            )
+            .option(
+                "cloudFiles.schemaLocation",
+                schema_path,
+            )
+            .option(
+                "cloudFiles.schemaEvolutionMode",
+                "rescue",
+            )
+            .option(
+                "rescuedDataColumn",
+                "_rescued_data",
+            )
+            .option(
+                "pathGlobFilter",
+                "*.jsonl",
+            )
+            .load(input_path)
+        )
+
+        return _with_source_file(dataframe)
