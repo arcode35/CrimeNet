@@ -1,29 +1,78 @@
-# Databricks
-.databricks/
-
-# Python
-.venv/
+# Python bytecode and caches
 __pycache__/
 *.py[cod]
-*.egg-info/
-dist/
+*$py.class
+
+# Python build artifacts
 build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+pip-wheel-metadata/
 
-# Testing and linting
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test and coverage artifacts
 .pytest_cache/
-.mypy_cache/
-.ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
+coverage.xml
+.junit.xml
+test-results/
 
-# Editors
-.idea/
-.vscode/
+# Type checker and linter caches
+.mypy_cache/
+.pyright/
+.ruff_cache/
+.dmypy.json
+dmypy.json
 
-# Operating systems
-.DS_Store
+# Databricks local bundle state
+.databricks/
 
-# Local environment files
+# Environment variables and local secrets
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+secrets/
+credentials/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+.cache/
+tmp/
+temp/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDEs
+.idea/
+.vscode/
+
+# Local Spark artifacts
+spark-warehouse/
+metastore_db/
+derby.log
+
+# Local data exports
+*.parquet
+*.csv
+*.jsonl
