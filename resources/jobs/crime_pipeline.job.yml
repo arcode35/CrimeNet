@@ -222,6 +222,28 @@ resources:
 
               - --write-mode
               - append
+        - task_key: silver_acs5_tracts
+
+          depends_on:
+            - task_key: bronze_acs5_tracts
+
+          environment_key: default
+
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: silver_socioeconomic
+            parameters:
+              - --catalog
+              - ${var.catalog}
+
+              - --bronze-schema
+              - ${var.bronze_schema}
+
+              - --silver-schema
+              - ${var.silver_schema}
+
+              - --checkpoint-path
+              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/silver/acs5_tract
       environments:
         - environment_key: default
           spec:

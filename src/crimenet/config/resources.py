@@ -89,3 +89,10 @@ class CrimeNetTables:
             f"{self.bronze_schema}."
             "acs5_tract_socioeconomic"
         )
+    @property
+    def tract_socioeconomic_silver(self) -> str:
+        return (
+            f"{self.catalog}."
+            f"{self.silver_schema}."
+            "tract_socioeconomic"
+        )
