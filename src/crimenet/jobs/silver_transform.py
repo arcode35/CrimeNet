@@ -7,25 +7,26 @@ import argparse
 from pyspark.sql import SparkSession
 
 from crimenet.config.resources import CrimeNetTables
+from crimenet.spatial.h3 import (
+    DEFAULT_WEATHER_H3_RESOLUTION,
+    add_weather_query_cell,
+)
 from crimenet.transforms.canonical import build_crime_offenses
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
+
     parser.add_argument("--catalog", required=True)
     parser.add_argument("--bronze-schema", default="bronze")
     parser.add_argument("--silver-schema", default="silver")
-    # Accepted for compatibility with the bundle task. Quarantine writes can
-    # use this in the next iteration without changing the task interface.
+
+    # Retained for compatibility with the bundle task.
     parser.add_argument(
         "--data-quality-schema",
         default="data_quality",
     )
-    parser.add_argument(
-        "--write-mode",
-        default="overwrite",
-        choices=("overwrite", "append"),
-    )
+
     return parser.parse_args()
 
 
@@ -35,7 +36,6 @@ def run(
     catalog: str,
     bronze_schema: str,
     silver_schema: str,
-    write_mode: str,
 ) -> None:
     tables = CrimeNetTables(
         catalog=catalog,
@@ -44,27 +44,39 @@ def run(
     )
 
     silver_dataframe = build_crime_offenses(
-        dallas_bronze=spark.table(tables.dallas_bronze),
-        houston_bronze=spark.table(tables.houston_bronze),
-        fort_worth_bronze=spark.table(tables.fort_worth_bronze),
+        dallas_bronze=spark.table(
+            tables.dallas_bronze
+        ),
+        houston_bronze=spark.table(
+            tables.houston_bronze
+        ),
+        fort_worth_bronze=spark.table(
+            tables.fort_worth_bronze
+        ),
     )
 
-    writer = (
+    silver_dataframe = add_weather_query_cell(
+        silver_dataframe,
+        resolution=DEFAULT_WEATHER_H3_RESOLUTION,
+    )
+
+    (
         silver_dataframe.write
         .format("delta")
-        .mode(write_mode)
+        .mode("overwrite")
+        .option("overwriteSchema", "true")
+        .saveAsTable(
+            tables.crime_offenses_silver
+        )
     )
-
-    if write_mode == "overwrite":
-        writer = writer.option("overwriteSchema", "true")
-
-    writer.saveAsTable(tables.crime_offenses_silver)
 
 
 def main() -> None:
     args = parse_args()
-    spark = SparkSession.getActiveSession() or (
-        SparkSession.builder.getOrCreate()
+
+    spark = (
+        SparkSession.getActiveSession()
+        or SparkSession.builder.getOrCreate()
     )
 
     run(
@@ -72,7 +84,6 @@ def main() -> None:
         catalog=args.catalog,
         bronze_schema=args.bronze_schema,
         silver_schema=args.silver_schema,
-        write_mode=args.write_mode,
     )
 
 
