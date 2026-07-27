@@ -7,6 +7,7 @@ import argparse
 from pyspark.sql import SparkSession
 
 from crimenet.config.resources import CrimeNetTables
+from crimenet.observability.logging import get_logger
 from crimenet.spatial.h3 import (
     DEFAULT_WEATHER_H3_RESOLUTION,
     add_weather_query_cell,
@@ -14,12 +15,24 @@ from crimenet.spatial.h3 import (
 from crimenet.transforms.canonical import build_crime_offenses
 
 
+LOGGER = get_logger(__name__)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--catalog", required=True)
-    parser.add_argument("--bronze-schema", default="bronze")
-    parser.add_argument("--silver-schema", default="silver")
+    parser.add_argument(
+        "--catalog",
+        required=True,
+    )
+    parser.add_argument(
+        "--bronze-schema",
+        default="bronze",
+    )
+    parser.add_argument(
+        "--silver-schema",
+        default="silver",
+    )
 
     # Retained for compatibility with the bundle task.
     parser.add_argument(
@@ -41,6 +54,17 @@ def run(
         catalog=catalog,
         bronze_schema=bronze_schema,
         silver_schema=silver_schema,
+    )
+
+    LOGGER.info(
+        "Building canonical crime offenses",
+        dallas_table=tables.dallas_bronze,
+        houston_table=tables.houston_bronze,
+        fort_worth_table=tables.fort_worth_bronze,
+        target_table=tables.crime_offenses_silver,
+        weather_h3_resolution=(
+            DEFAULT_WEATHER_H3_RESOLUTION
+        ),
     )
 
     silver_dataframe = build_crime_offenses(
@@ -70,6 +94,11 @@ def run(
         )
     )
 
+    LOGGER.info(
+        "Canonical crime offenses materialized",
+        target_table=tables.crime_offenses_silver,
+    )
+
 
 def main() -> None:
     args = parse_args()
@@ -79,10 +108,31 @@ def main() -> None:
         or SparkSession.builder.getOrCreate()
     )
 
-    run(
-        spark,
+    LOGGER.info(
+        "Starting canonical Silver transformation",
         catalog=args.catalog,
         bronze_schema=args.bronze_schema,
+        silver_schema=args.silver_schema,
+    )
+
+    try:
+        run(
+            spark,
+            catalog=args.catalog,
+            bronze_schema=args.bronze_schema,
+            silver_schema=args.silver_schema,
+        )
+    except Exception:
+        LOGGER.exception(
+            "Canonical Silver transformation failed",
+            catalog=args.catalog,
+            silver_schema=args.silver_schema,
+        )
+        raise
+
+    LOGGER.info(
+        "Canonical Silver transformation completed",
+        catalog=args.catalog,
         silver_schema=args.silver_schema,
     )
 

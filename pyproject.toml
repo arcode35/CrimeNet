@@ -3,8 +3,9 @@ name = "crimenet"
 version = "0.1.0"
 description = "Multi-city crime data lakehouse built on Databricks and Delta Lake"
 requires-python = ">=3.11"
-dependencies = []
-
+dependencies = [
+    "pvlib==0.15.2",
+]
 [project.scripts]
 bronze_ingestion = "crimenet.jobs.bronze_ingestion:main"
 silver_transform = "crimenet.jobs.silver_transform:main"
@@ -14,6 +15,7 @@ silver_weather = "crimenet.jobs.silver_weather_job:main"
 acs5_landing = "crimenet.jobs.acs5_landing_job:main"
 silver_socioeconomic = "crimenet.jobs.silver_socioeconomic_job:main"
 gold_crime_features = "crimenet.jobs.gold_crime_features_job:main"
+silver_lighting = "crimenet.jobs.silver_lighting_job:main"
 [dependency-groups]
 dev = [
     "pytest>=8.0",

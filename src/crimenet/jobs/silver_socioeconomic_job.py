@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import logging
 
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
@@ -12,12 +11,13 @@ from pyspark.sql.types import StructType
 from pyspark.sql.window import Window
 
 from crimenet.config.resources import CrimeNetTables
+from crimenet.observability.logging import get_logger
 from crimenet.silver.socioeconomic import (
     transform_acs5_tracts,
 )
 
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = get_logger(__name__)
 
 MERGE_KEYS = (
     "geoid",
@@ -125,9 +125,9 @@ def rebuild_socioeconomic_table(
     tables: CrimeNetTables,
 ) -> None:
     LOGGER.info(
-        "Starting full rebuild of %s from %s",
-        tables.tract_socioeconomic_silver,
-        tables.acs5_tract_bronze,
+        "Starting full ACS Silver rebuild",
+        source_table=tables.acs5_tract_bronze,
+        target_table=tables.tract_socioeconomic_silver,
     )
 
     bronze_dataframe = spark.table(
@@ -159,9 +159,9 @@ def rebuild_socioeconomic_table(
     ).count()
 
     LOGGER.info(
-        "Completed full rebuild of %s with %s rows",
-        tables.tract_socioeconomic_silver,
-        rebuilt_count,
+        "Completed full ACS Silver rebuild",
+        target_table=tables.tract_socioeconomic_silver,
+        row_count=rebuilt_count,
     )
 
 
@@ -174,8 +174,9 @@ def merge_socioeconomic_batch(
 ) -> None:
     if batch_dataframe.isEmpty():
         LOGGER.info(
-            "Skipping empty microbatch %s",
-            batch_id,
+            "Skipping empty ACS microbatch",
+            batch_id=batch_id,
+            target_table=target_table,
         )
         return
 
@@ -207,8 +208,9 @@ def merge_socioeconomic_batch(
     )
 
     LOGGER.info(
-        "Merged ACS socioeconomic microbatch %s",
-        batch_id,
+        "Merged ACS socioeconomic microbatch",
+        batch_id=batch_id,
+        target_table=target_table,
     )
 
 
@@ -219,9 +221,10 @@ def run_incremental_stream(
     checkpoint_path: str,
 ) -> None:
     LOGGER.info(
-        "Starting incremental ACS Silver processing "
-        "with checkpoint %s",
-        checkpoint_path,
+        "Starting incremental ACS Silver processing",
+        source_table=tables.acs5_tract_bronze,
+        target_table=tables.tract_socioeconomic_silver,
+        checkpoint_path=checkpoint_path,
     )
 
     bronze_stream = spark.readStream.table(
@@ -274,7 +277,8 @@ def run_incremental_stream(
     query.awaitTermination()
 
     LOGGER.info(
-        "Incremental ACS Silver processing completed"
+        "Completed incremental ACS Silver processing",
+        target_table=tables.tract_socioeconomic_silver,
     )
 
 
@@ -320,8 +324,8 @@ def validate_rebuilt_table(
         )
 
     LOGGER.info(
-        "Validated Silver ACS table successfully: %s",
-        target_table,
+        "Validated Silver ACS table",
+        target_table=target_table,
     )
 
 
@@ -369,25 +373,40 @@ def run(
 def main() -> None:
     args = parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format=(
-            "%(asctime)s %(levelname)s "
-            "%(name)s - %(message)s"
-        ),
-    )
-
     spark = (
         SparkSession.getActiveSession()
         or SparkSession.builder.getOrCreate()
     )
 
-    run(
-        spark,
+    LOGGER.info(
+        "Starting ACS Silver job",
         catalog=args.catalog,
         bronze_schema=args.bronze_schema,
         silver_schema=args.silver_schema,
-        checkpoint_path=args.checkpoint_path,
+        full_rebuild=args.full_rebuild,
+    )
+
+    try:
+        run(
+            spark,
+            catalog=args.catalog,
+            bronze_schema=args.bronze_schema,
+            silver_schema=args.silver_schema,
+            checkpoint_path=args.checkpoint_path,
+            full_rebuild=args.full_rebuild,
+        )
+    except Exception:
+        LOGGER.exception(
+            "ACS Silver job failed",
+            catalog=args.catalog,
+            full_rebuild=args.full_rebuild,
+        )
+        raise
+
+    LOGGER.info(
+        "ACS Silver job completed",
+        catalog=args.catalog,
+        silver_schema=args.silver_schema,
         full_rebuild=args.full_rebuild,
     )
 

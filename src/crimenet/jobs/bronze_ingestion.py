@@ -9,19 +9,19 @@ from typing import Protocol
 from pyspark.sql import DataFrame, SparkSession
 
 from crimenet.config.resources import CrimeNetTables
-from crimenet.ingestion.column_names import (
-    normalize_column_names,
-)
-from crimenet.ingestion.metadata import (
-    add_ingestion_metadata,
-)
+from crimenet.ingestion.column_names import normalize_column_names
+from crimenet.ingestion.metadata import add_ingestion_metadata
 from crimenet.ingestion.readers import (
+    read_acs5_tract_raw,
     read_dallas_raw,
     read_fort_worth_raw,
     read_houston_raw,
     read_weather_raw,
-    read_acs5_tract_raw,
 )
+from crimenet.observability.logging import get_logger
+
+
+LOGGER = get_logger(__name__)
 
 
 Reader = Callable[
@@ -47,7 +47,7 @@ BATCH_READERS: dict[str, Reader] = {
     "fort_worth": read_fort_worth_raw,
 }
 
-STREAMING_READERS = {
+STREAMING_READERS: dict[str, StreamingReader] = {
     "open_meteo_weather": read_weather_raw,
     "acs5_tract": read_acs5_tract_raw,
 }
@@ -77,6 +77,7 @@ COLUMN_OVERRIDES: dict[
         "_longitude": "alternate_longitude",
     }
 }
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -112,25 +113,25 @@ def parse_args() -> argparse.Namespace:
 
     args = parser.parse_args()
 
-    if args.source == "open_meteo_weather":
+    if args.source in STREAMING_READERS:
         missing_arguments = [
             argument
             for argument, value in {
                 "--schema-path": args.schema_path,
-                "--checkpoint-path": (
-                    args.checkpoint_path
-                ),
+                "--checkpoint-path": args.checkpoint_path,
             }.items()
             if not value
         ]
 
         if missing_arguments:
             parser.error(
-                "open_meteo_weather requires: "
+                f"{args.source} requires: "
                 + ", ".join(missing_arguments)
             )
 
     return args
+
+
 def _run_batch_ingestion(
     spark: SparkSession,
     *,
@@ -144,20 +145,14 @@ def _run_batch_ingestion(
         input_path,
     )
 
-    normalized_dataframe = (
-        normalize_column_names(
-            raw_dataframe,
-            overrides=COLUMN_OVERRIDES.get(
-                source
-            ),
-        )
+    normalized_dataframe = normalize_column_names(
+        raw_dataframe,
+        overrides=COLUMN_OVERRIDES.get(source),
     )
 
-    bronze_dataframe = (
-        add_ingestion_metadata(
-            normalized_dataframe,
-            source_system=source,
-        )
+    bronze_dataframe = add_ingestion_metadata(
+        normalized_dataframe,
+        source_system=source,
     )
 
     writer = (
@@ -175,6 +170,8 @@ def _run_batch_ingestion(
     writer.saveAsTable(
         tables.bronze_for_source(source)
     )
+
+
 def _run_streaming_ingestion(
     spark: SparkSession,
     *,
@@ -190,17 +187,13 @@ def _run_streaming_ingestion(
         schema_path=schema_path,
     )
 
-    normalized_dataframe = (
-        normalize_column_names(
-            raw_dataframe,
-        )
+    normalized_dataframe = normalize_column_names(
+        raw_dataframe,
     )
 
-    bronze_dataframe = (
-        add_ingestion_metadata(
-            normalized_dataframe,
-            source_system=SOURCE_SYSTEMS[source],
-        )
+    bronze_dataframe = add_ingestion_metadata(
+        normalized_dataframe,
+        source_system=SOURCE_SYSTEMS[source],
     )
 
     query = (
@@ -218,14 +211,13 @@ def _run_streaming_ingestion(
             availableNow=True,
         )
         .toTable(
-            tables.bronze_for_source(
-                source
-            )
+            tables.bronze_for_source(source)
         )
     )
 
     query.awaitTermination()
-    
+
+
 def run(
     spark: SparkSession,
     *,
@@ -270,6 +262,8 @@ def run(
         input_path=input_path,
         write_mode=write_mode,
     )
+
+
 def main() -> None:
     args = parse_args()
 
@@ -278,15 +272,44 @@ def main() -> None:
         or SparkSession.builder.getOrCreate()
     )
 
-    run(
-        spark,
-        catalog=args.catalog,
-        bronze_schema=args.bronze_schema,
+    target_table = (
+        f"{args.catalog}."
+        f"{args.bronze_schema}."
+        f"{args.source}"
+    )
+
+    LOGGER.info(
+        "Starting Bronze ingestion",
         source=args.source,
         input_path=args.input_path,
+        target_table=target_table,
         write_mode=args.write_mode,
-        schema_path=args.schema_path,
-        checkpoint_path=args.checkpoint_path,
+        streaming=args.source in STREAMING_READERS,
+    )
+
+    try:
+        run(
+            spark,
+            catalog=args.catalog,
+            bronze_schema=args.bronze_schema,
+            source=args.source,
+            input_path=args.input_path,
+            write_mode=args.write_mode,
+            schema_path=args.schema_path,
+            checkpoint_path=args.checkpoint_path,
+        )
+    except Exception:
+        LOGGER.exception(
+            "Bronze ingestion failed",
+            source=args.source,
+            target_table=target_table,
+        )
+        raise
+
+    LOGGER.info(
+        "Bronze ingestion completed",
+        source=args.source,
+        target_table=target_table,
     )
 
 

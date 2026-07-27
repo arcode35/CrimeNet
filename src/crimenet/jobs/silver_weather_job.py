@@ -10,9 +10,13 @@ from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
 from crimenet.config.resources import CrimeNetTables
+from crimenet.observability.logging import get_logger
 from crimenet.silver.weather import (
     transform_open_meteo_weather,
 )
+
+
+LOGGER = get_logger(__name__)
 
 
 MERGE_KEYS = (
@@ -88,9 +92,12 @@ def merge_weather_batch(
     spark: SparkSession,
     target_table: str,
 ) -> None:
-    del batch_id
-
     if batch_dataframe.isEmpty():
+        LOGGER.info(
+            "Skipping empty weather microbatch",
+            batch_id=batch_id,
+            target_table=target_table,
+        )
         return
 
     latest_record_window = (
@@ -143,6 +150,12 @@ def merge_weather_batch(
         .execute()
     )
 
+    LOGGER.info(
+        "Merged weather microbatch",
+        batch_id=batch_id,
+        target_table=target_table,
+    )
+
 
 def run(
     spark: SparkSession,
@@ -161,6 +174,17 @@ def run(
         catalog=catalog,
         bronze_schema=bronze_schema,
         silver_schema=silver_schema,
+    )
+
+    LOGGER.info(
+        "Starting hourly weather Silver processing",
+        source_table=(
+            tables.open_meteo_weather_bronze
+        ),
+        target_table=(
+            tables.weather_hourly_silver
+        ),
+        checkpoint_path=checkpoint_path,
     )
 
     ensure_weather_hourly_table(
@@ -214,6 +238,11 @@ def run(
 
     query.awaitTermination()
 
+    LOGGER.info(
+        "Completed hourly weather Silver processing",
+        target_table=tables.weather_hourly_silver,
+    )
+
 
 def main() -> None:
     args = parse_args()
@@ -223,13 +252,21 @@ def main() -> None:
         or SparkSession.builder.getOrCreate()
     )
 
-    run(
-        spark,
-        catalog=args.catalog,
-        bronze_schema=args.bronze_schema,
-        silver_schema=args.silver_schema,
-        checkpoint_path=args.checkpoint_path,
-    )
+    try:
+        run(
+            spark,
+            catalog=args.catalog,
+            bronze_schema=args.bronze_schema,
+            silver_schema=args.silver_schema,
+            checkpoint_path=args.checkpoint_path,
+        )
+    except Exception:
+        LOGGER.exception(
+            "Hourly weather Silver processing failed",
+            catalog=args.catalog,
+            silver_schema=args.silver_schema,
+        )
+        raise
 
 
 if __name__ == "__main__":

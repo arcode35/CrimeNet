@@ -262,9 +262,28 @@ resources:
 
           max_retries: 1
           min_retry_interval_millis: 60000
+        - task_key: silver_lighting_conditions
+          environment_key: default
+
+          depends_on:
+            - task_key: silver_transform
+
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: silver_lighting
+            parameters:
+              - --catalog
+              - ${var.catalog}
+
+              - --silver-schema
+              - ${var.silver_schema}
+
+          max_retries: 1
+          min_retry_interval_millis: 60000
       environments:
         - environment_key: default
           spec:
             environment_version: "4"
             dependencies:
               - ../../dist/*.whl
+              - pvlib==0.15.2
