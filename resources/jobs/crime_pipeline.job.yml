@@ -156,22 +156,38 @@ resources:
 
               - --checkpoint-path
               - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/silver/weather_hourly
-        - task_key: gold_refresh
+        - task_key: gold_crime_features
           environment_key: default
 
           depends_on:
             - task_key: quality_checks
+            - task_key: silver_weather_hourly
+            - task_key: silver_acs5_tracts
 
           python_wheel_task:
             package_name: crimenet
-            entry_point: gold_refresh
+            entry_point: gold_crime_features
             parameters:
               - --catalog
               - ${var.catalog}
+
               - --silver-schema
               - ${var.silver_schema}
+
               - --gold-schema
               - ${var.gold_schema}
+
+              - --weather-provider
+              - open_meteo
+
+              - --weather-model
+              - era5_land
+
+              - --weather-h3-resolution
+              - "6"
+
+          max_retries: 1
+          min_retry_interval_millis: 120000
         - task_key: land_acs5_tracts
           environment_key: default
 
@@ -223,7 +239,6 @@ resources:
               - --write-mode
               - append
         - task_key: silver_acs5_tracts
-
           depends_on:
             - task_key: bronze_acs5_tracts
 
@@ -244,6 +259,9 @@ resources:
 
               - --checkpoint-path
               - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/silver/acs5_tract
+
+          max_retries: 1
+          min_retry_interval_millis: 60000
       environments:
         - environment_key: default
           spec:

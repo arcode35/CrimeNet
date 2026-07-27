@@ -91,7 +91,58 @@ CENSUS_SENTINEL_VALUES = (
     "-555555555",
 )
 
+NONNEGATIVE_DOUBLE_COLUMNS = (
+    "median_age_moe",
+    "median_household_income",
+    "median_household_income_moe",
+)
 
+
+def enforce_acs_numeric_domains(
+    dataframe: DataFrame,
+) -> DataFrame:
+    result = dataframe
+
+    # All selected ACS count and MOE fields should be nonnegative.
+    # This also catches sentinel values that were represented as
+    # "-666666666.0" or otherwise missed by the string comparison.
+    for column_name in INTEGER_COLUMNS:
+        result = result.withColumn(
+            column_name,
+            F.when(
+                F.col(column_name) >= 0,
+                F.col(column_name),
+            ).otherwise(
+                F.lit(None).cast("long")
+            ),
+        )
+
+    for column_name in NONNEGATIVE_DOUBLE_COLUMNS:
+        result = result.withColumn(
+            column_name,
+            F.when(
+                F.col(column_name) >= 0.0,
+                F.col(column_name),
+            ).otherwise(
+                F.lit(None).cast("double")
+            ),
+        )
+
+    # Median age has a narrower valid domain.
+    result = result.withColumn(
+        "median_age",
+        F.when(
+            F.col("median_age").between(
+                0.0,
+                120.0,
+            ),
+            F.col("median_age"),
+        ).otherwise(
+            F.lit(None).cast("double")
+        ),
+    )
+
+    return result
 def safe_rate(
     numerator: str,
     denominator: str,
@@ -174,8 +225,12 @@ def transform_acs5_tracts(
         cleaned_dataframe
     )
 
-    return (
+    validated_dataframe = enforce_acs_numeric_domains(
         typed_dataframe
+    )
+
+    return (
+        validated_dataframe
         .select(
             F.col("geoid"),
             F.col("name").alias("geography_name"),
