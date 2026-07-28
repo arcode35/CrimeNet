@@ -17,82 +17,6 @@ The next phase uses an **XGBoost Poisson regression model** as the initial count
 
 ---
 
-## Project Status
-
-### Completed
-
-- Multi-city raw-data acquisition
-- Bronze ingestion for Dallas, Houston, and Fort Worth
-- Source-specific schema normalization
-- Unified Silver crime-offense model
-- Timestamp, identifier, coordinate, and offense normalization
-- Data-quality validation and quarantine workflows
-- H3-based spatial indexing
-- Twelve years of hourly ERA5-Land weather ingestion
-- Incremental weather-response caching
-- Solar-position and lighting-condition computation
-- Census ACS 5-year socioeconomic ingestion
-- TIGER/Line Census tract boundary processing
-- Leakage-safe ACS vintage selection
-- Point-in-polygon crime-to-tract mapping
-- Gold feature-table materialization
-- Feature-join coverage validation
-- Row-cardinality validation
-- Databricks Asset Bundle orchestration
-- Automated tests and GitHub Actions CI
-
-### In progress
-
-- Geographic and temporal aggregation targets
-- XGBoost Poisson baseline training
-- Temporal train, validation, and test splitting
-- Baseline evaluation and error analysis
-- MLflow experiment tracking
-
-### Planned
-
-- Hyperparameter optimization
-- Additional count-model baselines
-- Probability and count calibration analysis
-- Geographic stability evaluation
-- Feature-attribution analysis
-- Model registration and controlled promotion
-- Data- and prediction-drift monitoring
-- Automated retraining
-- Batch inference
-- Prediction-serving and visualization layers
-
----
-
-## Why CrimeNet
-
-Municipal crime datasets are not delivered as a clean, unified analytical product.
-
-Each city publishes data with different:
-
-- File formats
-- Column names
-- Identifier conventions
-- Timestamp formats
-- Coordinate systems
-- Offense taxonomies
-- Missing-value behavior
-- Historical coverage
-- Update patterns
-
-CrimeNet solves the data-engineering problem before approaching the modeling problem.
-
-Instead of training directly on one cleaned CSV, the project builds a reproducible lakehouse that can:
-
-1. Preserve raw inputs.
-2. Standardize heterogeneous sources.
-3. Validate and quarantine malformed records.
-4. Enrich records with time-correct environmental and socioeconomic data.
-5. Incrementally materialize reusable feature tables.
-6. Produce stable inputs for model training and evaluation.
-
----
-
 ## System Architecture
 
 ```mermaid
@@ -238,6 +162,82 @@ Job tasks are implemented as Python wheel entry points rather than notebook-only
 | Socioeconomic | U.S. Census Bureau ACS 5-year   |             2012–2024 vintages | Tract-level demographic and economic indicators |
 | Boundaries    | Census TIGER/Line               |     Multiple boundary vintages | Point-in-polygon tract assignment               |
 | Lighting      | `pvlib` calculations            |         Hourly crime locations | Solar geometry and ambient-light classification |
+
+---
+
+## Project Status
+
+### Completed
+
+- Multi-city raw-data acquisition
+- Bronze ingestion for Dallas, Houston, and Fort Worth
+- Source-specific schema normalization
+- Unified Silver crime-offense model
+- Timestamp, identifier, coordinate, and offense normalization
+- Data-quality validation and quarantine workflows
+- H3-based spatial indexing
+- Twelve years of hourly ERA5-Land weather ingestion
+- Incremental weather-response caching
+- Solar-position and lighting-condition computation
+- Census ACS 5-year socioeconomic ingestion
+- TIGER/Line Census tract boundary processing
+- Leakage-safe ACS vintage selection
+- Point-in-polygon crime-to-tract mapping
+- Gold feature-table materialization
+- Feature-join coverage validation
+- Row-cardinality validation
+- Databricks Asset Bundle orchestration
+- Automated tests and GitHub Actions CI
+
+### In progress
+
+- Geographic and temporal aggregation targets
+- XGBoost Poisson baseline training
+- Temporal train, validation, and test splitting
+- Baseline evaluation and error analysis
+- MLflow experiment tracking
+
+### Planned
+
+- Hyperparameter optimization
+- Additional count-model baselines
+- Probability and count calibration analysis
+- Geographic stability evaluation
+- Feature-attribution analysis
+- Model registration and controlled promotion
+- Data- and prediction-drift monitoring
+- Automated retraining
+- Batch inference
+- Prediction-serving and visualization layers
+
+---
+
+## Why CrimeNet
+
+Municipal crime datasets are not delivered as a clean, unified analytical product.
+
+Each city publishes data with different:
+
+- File formats
+- Column names
+- Identifier conventions
+- Timestamp formats
+- Coordinate systems
+- Offense taxonomies
+- Missing-value behavior
+- Historical coverage
+- Update patterns
+
+CrimeNet solves the data-engineering problem before approaching the modeling problem.
+
+Instead of training directly on one cleaned CSV, the project builds a reproducible lakehouse that can:
+
+1. Preserve raw inputs.
+2. Standardize heterogeneous sources.
+3. Validate and quarantine malformed records.
+4. Enrich records with time-correct environmental and socioeconomic data.
+5. Incrementally materialize reusable feature tables.
+6. Produce stable inputs for model training and evaluation.
 
 ---
 
