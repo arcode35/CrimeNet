@@ -778,4 +778,6 @@ Additional documentation is available under [`docs/`](docs/):
 
 ## License
 
-License information will be added before the first public release.
+Copyright 2026 Aldrin Roshan.
+
+Licensed under the [Apache License 2.0](LICENSE).
