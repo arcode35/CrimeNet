@@ -165,53 +165,6 @@ Job tasks are implemented as Python wheel entry points rather than notebook-only
 
 ---
 
-## Project Status
-
-### Completed
-
-- Multi-city raw-data acquisition
-- Bronze ingestion for Dallas, Houston, and Fort Worth
-- Source-specific schema normalization
-- Unified Silver crime-offense model
-- Timestamp, identifier, coordinate, and offense normalization
-- Data-quality validation and quarantine workflows
-- H3-based spatial indexing
-- Twelve years of hourly ERA5-Land weather ingestion
-- Incremental weather-response caching
-- Solar-position and lighting-condition computation
-- Census ACS 5-year socioeconomic ingestion
-- TIGER/Line Census tract boundary processing
-- Leakage-safe ACS vintage selection
-- Point-in-polygon crime-to-tract mapping
-- Gold feature-table materialization
-- Feature-join coverage validation
-- Row-cardinality validation
-- Databricks Asset Bundle orchestration
-- Automated tests and GitHub Actions CI
-
-### In progress
-
-- Geographic and temporal aggregation targets
-- XGBoost Poisson baseline training
-- Temporal train, validation, and test splitting
-- Baseline evaluation and error analysis
-- MLflow experiment tracking
-
-### Planned
-
-- Hyperparameter optimization
-- Additional count-model baselines
-- Probability and count calibration analysis
-- Geographic stability evaluation
-- Feature-attribution analysis
-- Model registration and controlled promotion
-- Data- and prediction-drift monitoring
-- Automated retraining
-- Batch inference
-- Prediction-serving and visualization layers
-
----
-
 ## Why CrimeNet
 
 Municipal crime datasets are not delivered as a clean, unified analytical product.
