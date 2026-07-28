@@ -7,7 +7,7 @@
 ![Delta Lake](https://img.shields.io/badge/Storage-Delta%20Lake-00ADD8)
 ![Unity Catalog](https://img.shields.io/badge/Governance-Unity%20Catalog-purple)
 
-**CrimeNet is an end-to-end geospatial data and machine learning platform for predicting aggregate crime counts across geographic areas and time windows. It is a scalable, production-oriented successor to AcciNet, an award-winning crash analytics platform that I architected and developed.**
+**CrimeNet is an end-to-end geospatial data and machine learning lakehouse for predicting aggregate crime counts across geographic areas and time windows. It is a scalable, production-oriented successor to AcciNet, an award-winning crash analytics platform that I architected and developed.**
 
 The project ingests heterogeneous municipal crime data from Dallas, Houston, and Fort Worth, standardizes incompatible source schemas, enriches records with 12 years of hourly weather, solar-lighting conditions, Census tract boundaries, and socioeconomic indicators, and materializes a governed Gold feature table for crime forecasting.
 
