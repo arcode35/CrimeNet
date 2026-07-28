@@ -163,6 +163,7 @@ resources:
             - task_key: quality_checks
             - task_key: silver_weather_hourly
             - task_key: silver_acs5_tracts
+            - task_key: silver_lighting_conditions
 
           python_wheel_task:
             package_name: crimenet

@@ -20,6 +20,8 @@ from crimenet.gold.crime_features import (
     materialize_location_mapping,
     prepare_crimes,
     validate_boundary_inputs,
+    attach_lighting_features,
+    build_lighting_lookup
 )
 
 
@@ -104,7 +106,9 @@ def run(
     weather_dataframe = spark.table(
         tables.weather
     )
-
+    lighting_dataframe = spark.table(
+        tables.lighting
+    )
     validate_boundary_inputs(
         calendar_dataframe,
         boundary_dataframe,
@@ -152,9 +156,18 @@ def run(
             socioeconomic_dataframe,
         )
     )
-
+        
+    lighting_lookup = build_lighting_lookup(
+        lighting_dataframe
+    )
+    crime_with_lighting = (
+        attach_lighting_features(
+            crime_with_socioeconomic, 
+            lighting_lookup
+        )
+    )
     weather_lookup = build_weather_lookup(
-        crime_dataframe,
+        crime_prepared,
         weather_dataframe,
         provider=weather_provider,
         model=weather_model,
@@ -162,7 +175,7 @@ def run(
     )
 
     crime_features = attach_weather_features(
-        crime_with_socioeconomic,
+        crime_with_lighting,
         weather_lookup,
     )
 
@@ -216,7 +229,10 @@ def main() -> None:
         SparkSession.getActiveSession()
         or SparkSession.builder.getOrCreate()
     )
-
+    spark.conf.set(
+        "spark.sql.session.timeZone",
+        "UTC",
+    )
     run(
         spark,
         catalog=args.catalog,

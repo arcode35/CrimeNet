@@ -33,6 +33,7 @@ class FeatureTables:
     boundaries: str
     socioeconomic: str
     weather: str
+    lighting: str
     location_tract_mapping: str
     features: str
 
@@ -53,6 +54,7 @@ class FeatureTables:
             boundaries=f"{silver}.census_tract_boundaries",
             socioeconomic=f"{silver}.tract_socioeconomic",
             weather=f"{silver}.weather_hourly",
+            lighting=f"{silver}.solar_lighting_conditions",
             location_tract_mapping=(
                 f"{silver}.crime_location_tract_mapping"
             ),
@@ -733,6 +735,75 @@ def attach_weather_features(
         )
     )
 
+LIGHTING_KEYS = (
+    "weather_query_cell_id",
+    "solar_timestamp",
+)
+
+
+def build_lighting_lookup(
+    lighting_dataframe: DataFrame,
+) -> DataFrame:
+    lookup = (
+        lighting_dataframe
+        .select(
+            "weather_query_cell_id",
+            "solar_timestamp",
+            "solar_elevation_deg",
+            "apparent_solar_elevation_deg",
+            "solar_zenith_deg",
+            "solar_azimuth_deg",
+            "lighting_condition",
+            "is_daylight",
+        )
+        .withColumn(
+            "_lighting_row_found",
+            F.lit(True),
+        )
+    )
+
+    _raise_on_duplicate_keys(
+        lookup,
+        keys=LIGHTING_KEYS,
+        dataset_name="Solar lighting conditions",
+    )
+
+    return lookup
+
+def attach_lighting_features(
+    crime_dataframe: DataFrame,
+    lighting_lookup: DataFrame,
+) -> DataFrame:
+    return (
+        crime_dataframe.alias("crime")
+        .join(
+            lighting_lookup.alias("light"),
+            (
+                F.col("crime.weather_query_cell_id")
+                == F.col("light.weather_query_cell_id")
+            )
+            & (
+                F.col("crime.weather_timestamp")
+                == F.col("light.solar_timestamp")
+            ),
+            "left",
+        )
+        .select(
+            "crime.*",
+            F.col("light.solar_elevation_deg"),
+            F.col(
+                "light.apparent_solar_elevation_deg"
+            ),
+            F.col("light.solar_zenith_deg"),
+            F.col("light.solar_azimuth_deg"),
+            F.col("light.lighting_condition"),
+            F.col("light.is_daylight"),
+            F.coalesce(
+                F.col("light._lighting_row_found"),
+                F.lit(False),
+            ).alias("lighting_match_found"),
+        )
+    )
 
 def log_coverage_metrics(
     feature_dataframe: DataFrame,
