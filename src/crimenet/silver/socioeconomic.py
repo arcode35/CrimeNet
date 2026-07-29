@@ -2,9 +2,22 @@
 
 from __future__ import annotations
 
+from functools import reduce
+
 from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 
+SOCIOECONOMIC_DEFINITION_VERSION = "acs5_tract_features_v1"
+
+ACS_QUARANTINE_MESSAGES = {
+    "RESCUED_SCHEMA_DATA": "Auto Loader rescued unexpected ACS fields.",
+    "MISSING_TRACT_KEY": "GEOID and ACS vintage are required.",
+    "INVALID_TRACT_GEOID": "The tract GEOID must contain exactly 11 digits.",
+    "INVALID_ACS_VINTAGE": "The ACS vintage is outside the supported range.",
+    "INVALID_NUMERIC_VALUE": (
+        "A non-sentinel ACS numeric value is malformed or outside its domain."
+    ),
+}
 
 ACS_COLUMN_NAMES = {
     "b01003_001e": "population",
@@ -96,6 +109,67 @@ NONNEGATIVE_DOUBLE_COLUMNS = (
     "median_household_income",
     "median_household_income_moe",
 )
+
+
+def annotate_acs_validation(dataframe: DataFrame) -> DataFrame:
+    """Attach source-level ACS validation reasons before normalization."""
+    invalid_numeric_conditions: list[Column] = []
+    integer_sources = {
+        source
+        for source, target in ACS_COLUMN_NAMES.items()
+        if target in INTEGER_COLUMNS
+    }
+    for source_name, target_name in ACS_COLUMN_NAMES.items():
+        source = F.col(source_name)
+        cast_type = "long" if source_name in integer_sources else "double"
+        cast_value = F.expr(f"try_cast(`{source_name}` AS {cast_type})")
+        non_sentinel = ~source.cast("string").isin(*CENSUS_SENTINEL_VALUES)
+        invalid = (
+            source.isNotNull()
+            & non_sentinel
+            & (
+                cast_value.isNull()
+                | (cast_value < 0)
+                | (
+                    F.lit(target_name == "median_age")
+                    & (cast_value > 120)
+                )
+            )
+        )
+        invalid_numeric_conditions.append(invalid)
+
+    invalid_numeric = reduce(
+        lambda left, right: left | right,
+        invalid_numeric_conditions,
+        F.lit(False),
+    )
+    reasons = F.array_compact(
+        F.array(
+            F.when(
+                F.col("rescued_data").isNotNull(),
+                F.lit("RESCUED_SCHEMA_DATA"),
+            ),
+            F.when(
+                F.col("geoid").isNull() | F.col("acs_vintage").isNull(),
+                F.lit("MISSING_TRACT_KEY"),
+            ),
+            F.when(
+                F.col("geoid").isNotNull()
+                & ~F.col("geoid").cast("string").rlike(r"^[0-9]{11}$"),
+                F.lit("INVALID_TRACT_GEOID"),
+            ),
+            F.when(
+                F.expr("try_cast(`acs_vintage` AS INT)").isNull()
+                | ~F.expr("try_cast(`acs_vintage` AS INT)").between(
+                    2009,
+                    2100,
+                ),
+                F.lit("INVALID_ACS_VINTAGE"),
+            ),
+            F.when(invalid_numeric, F.lit("INVALID_NUMERIC_VALUE")),
+        )
+    )
+    return dataframe.withColumn("_quarantine_reason_codes", reasons)
 
 
 def enforce_acs_numeric_domains(
@@ -213,8 +287,11 @@ def cast_acs_columns(
 def transform_acs5_tracts(
     bronze_dataframe: DataFrame,
 ) -> DataFrame:
+    valid_bronze = annotate_acs_validation(bronze_dataframe).filter(
+        F.size("_quarantine_reason_codes") == 0
+    )
     renamed_dataframe = rename_acs_columns(
-        bronze_dataframe
+        valid_bronze
     )
 
     cleaned_dataframe = nullify_census_sentinels(
@@ -270,6 +347,8 @@ def transform_acs5_tracts(
             F.col("households_no_vehicle"),
             F.col("households_no_vehicle_moe"),
             F.col("source_file"),
+            F.col("source_row_hash"),
+            F.col("source_contract_version"),
             F.col("ingested_at").alias(
                 "bronze_ingested_at"
             ),
@@ -313,8 +392,8 @@ def transform_acs5_tracts(
             "silver_processed_at",
             F.current_timestamp(),
         )
-        .filter(
-            F.col("geoid").isNotNull()
-            & F.col("acs_vintage").isNotNull()
+        .withColumn(
+            "socioeconomic_definition_version",
+            F.lit(SOCIOECONOMIC_DEFINITION_VERSION),
         )
     )

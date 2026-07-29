@@ -1,28 +1,45 @@
 [project]
 name = "crimenet"
-version = "0.1.0"
+version = "0.2.0"
 description = "Multi-city crime data lakehouse built on Databricks and Delta Lake"
 requires-python = ">=3.11"
 dependencies = [
+    "geopandas>=1.0,<2",
+    "h3>=4.2,<5",
+    "pandas>=2.2,<3",
+    "pyarrow>=18,<22",
+    "pyogrio>=0.9,<1",
     "pvlib==0.15.2",
+    "requests>=2.32,<3",
+    "urllib3>=2.2,<3",
 ]
 [project.scripts]
+crimenet_preflight = "crimenet.jobs.preflight:main"
 bronze_ingestion = "crimenet.jobs.bronze_ingestion:main"
 silver_transform = "crimenet.jobs.silver_transform:main"
 quality_checks = "crimenet.jobs.quality_checks:main"
 gold_refresh = "crimenet.jobs.gold_refresh:main"
+weather_request_planner = "crimenet.jobs.weather_request_planner_job:main"
+weather_retrieval = "crimenet.jobs.weather_retrieval_job:main"
 silver_weather = "crimenet.jobs.silver_weather_job:main"
 acs5_landing = "crimenet.jobs.acs5_landing_job:main"
+acs_vintage_calendar = "crimenet.jobs.acs_vintage_calendar_job:main"
 silver_socioeconomic = "crimenet.jobs.silver_socioeconomic_job:main"
+tiger_line_boundaries = "crimenet.jobs.tiger_line_boundaries_job:main"
+location_tract_mapping = "crimenet.jobs.location_tract_mapping_job:main"
 gold_crime_features = "crimenet.jobs.gold_crime_features_job:main"
 silver_lighting = "crimenet.jobs.silver_lighting_job:main"
 [dependency-groups]
 dev = [
+    "delta-spark==4.3.1",
+    "pandas-stubs>=2.2",
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "ruff>=0.11",
     "mypy>=1.15",
     "pyspark==4.1.0",
+    "pyyaml>=6.0",
+    "types-requests>=2.32",
 ]
 
 [build-system]
@@ -35,10 +52,17 @@ packages = ["src/crimenet"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+markers = [
+    "databricks: requires an authenticated Databricks workspace",
+    "delta: exercises local Delta Lake integration",
+]
 
 [tool.ruff]
 line-length = 88
 target-version = "py311"
+extend-exclude = [
+    "notebooks/exploration",
+]
 
 [tool.ruff.lint]
 select = [
@@ -55,3 +79,12 @@ python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "geopandas.*",
+    "h3.*",
+    "pvlib.*",
+    "pyspark.databricks.*",
+]
+ignore_missing_imports = true

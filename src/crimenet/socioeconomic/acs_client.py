@@ -9,7 +9,6 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-
 CENSUS_API_BASE_URL = "https://api.census.gov/data"
 ACS5_DATASET = "acs/acs5"
 
@@ -100,29 +99,45 @@ def fetch_acs5_tracts(
     *,
     vintage: int,
     state_fips: str = TEXAS_STATE_FIPS,
-    api_key: str,
+    api_key: str | None = None,
     session: requests.Session | None = None,
 ) -> list[dict[str, Any]]:
-    """Fetch all ACS 5-year census tracts in one state."""
-
-    if not api_key:
-        raise CensusApiError(
-            "A Census API key is required. "
-            "Set CENSUS_API_KEY before running the job."
+    """Fetch all ACS tracts and close only sessions created here."""
+    if session is not None:
+        return _fetch_acs5_tracts_with_session(
+            vintage=vintage,
+            state_fips=state_fips,
+            api_key=api_key,
+            session=session,
         )
 
-    active_session = (
-        session
-        if session is not None
-        else build_census_session()
-    )
+    owned_session = build_census_session()
+    try:
+        return _fetch_acs5_tracts_with_session(
+            vintage=vintage,
+            state_fips=state_fips,
+            api_key=api_key,
+            session=owned_session,
+        )
+    finally:
+        owned_session.close()
+
+
+def _fetch_acs5_tracts_with_session(
+    *,
+    vintage: int,
+    state_fips: str,
+    api_key: str | None,
+    session: requests.Session,
+) -> list[dict[str, Any]]:
+    """Fetch all ACS 5-year census tracts using a caller-owned session."""
 
     request_url = (
         f"{CENSUS_API_BASE_URL}/"
         f"{vintage}/{ACS5_DATASET}"
     )
 
-    parameters = {
+    parameters: dict[str, str] = {
         "get": ",".join(
             (
                 "NAME",
@@ -134,39 +149,44 @@ def fetch_acs5_tracts(
             f"state:{state_fips} "
             "county:*"
         ),
-        "key": api_key,
     }
+    if api_key:
+        parameters["key"] = api_key
 
-    response = active_session.get(
-        request_url,
-        params=parameters,
-        headers={
-            "Accept": "application/json",
-        },
-        timeout=(30, 180),
-    )
+    try:
+        response = session.get(
+            request_url,
+            params=parameters,
+            headers={
+                "Accept": "application/json",
+            },
+            timeout=(30, 180),
+        )
+    except requests.RequestException as exc:
+        raise CensusApiError(
+            "Census API request failed for "
+            f"vintage={vintage}, error_type={type(exc).__name__}"
+        ) from None
 
     try:
         response.raise_for_status()
-    except requests.HTTPError as exc:
+    except requests.HTTPError:
         raise CensusApiError(
             "Census API request failed for "
             f"vintage={vintage}, "
-            f"status={response.status_code}, "
-            f"response={response.text[:500]!r}"
-        ) from exc
+            f"status={response.status_code}"
+        ) from None
 
     try:
         payload = response.json()
-    except requests.exceptions.JSONDecodeError as exc:
+    except requests.exceptions.JSONDecodeError:
         raise CensusApiError(
             "Census API returned a non-JSON response for "
             f"vintage={vintage}, "
             f"status={response.status_code}, "
             f"content_type="
-            f"{response.headers.get('Content-Type')!r}, "
-            f"response={response.text[:1000]!r}"
-        ) from exc
+            f"{response.headers.get('Content-Type')!r}"
+        ) from None
 
     if (
         not isinstance(payload, list)
@@ -174,8 +194,8 @@ def fetch_acs5_tracts(
     ):
         raise CensusApiError(
             "Census API returned no tract records "
-            f"for vintage {vintage}: "
-            f"{payload!r}"
+            f"for vintage={vintage}, "
+            f"payload_type={type(payload).__name__}"
         )
 
     header = payload[0]

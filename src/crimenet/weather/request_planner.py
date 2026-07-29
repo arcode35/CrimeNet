@@ -10,6 +10,10 @@ from crimenet.spatial.h3 import (
     add_weather_query_cell,
     extract_h3_centers,
 )
+from crimenet.weather.open_meteo_client import (
+    VALID_MODELS,
+    normalize_hourly_variables,
+)
 
 PROVIDER = "open_meteo"
 TIMEZONE = "GMT"
@@ -20,16 +24,11 @@ CELL_SELECTION = "nearest"
 # availability buffer.
 DEFAULT_AVAILABILITY_LAG_DAYS = 7
 
-VALID_MODELS = frozenset(
-    {
-        "era5",
-        "era5_land",
-    }
-)
 MODEL_START_DATES = {
     "era5": date(1940, 1, 1),
     "era5_land": date(1950, 1, 1),
 }
+
 
 def build_weather_request_manifest(
     crime_df: DataFrame,
@@ -41,9 +40,9 @@ def build_weather_request_manifest(
 ) -> DataFrame:
     normalized_model = model.strip().lower()
 
-    if normalized_model not in MODEL_START_DATES:
+    if normalized_model not in VALID_MODELS:
         supported = ", ".join(
-            sorted(MODEL_START_DATES)
+            sorted(VALID_MODELS)
         )
         raise ValueError(
             f"Unsupported model {model!r}. "
@@ -53,15 +52,6 @@ def build_weather_request_manifest(
     model_start_date = MODEL_START_DATES[
         normalized_model
     ]
-    
-    if normalized_model not in VALID_MODELS:
-        supported = ", ".join(
-            sorted(VALID_MODELS)
-        )
-        raise ValueError(
-            f"Unsupported model {model!r}. "
-            f"Supported models: {supported}"
-        )
 
     if not 0 <= h3_resolution <= 15:
         raise ValueError(
@@ -93,18 +83,9 @@ def build_weather_request_manifest(
             + ", ".join(sorted(missing_columns))
         )
 
-    normalized_variables = sorted(
-        {
-            variable.strip()
-            for variable in hourly_variables
-            if variable.strip()
-        }
+    normalized_variables = normalize_hourly_variables(
+        hourly_variables
     )
-
-    if not normalized_variables:
-        raise ValueError(
-            "At least one hourly variable is required"
-        )
 
     valid_crimes = (
         crime_df
