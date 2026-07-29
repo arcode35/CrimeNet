@@ -35,6 +35,7 @@ dmypy.json
 
 # Databricks local bundle state
 .databricks/
+.databrickscfg
 
 # Environment variables and local secrets
 .env
@@ -71,8 +72,19 @@ temp/
 spark-warehouse/
 metastore_db/
 derby.log
+.sparkStaging/
+**/_delta_log/
 
 # Local data exports
 *.parquet
 *.csv
 *.jsonl
+
+# Repository-owned deterministic test fixtures
+!tests/fixtures/**/*.csv
+!tests/fixtures/**/*.jsonl
+
+# User-provided local review archives
+/resources.zip
+/src.zip
+/tests.zip
