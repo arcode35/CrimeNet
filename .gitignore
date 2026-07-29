@@ -74,5 +74,3 @@ derby.log
 
 # Local data exports
 *.parquet
-*.csv
-*.jsonl
