@@ -5,10 +5,18 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable
 from typing import Protocol
+from uuid import uuid4
 
 from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
 from crimenet.config.resources import CrimeNetTables
+from crimenet.config.validation import validate_qualified_table_name
+from crimenet.contracts.bronze import (
+    get_source_contract,
+    validate_contract_columns,
+)
 from crimenet.ingestion.column_names import normalize_column_names
 from crimenet.ingestion.metadata import add_ingestion_metadata
 from crimenet.ingestion.readers import (
@@ -19,7 +27,7 @@ from crimenet.ingestion.readers import (
     read_weather_raw,
 )
 from crimenet.observability.logging import get_logger
-
+from crimenet.observability.run_context import resolve_pipeline_run_id
 
 LOGGER = get_logger(__name__)
 
@@ -55,6 +63,11 @@ STREAMING_READERS: dict[str, StreamingReader] = {
 SOURCE_SYSTEMS = {
     "open_meteo_weather": "open_meteo",
     "acs5_tract": "census_acs5",
+}
+
+SOURCE_CONTRACT_VERSIONS = {
+    "open_meteo_weather": "open_meteo_archive_v1",
+    "acs5_tract": "census_acs5_tract_v1",
 }
 
 SUPPORTED_SOURCES = (
@@ -107,9 +120,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--write-mode",
-        default="overwrite",
-        choices=("overwrite", "append"),
+        default="merge",
+        choices=("merge",),
+        help=(
+            "Bronze always uses an idempotent Delta MERGE. This argument is "
+            "retained to make the sink policy explicit."
+        ),
     )
+    parser.add_argument("--pipeline-run-id")
 
     args = parser.parse_args()
 
@@ -149,26 +167,99 @@ def _run_batch_ingestion(
         raw_dataframe,
         overrides=COLUMN_OVERRIDES.get(source),
     )
+    contract = get_source_contract(source)
+    validate_contract_columns(
+        normalized_dataframe.columns,
+        contract,
+    )
 
     bronze_dataframe = add_ingestion_metadata(
         normalized_dataframe,
         source_system=source,
+        contract_version=contract.version,
     )
 
-    writer = (
-        bronze_dataframe.write
-        .format("delta")
-        .mode(write_mode)
+    if write_mode != "merge":
+        raise ValueError("Bronze ingestion supports only write_mode='merge'.")
+
+    merge_bronze_batch(
+        bronze_dataframe,
+        batch_id=0,
+        spark=spark,
+        target_table=tables.bronze_for_source(source),
     )
 
-    if write_mode == "overwrite":
-        writer = writer.option(
-            "overwriteSchema",
-            "true",
+
+def _deduplicate_bronze_batch(dataframe: DataFrame) -> DataFrame:
+    """Choose one deterministic lineage row for each logical raw row."""
+    window = (
+        Window.partitionBy("source_system", "source_row_hash")
+        .orderBy(
+            F.col("source_file").asc_nulls_last(),
+            F.col("ingested_at").asc_nulls_last(),
         )
+    )
+    return (
+        dataframe.withColumn("_row_number", F.row_number().over(window))
+        .filter(F.col("_row_number") == 1)
+        .drop("_row_number")
+    )
 
-    writer.saveAsTable(
-        tables.bronze_for_source(source)
+
+def merge_bronze_batch(
+    batch_dataframe: DataFrame,
+    batch_id: int,
+    *,
+    spark: SparkSession,
+    target_table: str,
+) -> None:
+    """
+    Insert unseen source rows by stable content identity.
+
+    Matching rows are intentionally not updated, so a replay from a new path
+    cannot churn first-seen operational metadata.
+    """
+    validate_qualified_table_name(target_table)
+    if batch_dataframe.isEmpty():
+        LOGGER.info(
+            "Skipping empty Bronze batch",
+            batch_id=batch_id,
+            target_table=target_table,
+        )
+        return
+
+    input_count = batch_dataframe.count()
+    source = _deduplicate_bronze_batch(batch_dataframe)
+    deduplicated_count = source.count()
+    if not spark.catalog.tableExists(target_table):
+        source.limit(0).write.format("delta").saveAsTable(target_table)
+    target_count_before = spark.table(target_table).count()
+
+    view_name = f"_crimenet_bronze_{uuid4().hex}"
+    source.createOrReplaceTempView(view_name)
+    try:
+        spark.sql(
+            f"""
+            MERGE INTO {target_table} AS target
+            USING {view_name} AS source
+              ON target.source_system = source.source_system
+             AND target.source_row_hash = source.source_row_hash
+            WHEN NOT MATCHED THEN INSERT *
+            """
+        )
+    finally:
+        spark.catalog.dropTempView(view_name)
+
+    target_count_after = spark.table(target_table).count()
+    LOGGER.info(
+        "Merged replay-safe Bronze batch",
+        batch_id=batch_id,
+        target_table=target_table,
+        input_count=input_count,
+        output_count=target_count_after,
+        insert_count=target_count_after - target_count_before,
+        update_count=0,
+        duplicate_count=input_count - deduplicated_count,
     )
 
 
@@ -194,25 +285,30 @@ def _run_streaming_ingestion(
     bronze_dataframe = add_ingestion_metadata(
         normalized_dataframe,
         source_system=SOURCE_SYSTEMS[source],
+        contract_version=SOURCE_CONTRACT_VERSIONS[source],
     )
+
+    target_table = tables.bronze_for_source(source)
+
+    def upsert_batch(batch_dataframe: DataFrame, batch_id: int) -> None:
+        merge_bronze_batch(
+            batch_dataframe,
+            batch_id,
+            spark=spark,
+            target_table=target_table,
+        )
 
     query = (
         bronze_dataframe.writeStream
-        .format("delta")
         .option(
             "checkpointLocation",
             checkpoint_path,
         )
-        .option(
-            "mergeSchema",
-            "true",
-        )
         .trigger(
             availableNow=True,
         )
-        .toTable(
-            tables.bronze_for_source(source)
-        )
+        .foreachBatch(upsert_batch)
+        .start()
     )
 
     query.awaitTermination()
@@ -266,17 +362,17 @@ def run(
 
 def main() -> None:
     args = parse_args()
+    run_id = resolve_pipeline_run_id(args.pipeline_run_id)
 
     spark = (
         SparkSession.getActiveSession()
         or SparkSession.builder.getOrCreate()
     )
 
-    target_table = (
-        f"{args.catalog}."
-        f"{args.bronze_schema}."
-        f"{args.source}"
-    )
+    target_table = CrimeNetTables(
+        catalog=args.catalog,
+        bronze_schema=args.bronze_schema,
+    ).bronze_for_source(args.source)
 
     LOGGER.info(
         "Starting Bronze ingestion",
@@ -285,6 +381,7 @@ def main() -> None:
         target_table=target_table,
         write_mode=args.write_mode,
         streaming=args.source in STREAMING_READERS,
+        pipeline_run_id=run_id,
     )
 
     try:
@@ -303,6 +400,7 @@ def main() -> None:
             "Bronze ingestion failed",
             source=args.source,
             target_table=target_table,
+            pipeline_run_id=run_id,
         )
         raise
 
@@ -310,6 +408,7 @@ def main() -> None:
         "Bronze ingestion completed",
         source=args.source,
         target_table=target_table,
+        pipeline_run_id=run_id,
     )
 
 

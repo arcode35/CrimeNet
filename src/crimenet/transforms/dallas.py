@@ -6,7 +6,13 @@ from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 
 from crimenet.contracts.silver import SILVER_COLUMNS, assert_silver_contract
-from crimenet.transforms.common import null_double, try_cast
+from crimenet.transforms.common import (
+    CRIME_TRANSFORMATION_VERSION,
+    municipal_local_to_utc,
+    null_double,
+    stable_business_identity,
+    try_cast,
+)
 
 _COORDINATE_PATTERN = (
     r"\(\s*"
@@ -19,29 +25,33 @@ _COORDINATE_PATTERN = (
 
 def _source_timestamp(column_name: str) -> Column:
     """Parse Dallas timestamps with optional fractional seconds."""
-    return F.coalesce(
-        F.expr(
-            f"try_to_timestamp(`{column_name}`, "
-            "'yyyy-MM-dd HH:mm:ss.SSSSSSS')"
-        ),
-        F.expr(
-            f"try_to_timestamp(`{column_name}`, "
-            "'yyyy-MM-dd HH:mm:ss.SSSSSS')"
-        ),
-        F.expr(
-            f"try_to_timestamp(`{column_name}`, "
-            "'yyyy-MM-dd HH:mm:ss')"
-        ),
+    return municipal_local_to_utc(
+        F.coalesce(
+            F.expr(
+                f"try_to_timestamp(`{column_name}`, "
+                "'yyyy-MM-dd HH:mm:ss.SSSSSSS')"
+            ),
+            F.expr(
+                f"try_to_timestamp(`{column_name}`, "
+                "'yyyy-MM-dd HH:mm:ss.SSSSSS')"
+            ),
+            F.expr(
+                f"try_to_timestamp(`{column_name}`, "
+                "'yyyy-MM-dd HH:mm:ss')"
+            ),
+        )
     )
 
 
 def _occurrence_timestamp() -> Column:
-    return F.expr(
-        "try_to_timestamp("
-        "concat(substring(`date1_of_occurrence`, 1, 10), "
-        "' ', `time1_of_occurrence`), "
-        "'yyyy-MM-dd HH:mm'"
-        ")"
+    return municipal_local_to_utc(
+        F.expr(
+            "try_to_timestamp("
+            "concat(substring(`date1_of_occurrence`, 1, 10), "
+            "' ', `time1_of_occurrence`), "
+            "'yyyy-MM-dd HH:mm'"
+            ")"
+        )
     )
 
 
@@ -57,14 +67,20 @@ def to_canonical(dataframe: DataFrame) -> DataFrame:
         2,
     )
 
+    incident_id = F.col("incident_number_w_year").cast("string")
+    offense_id = F.col("service_number_id").cast("string")
+
     result = dataframe.select(
+        F.lit("dallas").alias("source_system"),
         F.lit("dallas").alias("source_city"),
-        F.col("service_number_id")
-        .cast("string")
-        .alias("source_record_id"),
-        F.col("incident_number_w_year")
-        .cast("string")
-        .alias("source_incident_id"),
+        offense_id.alias("source_record_id"),
+        incident_id.alias("source_incident_id"),
+        offense_id.alias("source_offense_id"),
+        stable_business_identity(
+            source_system="dallas",
+            source_incident_id=incident_id,
+            source_offense_id=offense_id,
+        ).alias("business_identity"),
         F.col("nibrs_code").cast("string").alias("offense_code"),
         F.coalesce(
             F.col("nibrs_crime"),
@@ -103,6 +119,16 @@ def to_canonical(dataframe: DataFrame) -> DataFrame:
         try_cast("y_cordinate", "double").alias("source_y_coordinate"),
         F.col("source_file").cast("string").alias("source_file"),
         F.col("source_row_hash").cast("string").alias("source_row_hash"),
+        F.col("source_contract_version")
+        .cast("string")
+        .alias("source_contract_version"),
+        F.lit(CRIME_TRANSFORMATION_VERSION).alias(
+            "transformation_version"
+        ),
+        F.col("ingested_at").cast("timestamp").alias("bronze_ingested_at"),
+        F.col("corrupt_record").cast("string").alias(
+            "source_corrupt_record"
+        ),
     ).select(*SILVER_COLUMNS)
 
     assert_silver_contract(result)

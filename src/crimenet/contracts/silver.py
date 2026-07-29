@@ -14,9 +14,12 @@ from pyspark.sql.types import (
 
 SILVER_SCHEMA = StructType(
     [
+        StructField("source_system", StringType(), False),
         StructField("source_city", StringType(), False),
         StructField("source_record_id", StringType(), True),
         StructField("source_incident_id", StringType(), True),
+        StructField("source_offense_id", StringType(), True),
+        StructField("business_identity", StringType(), False),
         StructField("offense_code", StringType(), True),
         StructField("offense_name", StringType(), True),
         StructField("offense_description", StringType(), True),
@@ -38,6 +41,10 @@ SILVER_SCHEMA = StructType(
         StructField("source_y_coordinate", DoubleType(), True),
         StructField("source_file", StringType(), True),
         StructField("source_row_hash", StringType(), False),
+        StructField("source_contract_version", StringType(), False),
+        StructField("transformation_version", StringType(), False),
+        StructField("bronze_ingested_at", TimestampType(), True),
+        StructField("source_corrupt_record", StringType(), True),
     ]
 )
 
@@ -57,11 +64,11 @@ def assert_silver_contract(dataframe: DataFrame) -> None:
 
     mismatches: list[str] = []
 
-    for expected, actual in zip(expected_fields, actual_fields):
+    for expected, actual in zip(expected_fields, actual_fields, strict=True):
         if expected.name != actual.name or expected.dataType != actual.dataType:
             mismatches.append(
-                f"expected {expected.name}:{expected.dataType.simpleString()}, "
-                f"got {actual.name}:{actual.dataType.simpleString()}"
+                f"expected {expected.name}:{expected.dataType.simpleString()}"
+                f", got {actual.name}:{actual.dataType.simpleString()}"
             )
 
     if mismatches:
