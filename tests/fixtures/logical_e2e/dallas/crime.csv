@@ -1,0 +1,2 @@
+Service Number ID,Incident Number w/year,NIBRS Code,NIBRS Crime,UCR Offense Name,Type of Incident,UCR Offense Description,Date1 of Occurrence,Time1 of Occurrence,Date of Report,Update Date,Incident Address,City,State,Zip Code,Beat,Type Location,Location1,X Coordinate,Y Cordinate
+D-OFF-1,D-INC-1,23A,Theft,Theft,Theft,Theft from vehicle,2024-05-03,14:37,2024-05-03 15:00:00,2024-05-04 10:00:00,100 Main St,Dallas,TX,75201,101,Parking Lot,"(32.7767, -96.7970)",2490000,6970000

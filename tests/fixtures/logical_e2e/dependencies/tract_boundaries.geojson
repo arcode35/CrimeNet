@@ -1,0 +1,41 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "geoid": "48113020400",
+        "boundary_vintage": 2022,
+        "name": "Dallas logical tract"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-96.88, 32.70], [-96.72, 32.70], [-96.72, 32.85], [-96.88, 32.85], [-96.88, 32.70]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "geoid": "48201310000",
+        "boundary_vintage": 2022,
+        "name": "Houston logical tract"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-95.45, 29.68], [-95.29, 29.68], [-95.29, 29.84], [-95.45, 29.84], [-95.45, 29.68]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "geoid": "48439100100",
+        "boundary_vintage": 2022,
+        "name": "Fort Worth logical tract"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-97.42, 32.68], [-97.24, 32.68], [-97.24, 32.83], [-97.42, 32.83], [-97.42, 32.68]]]
+      }
+    }
+  ]
+}

@@ -1,22 +1,8 @@
-"""Databricks entry point for Gold-table refreshes."""
+"""Compatibility wrapper for the implemented Gold feature entry point."""
 
-import argparse
+from crimenet.jobs.gold_crime_features_job import main
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--catalog", required=True)
-    parser.add_argument("--silver-schema", required=True)
-    parser.add_argument("--gold-schema", required=True)
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-
-    raise NotImplementedError(
-        f"Implement Gold refreshes for catalog {args.catalog!r}."
-    )
+__all__ = ["main"]
 
 
 if __name__ == "__main__":

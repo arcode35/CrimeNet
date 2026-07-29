@@ -3,29 +3,34 @@
 from __future__ import annotations
 
 import argparse
-import logging
 
 from pyspark.sql import SparkSession
 
+from crimenet.contracts.gold import GoldCoverageThresholds
+from crimenet.contracts.lighting import (
+    LIGHTING_DEFINITION_VERSION,
+)
 from crimenet.gold.crime_features import (
     FeatureTables,
     attach_eligible_acs_vintage,
+    attach_lighting_features,
     attach_socioeconomic_features,
     attach_tracts,
     attach_weather_features,
     build_calendar_ranges,
+    build_lighting_lookup,
+    build_location_mapping_lookup,
     build_weather_lookup,
     extract_unique_locations,
-    log_coverage_metrics,
-    materialize_location_mapping,
+    materialize_gold_features,
     prepare_crimes,
-    validate_boundary_inputs,
-    attach_lighting_features,
-    build_lighting_lookup
+)
+from crimenet.observability.logging import get_logger
+from crimenet.observability.run_context import (
+    resolve_pipeline_run_id,
 )
 
-
-LOGGER = logging.getLogger(__name__)
+LOGGER = get_logger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,6 +54,10 @@ def parse_args() -> argparse.Namespace:
         default="gold",
     )
     parser.add_argument(
+        "--data-quality-schema",
+        default="data_quality",
+    )
+    parser.add_argument(
         "--weather-provider",
         default="open_meteo",
     )
@@ -62,8 +71,33 @@ def parse_args() -> argparse.Namespace:
         default=6,
     )
     parser.add_argument(
-        "--rebuild-location-tract-mapping",
-        action="store_true",
+        "--lighting-definition-version",
+        default=LIGHTING_DEFINITION_VERSION,
+    )
+    parser.add_argument(
+        "--minimum-weather-coverage",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--minimum-lighting-coverage",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--minimum-acs-coverage",
+        "--minimum-socioeconomic-coverage",
+        dest="minimum_acs_coverage",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--minimum-tract-coverage",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--pipeline-run-id",
     )
 
     return parser.parse_args()
@@ -75,74 +109,55 @@ def run(
     catalog: str,
     silver_schema: str,
     gold_schema: str,
+    data_quality_schema: str,
     weather_provider: str,
     weather_model: str,
     weather_h3_resolution: int,
-    rebuild_location_tract_mapping: bool,
+    lighting_definition_version: str = (LIGHTING_DEFINITION_VERSION),
+    minimum_weather_coverage: float = 0.0,
+    minimum_lighting_coverage: float = 0.0,
+    minimum_acs_coverage: float = 0.0,
+    minimum_tract_coverage: float = 0.0,
+    pipeline_run_id: str | None = None,
 ) -> None:
     if not 0 <= weather_h3_resolution <= 15:
-        raise ValueError(
-            "H3 resolution must be between 0 and 15."
-        )
+        raise ValueError("H3 resolution must be between 0 and 15.")
+    run_id = resolve_pipeline_run_id(pipeline_run_id)
 
     tables = FeatureTables.from_schemas(
         catalog=catalog,
         silver_schema=silver_schema,
         gold_schema=gold_schema,
     )
-
-    crime_dataframe = spark.table(
-        tables.crime
-    )
-    calendar_dataframe = spark.table(
-        tables.calendar
-    )
-    boundary_dataframe = spark.table(
-        tables.boundaries
-    )
-    socioeconomic_dataframe = spark.table(
-        tables.socioeconomic
-    )
-    weather_dataframe = spark.table(
-        tables.weather
-    )
-    lighting_dataframe = spark.table(
-        tables.lighting
-    )
-    validate_boundary_inputs(
-        calendar_dataframe,
-        boundary_dataframe,
+    quality_results_table = f"{catalog}.{data_quality_schema}.quality_results"
+    coverage_thresholds = GoldCoverageThresholds(
+        weather=minimum_weather_coverage,
+        lighting=minimum_lighting_coverage,
+        socioeconomic=(minimum_acs_coverage),
+        tract=minimum_tract_coverage,
     )
 
-    calendar_ranges = build_calendar_ranges(
-        calendar_dataframe
+    crime_dataframe = spark.table(tables.crime)
+    calendar_dataframe = spark.table(tables.calendar)
+    socioeconomic_dataframe = spark.table(tables.socioeconomic)
+    weather_dataframe = spark.table(tables.weather)
+    lighting_dataframe = spark.table(tables.lighting)
+    location_mapping_dataframe = spark.table(tables.location_tract_mapping)
+
+    calendar_ranges = build_calendar_ranges(calendar_dataframe)
+
+    crime_prepared = prepare_crimes(crime_dataframe)
+
+    crime_with_calendar = attach_eligible_acs_vintage(
+        crime_prepared,
+        calendar_ranges,
     )
 
-    crime_prepared = prepare_crimes(
-        crime_dataframe
-    )
+    candidate_locations = extract_unique_locations(crime_with_calendar)
 
-    crime_with_calendar = (
-        attach_eligible_acs_vintage(
-            crime_prepared,
-            calendar_ranges,
-        )
-    )
-
-    candidate_locations = extract_unique_locations(
-        crime_with_calendar
-    )
-
-    location_mapping = materialize_location_mapping(
-        spark,
-        candidate_locations=candidate_locations,
-        boundary_dataframe=boundary_dataframe,
-        target_table=(
-            tables.location_tract_mapping
-        ),
-        rebuild=(
-            rebuild_location_tract_mapping
-        ),
+    location_mapping = build_location_mapping_lookup(
+        candidate_locations,
+        location_mapping_dataframe,
     )
 
     crime_with_tract = attach_tracts(
@@ -150,21 +165,19 @@ def run(
         location_mapping,
     )
 
-    crime_with_socioeconomic = (
-        attach_socioeconomic_features(
-            crime_with_tract,
-            socioeconomic_dataframe,
-        )
+    crime_with_socioeconomic = attach_socioeconomic_features(
+        crime_with_tract,
+        socioeconomic_dataframe,
     )
-        
+
     lighting_lookup = build_lighting_lookup(
-        lighting_dataframe
+        lighting_dataframe,
+        definition_version=(lighting_definition_version),
     )
-    crime_with_lighting = (
-        attach_lighting_features(
-            crime_with_socioeconomic, 
-            lighting_lookup
-        )
+    crime_with_lighting = attach_lighting_features(
+        crime_with_socioeconomic,
+        lighting_lookup,
+        definition_version=(lighting_definition_version),
     )
     weather_lookup = build_weather_lookup(
         crime_prepared,
@@ -179,56 +192,35 @@ def run(
         weather_lookup,
     )
 
-    (
-        crime_features.write
-        .format("delta")
-        .mode("overwrite")
-        .option("overwriteSchema", "true")
-        .saveAsTable(
-            tables.features
-        )
+    metrics = materialize_gold_features(
+        spark,
+        source_dataframe=crime_prepared,
+        candidate_dataframe=crime_features,
+        target_table=tables.features,
+        thresholds=coverage_thresholds,
+        lighting_definition_version=(lighting_definition_version),
+        pipeline_run_id=run_id,
+        quality_results_table=quality_results_table,
     )
-
-    materialized_features = spark.table(
-        tables.features
-    )
-
-    source_count = crime_dataframe.count()
-
-    metrics = log_coverage_metrics(
-        materialized_features
-    )
-
-    final_count = metrics["final_rows"]
-
-    if source_count != final_count:
-        raise RuntimeError(
-            "Crime feature build changed row cardinality: "
-            f"source={source_count}, "
-            f"final={final_count}."
-        )
 
     LOGGER.info(
-        "Successfully materialized %s",
-        tables.features,
+        "Successfully materialized Gold crime features",
+        pipeline_run_id=run_id,
+        target_table=tables.features,
+        output_count=metrics.get("final_rows"),
+        weather_coverage=metrics.get("weather_match_rate"),
+        lighting_coverage=metrics.get("lighting_match_rate"),
+        tract_coverage=metrics.get("tract_match_rate"),
+        acs_coverage=metrics.get("socioeconomic_match_rate"),
+        promotion_status="promoted",
     )
 
 
 def main() -> None:
     args = parse_args()
+    pipeline_run_id = resolve_pipeline_run_id(args.pipeline_run_id)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format=(
-            "%(asctime)s %(levelname)s "
-            "%(name)s - %(message)s"
-        ),
-    )
-
-    spark = (
-        SparkSession.getActiveSession()
-        or SparkSession.builder.getOrCreate()
-    )
+    spark = SparkSession.getActiveSession() or SparkSession.builder.getOrCreate()
     spark.conf.set(
         "spark.sql.session.timeZone",
         "UTC",
@@ -238,14 +230,16 @@ def main() -> None:
         catalog=args.catalog,
         silver_schema=args.silver_schema,
         gold_schema=args.gold_schema,
+        data_quality_schema=args.data_quality_schema,
         weather_provider=args.weather_provider,
         weather_model=args.weather_model,
-        weather_h3_resolution=(
-            args.weather_h3_resolution
-        ),
-        rebuild_location_tract_mapping=(
-            args.rebuild_location_tract_mapping
-        ),
+        weather_h3_resolution=(args.weather_h3_resolution),
+        lighting_definition_version=(args.lighting_definition_version),
+        minimum_weather_coverage=(args.minimum_weather_coverage),
+        minimum_lighting_coverage=(args.minimum_lighting_coverage),
+        minimum_acs_coverage=(args.minimum_acs_coverage),
+        minimum_tract_coverage=(args.minimum_tract_coverage),
+        pipeline_run_id=pipeline_run_id,
     )
 
 
