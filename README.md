@@ -728,9 +728,6 @@ It is not designed to:
 - Support person-level surveillance
 - Make automated policing decisions
 - Replace human review or public-policy analysis
-
-Crime data reflects reporting behavior, enforcement patterns, administrative practices, missing records, and historical bias. Model outputs must therefore be interpreted as estimates derived from recorded incidents, not objective measurements of community behavior or individual risk.
-
 ---
 
 ## Documentation
