@@ -1,6 +1,6 @@
 bundle:
   name: crimenet
-  databricks_cli_version: ">=0.218.0"
+  databricks_cli_version: ">=1.9.0"
 
 include:
   - resources/jobs/*.yml
@@ -8,7 +8,7 @@ include:
 
 variables:
   catalog:
-    description: Unity Catalog catalog for the deployment target
+    description: Unity Catalog catalog receiving tables and pipeline state
 
   bronze_schema:
     description: Bronze table schema
@@ -23,26 +23,32 @@ variables:
     default: gold
 
   ops_schema:
-    description: Operational metadata schema
+    description: Operational metadata and state schema
     default: ops
 
   data_quality_schema:
     description: Data-quality and quarantine schema
     default: data_quality
 
-  raw_files_schema:
-    description: Schema containing raw-file volumes
-    default: raw_files
+  integration_test_schema:
+    description: Schema containing staging integration-test tables
+    default: integration_test
 
-  landing_volume:
-    description: Volume containing downloaded source files
-    default: landing
+  raw_landing_path:
+    description: Shared read-only raw landing volume
+    default: /Volumes/crimenet_dev/raw_files/landing
 
   autoloader_schemas_volume:
+    description: Target-specific Auto Loader schema state volume
     default: autoloader_schemas
 
   checkpoints_volume:
+    description: Target-specific checkpoint volume
     default: checkpoints
+
+  test_fixtures_volume:
+    description: Staging volume receiving CI integration-test fixtures
+    default: test_fixtures
 
 artifacts:
   default:
@@ -51,7 +57,5 @@ artifacts:
     build: uv build
 
 sync:
-  exclude:
-    - tests/**
-    - docs/**
-    - notebooks/**
+  paths:
+    - src
