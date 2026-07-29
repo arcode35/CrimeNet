@@ -44,11 +44,108 @@ variables:
   checkpoints_volume:
     default: checkpoints
 
+  preflight_mode:
+    description: Create and validate infrastructure, or validate pre-provisioned infrastructure
+    default: create
+
+  census_secret_scope:
+    description: Optional Databricks secret scope containing a Census API key
+    default: ""
+
+  census_api_key_secret:
+    description: Optional key name in census_secret_scope
+    default: ""
+
+  production_service_principal_name:
+    description: Application ID used as the production run identity
+
+  acs_start_vintage:
+    default: 2012
+
+  acs_end_vintage:
+    default: 2024
+
+  minimum_acs_tracts_per_vintage:
+    description: Minimum Census tract rows required before landing a vintage
+    default: 1
+
+  state_fips:
+    default: "48"
+
+  weather_model:
+    default: era5_land
+
+  weather_h3_resolution:
+    default: 6
+
+  weather_hourly_variables:
+    default: temperature_2m
+
+  open_meteo_archive_url:
+    default: https://archive-api.open-meteo.com/v1/archive
+
+  weather_max_concurrent_requests:
+    default: 1
+
+  weather_minimum_request_interval_seconds:
+    default: 0.0
+
+  lighting_definition_version:
+    default: solar_elevation_twilight_v1
+
+  boundary_definition_version:
+    default: tiger_line_tract_wgs84_v1
+
+  mapping_definition_version:
+    default: tract_point_in_polygon_v1
+
+  minimum_tiger_tracts_per_vintage:
+    description: Minimum valid TIGER/Line tract rows required for each vintage
+    default: 5000
+
+  maximum_boundary_quarantine_records:
+    description: Maximum rejected TIGER/Line records allowed before blocking
+    default: 0
+
+  maximum_ambiguous_spatial_matches:
+    description: Maximum ambiguous location-to-tract matches allowed before blocking
+    default: 0
+
+  minimum_silver_to_bronze_ratio:
+    default: 0.0
+
+  maximum_silver_to_bronze_ratio:
+    default: 1.05
+
+  maximum_coordinate_null_rate:
+    default: 1.0
+
+  maximum_quarantine_rate:
+    default: 1.0
+
+  minimum_weather_coverage:
+    default: 0.0
+
+  minimum_lighting_coverage:
+    default: 0.0
+
+  minimum_acs_coverage:
+    default: 0.0
+
+  minimum_tract_coverage:
+    default: 0.0
+
+  maximum_invalid_location_rate:
+    default: 1.0
+
+  maximum_unmatched_location_rate:
+    default: 1.0
+
 artifacts:
   default:
     type: whl
     path: .
-    build: uv build
+    build: uv build --wheel --clear
 
 sync:
   exclude:

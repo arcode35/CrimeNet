@@ -1,18 +1,54 @@
 resources:
   jobs:
     crime_pipeline:
-      name: CrimeNet crime-data pipeline
+      name: CrimeNet end-to-end data pipeline
       description: >
-        Ingests Dallas, Houston, and Fort Worth crime data into Bronze,
-        standardizes the sources into Silver, validates quality, and refreshes
-        Gold tables.
+        Bootstraps managed prerequisites; ingests and standardizes municipal
+        crime, ACS, TIGER/Line, and Open-Meteo data; computes lighting and
+        spatial mappings; validates each rebuild; and promotes Gold features.
 
       max_concurrent_runs: 1
 
       tasks:
-        - task_key: bronze_dallas
+        - task_key: preflight
           environment_key: default
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: crimenet_preflight
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --bronze-schema
+              - ${var.bronze_schema}
+              - --silver-schema
+              - ${var.silver_schema}
+              - --gold-schema
+              - ${var.gold_schema}
+              - --ops-schema
+              - ${var.ops_schema}
+              - --data-quality-schema
+              - ${var.data_quality_schema}
+              - --raw-files-schema
+              - ${var.raw_files_schema}
+              - --landing-volume
+              - ${var.landing_volume}
+              - --autoloader-schemas-volume
+              - ${var.autoloader_schemas_volume}
+              - --checkpoints-volume
+              - ${var.checkpoints_volume}
+              - --preflight-mode
+              - ${var.preflight_mode}
+              - --secret-scope
+              - ${var.census_secret_scope}
+              - --census-api-key-secret
+              - ${var.census_api_key_secret}
+              - --pipeline-run-id
+              - "{{job.run_id}}"
 
+        - task_key: bronze_dallas
+          depends_on:
+            - task_key: preflight
+          environment_key: default
           python_wheel_task:
             package_name: crimenet
             entry_point: bronze_ingestion
@@ -21,17 +57,21 @@ resources:
               - ${var.catalog}
               - --bronze-schema
               - ${var.bronze_schema}
-              - --city
+              - --source
               - dallas
               - --input-path
               - /Volumes/${var.catalog}/${var.raw_files_schema}/${var.landing_volume}/dallas
-
+              - --write-mode
+              - merge
+              - --pipeline-run-id
+              - "{{job.run_id}}"
           max_retries: 2
           min_retry_interval_millis: 60000
 
         - task_key: bronze_houston
+          depends_on:
+            - task_key: preflight
           environment_key: default
-
           python_wheel_task:
             package_name: crimenet
             entry_point: bronze_ingestion
@@ -40,17 +80,21 @@ resources:
               - ${var.catalog}
               - --bronze-schema
               - ${var.bronze_schema}
-              - --city
+              - --source
               - houston
               - --input-path
               - /Volumes/${var.catalog}/${var.raw_files_schema}/${var.landing_volume}/houston
-
+              - --write-mode
+              - merge
+              - --pipeline-run-id
+              - "{{job.run_id}}"
           max_retries: 2
           min_retry_interval_millis: 60000
 
         - task_key: bronze_fort_worth
+          depends_on:
+            - task_key: preflight
           environment_key: default
-
           python_wheel_task:
             package_name: crimenet
             entry_point: bronze_ingestion
@@ -59,22 +103,23 @@ resources:
               - ${var.catalog}
               - --bronze-schema
               - ${var.bronze_schema}
-              - --city
+              - --source
               - fort_worth
               - --input-path
               - /Volumes/${var.catalog}/${var.raw_files_schema}/${var.landing_volume}/fort_worth
-
+              - --write-mode
+              - merge
+              - --pipeline-run-id
+              - "{{job.run_id}}"
           max_retries: 2
           min_retry_interval_millis: 60000
 
-        - task_key: silver_transform
-          environment_key: default
-
+        - task_key: silver_crime
           depends_on:
             - task_key: bronze_dallas
             - task_key: bronze_houston
             - task_key: bronze_fort_worth
-
+          environment_key: default
           python_wheel_task:
             package_name: crimenet
             entry_point: silver_transform
@@ -87,19 +132,166 @@ resources:
               - ${var.silver_schema}
               - --data-quality-schema
               - ${var.data_quality_schema}
-
+              - --pipeline-run-id
+              - "{{job.run_id}}"
+              - --minimum-silver-to-bronze-ratio
+              - ${var.minimum_silver_to_bronze_ratio}
+              - --maximum-silver-to-bronze-ratio
+              - ${var.maximum_silver_to_bronze_ratio}
+              - --maximum-coordinate-null-rate
+              - ${var.maximum_coordinate_null_rate}
+              - --maximum-quarantine-rate
+              - ${var.maximum_quarantine_rate}
           max_retries: 1
           min_retry_interval_millis: 60000
 
-        - task_key: quality_checks
-          environment_key: default
-
+        - task_key: crime_quality_checks
           depends_on:
-            - task_key: silver_transform
-
+            - task_key: silver_crime
+          environment_key: default
           python_wheel_task:
             package_name: crimenet
             entry_point: quality_checks
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --bronze-schema
+              - ${var.bronze_schema}
+              - --silver-schema
+              - ${var.silver_schema}
+              - --data-quality-schema
+              - ${var.data_quality_schema}
+              - --pipeline-run-id
+              - "{{job.run_id}}"
+              - --minimum-silver-to-bronze-ratio
+              - ${var.minimum_silver_to_bronze_ratio}
+              - --maximum-silver-to-bronze-ratio
+              - ${var.maximum_silver_to_bronze_ratio}
+              - --maximum-coordinate-null-rate
+              - ${var.maximum_coordinate_null_rate}
+              - --maximum-quarantine-rate
+              - ${var.maximum_quarantine_rate}
+
+        - task_key: weather_request_plan
+          depends_on:
+            - task_key: crime_quality_checks
+          environment_key: default
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: weather_request_planner
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --silver-schema
+              - ${var.silver_schema}
+              - --ops-schema
+              - ${var.ops_schema}
+              - --model
+              - ${var.weather_model}
+              - --h3-resolution
+              - ${var.weather_h3_resolution}
+              - --hourly-variables
+              - ${var.weather_hourly_variables}
+              - --pipeline-run-id
+              - "{{job.run_id}}"
+
+        - task_key: weather_api_retrieval
+          depends_on:
+            - task_key: weather_request_plan
+          environment_key: default
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: weather_retrieval
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --ops-schema
+              - ${var.ops_schema}
+              - --cache-directory
+              - /Volumes/${var.catalog}/${var.raw_files_schema}/${var.landing_volume}/weather/open_meteo
+              - --archive-url
+              - ${var.open_meteo_archive_url}
+              - --max-concurrent-requests
+              - ${var.weather_max_concurrent_requests}
+              - --minimum-request-interval-seconds
+              - ${var.weather_minimum_request_interval_seconds}
+              - --pipeline-run-id
+              - "{{job.run_id}}"
+          max_retries: 2
+          min_retry_interval_millis: 120000
+
+        - task_key: bronze_open_meteo_weather
+          depends_on:
+            - task_key: weather_api_retrieval
+          environment_key: default
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: bronze_ingestion
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --bronze-schema
+              - ${var.bronze_schema}
+              - --source
+              - open_meteo_weather
+              - --input-path
+              - /Volumes/${var.catalog}/${var.raw_files_schema}/${var.landing_volume}/weather/open_meteo
+              - --schema-path
+              - /Volumes/${var.catalog}/${var.ops_schema}/${var.autoloader_schemas_volume}/open_meteo_weather
+              - --checkpoint-path
+              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/bronze/open_meteo_weather
+              - --write-mode
+              - merge
+              - --pipeline-run-id
+              - "{{job.run_id}}"
+
+        - task_key: silver_weather_hourly
+          depends_on:
+            - task_key: bronze_open_meteo_weather
+          environment_key: default
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: silver_weather
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --bronze-schema
+              - ${var.bronze_schema}
+              - --silver-schema
+              - ${var.silver_schema}
+              - --data-quality-schema
+              - ${var.data_quality_schema}
+              - --checkpoint-path
+              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/silver/weather_hourly
+              - --pipeline-run-id
+              - "{{job.run_id}}"
+
+        - task_key: acs_vintage_calendar
+          depends_on:
+            - task_key: preflight
+          environment_key: default
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: acs_vintage_calendar
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --silver-schema
+              - ${var.silver_schema}
+              - --start-vintage
+              - ${var.acs_start_vintage}
+              - --end-vintage
+              - ${var.acs_end_vintage}
+              - --pipeline-run-id
+              - "{{job.run_id}}"
+
+        - task_key: tiger_line_boundaries
+          depends_on:
+            - task_key: acs_vintage_calendar
+          environment_key: default
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: tiger_line_boundaries
             parameters:
               - --catalog
               - ${var.catalog}
@@ -107,184 +299,187 @@ resources:
               - ${var.silver_schema}
               - --data-quality-schema
               - ${var.data_quality_schema}
-        - task_key: bronze_open_meteo_weather
-          environment_key: default
-
-          python_wheel_task:
-            package_name: crimenet
-            entry_point: bronze_ingestion
-            parameters:
-              - --catalog
-              - ${var.catalog}
-
-              - --bronze-schema
-              - ${var.bronze_schema}
-
-              - --source
-              - open_meteo_weather
-
-              - --input-path
-              - /Volumes/${var.catalog}/${var.raw_files_schema}/${var.landing_volume}/weather/open_meteo
-
-              - --schema-path
-              - /Volumes/${var.catalog}/${var.ops_schema}/${var.autoloader_schemas_volume}/open_meteo_weather
-
-              - --checkpoint-path
-              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/open_meteo_weather
-
-              - --write-mode
-              - append
-        - task_key: silver_weather_hourly
-
-          depends_on:
-            - task_key: bronze_open_meteo_weather
-
-          environment_key: default
-
-          python_wheel_task:
-            package_name: crimenet
-            entry_point: silver_weather
-            parameters:
-              - --catalog
-              - ${var.catalog}
-
-              - --bronze-schema
-              - ${var.bronze_schema}
-
-              - --silver-schema
-              - ${var.silver_schema}
-
-              - --checkpoint-path
-              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/silver/weather_hourly
-        - task_key: gold_crime_features
-          environment_key: default
-
-          depends_on:
-            - task_key: quality_checks
-            - task_key: silver_weather_hourly
-            - task_key: silver_acs5_tracts
-            - task_key: silver_lighting_conditions
-
-          python_wheel_task:
-            package_name: crimenet
-            entry_point: gold_crime_features
-            parameters:
-              - --catalog
-              - ${var.catalog}
-
-              - --silver-schema
-              - ${var.silver_schema}
-
-              - --gold-schema
-              - ${var.gold_schema}
-
-              - --weather-provider
-              - open_meteo
-
-              - --weather-model
-              - era5_land
-
-              - --weather-h3-resolution
-              - "6"
-
-          max_retries: 1
+              - --landing-path
+              - /Volumes/${var.catalog}/${var.raw_files_schema}/${var.landing_volume}/boundaries/tiger_line
+              - --state-fips
+              - ${var.state_fips}
+              - --boundary-definition-version
+              - ${var.boundary_definition_version}
+              - --minimum-tracts-per-vintage
+              - ${var.minimum_tiger_tracts_per_vintage}
+              - --maximum-quarantine-records
+              - ${var.maximum_boundary_quarantine_records}
+              - --pipeline-run-id
+              - "{{job.run_id}}"
+          max_retries: 2
           min_retry_interval_millis: 120000
-        - task_key: land_acs5_tracts
-          environment_key: default
 
+        - task_key: land_acs5_tracts
+          depends_on:
+            - task_key: preflight
+          environment_key: default
           python_wheel_task:
             package_name: crimenet
             entry_point: acs5_landing
             parameters:
               - --landing-path
               - /Volumes/${var.catalog}/${var.raw_files_schema}/${var.landing_volume}/socioeconomic
-
               - --start-vintage
-              - "2012"
-
+              - ${var.acs_start_vintage}
               - --end-vintage
-              - "2024"
-
+              - ${var.acs_end_vintage}
               - --state-fips
-              - "48"
+              - ${var.state_fips}
+              - --minimum-tract-records
+              - ${var.minimum_acs_tracts_per_vintage}
+              - --secret-scope
+              - ${var.census_secret_scope}
+              - --api-key-secret
+              - ${var.census_api_key_secret}
+              - --pipeline-run-id
+              - "{{job.run_id}}"
 
         - task_key: bronze_acs5_tracts
-
           depends_on:
             - task_key: land_acs5_tracts
-
           environment_key: default
-
           python_wheel_task:
             package_name: crimenet
             entry_point: bronze_ingestion
             parameters:
               - --catalog
               - ${var.catalog}
-
               - --bronze-schema
               - ${var.bronze_schema}
-
               - --source
               - acs5_tract
-
               - --input-path
               - /Volumes/${var.catalog}/${var.raw_files_schema}/${var.landing_volume}/socioeconomic/acs5/tract
-
               - --schema-path
               - /Volumes/${var.catalog}/${var.ops_schema}/${var.autoloader_schemas_volume}/acs5_tract
-
               - --checkpoint-path
               - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/bronze/acs5_tract
-
               - --write-mode
-              - append
+              - merge
+              - --pipeline-run-id
+              - "{{job.run_id}}"
+
         - task_key: silver_acs5_tracts
           depends_on:
             - task_key: bronze_acs5_tracts
-
           environment_key: default
-
           python_wheel_task:
             package_name: crimenet
             entry_point: silver_socioeconomic
             parameters:
               - --catalog
               - ${var.catalog}
-
               - --bronze-schema
               - ${var.bronze_schema}
-
               - --silver-schema
               - ${var.silver_schema}
-
+              - --data-quality-schema
+              - ${var.data_quality_schema}
               - --checkpoint-path
               - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/silver/acs5_tract
-
+              - --pipeline-run-id
+              - "{{job.run_id}}"
           max_retries: 1
           min_retry_interval_millis: 60000
+
         - task_key: silver_lighting_conditions
-          environment_key: default
-
           depends_on:
-            - task_key: silver_transform
-
+            - task_key: crime_quality_checks
+          environment_key: default
           python_wheel_task:
             package_name: crimenet
             entry_point: silver_lighting
             parameters:
               - --catalog
               - ${var.catalog}
-
               - --silver-schema
               - ${var.silver_schema}
-
+              - --lighting-definition-version
+              - ${var.lighting_definition_version}
+              - --pipeline-run-id
+              - "{{job.run_id}}"
           max_retries: 1
           min_retry_interval_millis: 60000
+
+        - task_key: location_tract_mapping
+          depends_on:
+            - task_key: crime_quality_checks
+            - task_key: acs_vintage_calendar
+            - task_key: tiger_line_boundaries
+          environment_key: default
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: location_tract_mapping
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --silver-schema
+              - ${var.silver_schema}
+              - --data-quality-schema
+              - ${var.data_quality_schema}
+              - --boundary-definition-version
+              - ${var.boundary_definition_version}
+              - --mapping-definition-version
+              - ${var.mapping_definition_version}
+              - --maximum-invalid-location-rate
+              - ${var.maximum_invalid_location_rate}
+              - --maximum-unmatched-rate
+              - ${var.maximum_unmatched_location_rate}
+              - --maximum-ambiguous-matches
+              - ${var.maximum_ambiguous_spatial_matches}
+              - --pipeline-run-id
+              - "{{job.run_id}}"
+
+        - task_key: gold_crime_features
+          depends_on:
+            - task_key: crime_quality_checks
+            - task_key: silver_weather_hourly
+            - task_key: silver_acs5_tracts
+            - task_key: silver_lighting_conditions
+            - task_key: location_tract_mapping
+          environment_key: default
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: gold_crime_features
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --silver-schema
+              - ${var.silver_schema}
+              - --gold-schema
+              - ${var.gold_schema}
+              - --data-quality-schema
+              - ${var.data_quality_schema}
+              - --weather-provider
+              - open_meteo
+              - --weather-model
+              - ${var.weather_model}
+              - --weather-h3-resolution
+              - ${var.weather_h3_resolution}
+              - --lighting-definition-version
+              - ${var.lighting_definition_version}
+              - --minimum-weather-coverage
+              - ${var.minimum_weather_coverage}
+              - --minimum-lighting-coverage
+              - ${var.minimum_lighting_coverage}
+              - --minimum-acs-coverage
+              - ${var.minimum_acs_coverage}
+              - --minimum-tract-coverage
+              - ${var.minimum_tract_coverage}
+              - --pipeline-run-id
+              - "{{job.run_id}}"
+          max_retries: 1
+          min_retry_interval_millis: 120000
+
       environments:
         - environment_key: default
           spec:
             environment_version: "4"
             dependencies:
               - ../../dist/*.whl
-              - pvlib==0.15.2
+              - -r /Workspace/${workspace.file_path}/requirements-prod.txt

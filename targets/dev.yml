@@ -4,7 +4,22 @@ targets:
     mode: development
 
     workspace:
-      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
 
     variables:
       catalog: crimenet_dev
+      preflight_mode: create
+      minimum_acs_tracts_per_vintage: 1
+      minimum_tiger_tracts_per_vintage: 1
+      maximum_boundary_quarantine_records: 1000000
+      maximum_ambiguous_spatial_matches: 0
+      minimum_silver_to_bronze_ratio: 0.0
+      maximum_silver_to_bronze_ratio: 1.05
+      maximum_coordinate_null_rate: 1.0
+      maximum_quarantine_rate: 1.0
+      minimum_weather_coverage: 0.0
+      minimum_lighting_coverage: 0.0
+      minimum_acs_coverage: 0.0
+      minimum_tract_coverage: 0.0
+      maximum_invalid_location_rate: 1.0
+      maximum_unmatched_location_rate: 1.0

@@ -10,11 +10,25 @@ targets:
 
     variables:
       catalog: crimenet_prod
+      preflight_mode: validate
+      minimum_acs_tracts_per_vintage: 5000
+      minimum_tiger_tracts_per_vintage: 5000
+      maximum_boundary_quarantine_records: 0
+      maximum_ambiguous_spatial_matches: 0
+      minimum_silver_to_bronze_ratio: 0.50
+      maximum_silver_to_bronze_ratio: 1.01
+      maximum_coordinate_null_rate: 0.50
+      maximum_quarantine_rate: 0.05
+      minimum_weather_coverage: 0.90
+      minimum_lighting_coverage: 0.95
+      minimum_acs_coverage: 0.80
+      minimum_tract_coverage: 0.90
+      maximum_invalid_location_rate: 0.50
+      maximum_unmatched_location_rate: 0.10
 
-    # Replace this with a service principal before production deployment.
     run_as:
-      user_name: ${workspace.current_user.userName}
+      service_principal_name: ${var.production_service_principal_name}
 
     permissions:
-      - user_name: ${workspace.current_user.userName}
+      - service_principal_name: ${var.production_service_principal_name}
         level: CAN_MANAGE
