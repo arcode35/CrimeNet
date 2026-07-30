@@ -7,6 +7,9 @@ include:
   - targets/*.yml
 
 variables:
+  existing_cluster_id:
+    description: "Existing development cluster ID"
+    default: 0729-235011-r3m0qs2q
   catalog:
     description: Unity Catalog catalog receiving tables and pipeline state
 

@@ -113,25 +113,6 @@ resources:
           max_retries: 1
           min_retry_interval_millis: 60000
 
-        - task_key: quality_checks
-          environment_key: default
-
-          depends_on:
-            - task_key: silver_transform
-
-          python_wheel_task:
-            package_name: crimenet
-            entry_point: quality_checks
-            parameters:
-              - --catalog
-              - ${var.catalog}
-
-              - --silver-schema
-              - ${var.silver_schema}
-
-              - --data-quality-schema
-              - ${var.data_quality_schema}
-
         # ============================================================
         # WEATHER
         # ============================================================
@@ -287,7 +268,6 @@ resources:
           environment_key: default
 
           depends_on:
-            - task_key: quality_checks
             - task_key: silver_weather_hourly
             - task_key: silver_acs5_tracts
             - task_key: silver_lighting_conditions
