@@ -74,3 +74,4 @@ derby.log
 
 # Local data exports
 *.parquet
+*.zip
