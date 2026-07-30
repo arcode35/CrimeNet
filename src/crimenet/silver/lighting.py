@@ -33,7 +33,8 @@ CENTER_SCHEMA = """
 
 LIGHTING_KEYS = (
     "weather_query_cell_id",
-    "solar_timestamp",
+    "solar_timestamp_hour",
+    "lighting_definition_version",
 )
 
 LIGHTING_DEFINITION_VERSION = (
@@ -48,7 +49,7 @@ OUTPUT_SCHEMA = StructType(
             False,
         ),
         StructField(
-            "solar_timestamp",
+            "solar_timestamp_hour",
             TimestampType(),
             False,
         ),
@@ -130,9 +131,7 @@ def extract_lighting_keys(
     crime_dataframe: DataFrame,
 ) -> DataFrame:
     valid_condition = (
-        F.col(
-            "weather_query_cell_id"
-        ).isNotNull()
+        F.col("weather_query_cell_id").isNotNull()
         & F.col("occurred_at").isNotNull()
     )
 
@@ -140,16 +139,16 @@ def extract_lighting_keys(
         crime_dataframe
         .filter(valid_condition)
         .select(
-            F.col(
-                "weather_query_cell_id"
-            ).cast("long"),
-            F.col("occurred_at").alias(
-                "solar_timestamp"
-            ),
+            F.col("weather_query_cell_id").cast("long"),
+            F.date_trunc(
+                "hour",
+                F.col("occurred_at"),
+            ).alias("solar_timestamp_hour"),
+            F.lit(
+                LIGHTING_DEFINITION_VERSION
+            ).alias("lighting_definition_version"),
         )
-        .dropDuplicates(
-            list(LIGHTING_KEYS)
-        )
+        .dropDuplicates(list(LIGHTING_KEYS))
     )
 
     return (
@@ -174,9 +173,7 @@ def extract_lighting_keys(
         .drop("_center")
         .filter(
             F.col("query_latitude").isNotNull()
-            & F.col(
-                "query_longitude"
-            ).isNotNull()
+            & F.col("query_longitude").isNotNull()
         )
     )
 
@@ -217,7 +214,7 @@ def calculate_solar_positions(
         ), group in grouped:
             timestamps = pd.DatetimeIndex(
                 pd.to_datetime(
-                    group["solar_timestamp"],
+                    group["solar_timestamp_hour"],
                     utc=True,
                 )
             )
@@ -316,7 +313,8 @@ def compute_lighting_conditions(
         )
         .sortWithinPartitions(
             "weather_query_cell_id",
-            "solar_timestamp",
+            "solar_timestamp_hour",
+            "lighting_definition_version",
         )
         .mapInPandas(
             calculate_solar_positions,

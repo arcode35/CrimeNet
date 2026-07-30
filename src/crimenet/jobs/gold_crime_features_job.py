@@ -21,7 +21,8 @@ from crimenet.gold.crime_features import (
     prepare_crimes,
     validate_boundary_inputs,
     attach_lighting_features,
-    build_lighting_lookup
+    build_lighting_lookup,
+    validate_crime_identities
 )
 
 
@@ -121,6 +122,8 @@ def run(
     crime_prepared = prepare_crimes(
         crime_dataframe
     )
+
+    validate_crime_identities(crime_prepared)
 
     crime_with_calendar = (
         attach_eligible_acs_vintage(

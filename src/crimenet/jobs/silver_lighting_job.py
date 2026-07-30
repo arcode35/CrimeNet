@@ -14,7 +14,6 @@ from crimenet.silver.lighting import (
 
 LOGGER = get_logger(__name__)
 
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -32,12 +31,9 @@ def parse_args() -> argparse.Namespace:
         default="silver",
     )
     parser.add_argument(
-        "--full-rebuild",
-        action="store_true",
-        help=(
-            "Recompute and overwrite the complete lighting "
-            "conditions table."
-        ),
+        "--mode",
+        choices=("incremental", "full"),
+        default="incremental",
     )
 
     return parser.parse_args()
@@ -84,11 +80,14 @@ def main() -> None:
         or SparkSession.builder.getOrCreate()
     )
 
+    full_rebuild = args.mode == "full"
+
     LOGGER.info(
         "Starting Silver lighting job",
         catalog=args.catalog,
         silver_schema=args.silver_schema,
-        full_rebuild=args.full_rebuild,
+        mode=args.mode,
+        full_rebuild=full_rebuild,
     )
 
     try:
@@ -96,14 +95,15 @@ def main() -> None:
             spark,
             catalog=args.catalog,
             silver_schema=args.silver_schema,
-            full_rebuild=args.full_rebuild,
+            full_rebuild=full_rebuild,
         )
     except Exception:
         LOGGER.exception(
             "Silver lighting job failed",
             catalog=args.catalog,
             silver_schema=args.silver_schema,
-            full_rebuild=args.full_rebuild,
+            mode=args.mode,
+            full_rebuild=full_rebuild,
         )
         raise
 
@@ -111,9 +111,9 @@ def main() -> None:
         "Silver lighting job completed",
         catalog=args.catalog,
         silver_schema=args.silver_schema,
-        full_rebuild=args.full_rebuild,
+        mode=args.mode,
+        full_rebuild=full_rebuild,
     )
-
 
 if __name__ == "__main__":
     main()

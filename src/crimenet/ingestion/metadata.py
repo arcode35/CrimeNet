@@ -16,7 +16,6 @@ DEFAULT_HASH_EXCLUSIONS = frozenset(
     }
 )
 
-
 def source_row_hash(
     dataframe: DataFrame,
     excluded_columns: Iterable[str] = DEFAULT_HASH_EXCLUSIONS,

@@ -1,15 +1,21 @@
 resources:
   jobs:
     crime_pipeline:
-      name: CrimeNet crime-data pipeline
+      name: ${bundle.target}-CrimeNet-crime-data-pipeline
+
       description: >
         Ingests Dallas, Houston, and Fort Worth crime data into Bronze,
-        standardizes the sources into Silver, validates quality, and refreshes
-        Gold tables.
+        standardizes the sources into Silver, validates quality, enriches the
+        canonical crime data with weather, socioeconomic, and lighting data,
+        and refreshes Gold feature tables.
 
       max_concurrent_runs: 1
 
       tasks:
+        # ============================================================
+        # CRIME BRONZE INGESTION
+        # ============================================================
+
         - task_key: bronze_dallas
           environment_key: default
 
@@ -19,12 +25,15 @@ resources:
             parameters:
               - --catalog
               - ${var.catalog}
+
               - --bronze-schema
               - ${var.bronze_schema}
-              - --city
+
+              - --source
               - dallas
+
               - --input-path
-              - /Volumes/${var.catalog}/${var.raw_files_schema}/${var.landing_volume}/dallas
+              - ${var.raw_landing_path}/dallas
 
           max_retries: 2
           min_retry_interval_millis: 60000
@@ -38,12 +47,15 @@ resources:
             parameters:
               - --catalog
               - ${var.catalog}
+
               - --bronze-schema
               - ${var.bronze_schema}
-              - --city
+
+              - --source
               - houston
+
               - --input-path
-              - /Volumes/${var.catalog}/${var.raw_files_schema}/${var.landing_volume}/houston
+              - ${var.raw_landing_path}/houston
 
           max_retries: 2
           min_retry_interval_millis: 60000
@@ -57,15 +69,22 @@ resources:
             parameters:
               - --catalog
               - ${var.catalog}
+
               - --bronze-schema
               - ${var.bronze_schema}
-              - --city
+
+              - --source
               - fort_worth
+
               - --input-path
-              - /Volumes/${var.catalog}/${var.raw_files_schema}/${var.landing_volume}/fort_worth
+              - ${var.raw_landing_path}/fort_worth
 
           max_retries: 2
           min_retry_interval_millis: 60000
+
+        # ============================================================
+        # CANONICAL CRIME SILVER
+        # ============================================================
 
         - task_key: silver_transform
           environment_key: default
@@ -81,32 +100,23 @@ resources:
             parameters:
               - --catalog
               - ${var.catalog}
+
               - --bronze-schema
               - ${var.bronze_schema}
+
               - --silver-schema
               - ${var.silver_schema}
+
               - --data-quality-schema
               - ${var.data_quality_schema}
 
           max_retries: 1
           min_retry_interval_millis: 60000
 
-        - task_key: quality_checks
-          environment_key: default
+        # ============================================================
+        # WEATHER
+        # ============================================================
 
-          depends_on:
-            - task_key: silver_transform
-
-          python_wheel_task:
-            package_name: crimenet
-            entry_point: quality_checks
-            parameters:
-              - --catalog
-              - ${var.catalog}
-              - --silver-schema
-              - ${var.silver_schema}
-              - --data-quality-schema
-              - ${var.data_quality_schema}
         - task_key: bronze_open_meteo_weather
           environment_key: default
 
@@ -124,22 +134,25 @@ resources:
               - open_meteo_weather
 
               - --input-path
-              - /Volumes/${var.catalog}/${var.raw_files_schema}/${var.landing_volume}/weather/open_meteo
+              - ${var.raw_landing_path}/weather/open_meteo
 
               - --schema-path
               - /Volumes/${var.catalog}/${var.ops_schema}/${var.autoloader_schemas_volume}/open_meteo_weather
 
               - --checkpoint-path
-              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/open_meteo_weather
+              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/bronze/open_meteo_weather
 
               - --write-mode
               - append
+
+          max_retries: 2
+          min_retry_interval_millis: 60000
+
         - task_key: silver_weather_hourly
+          environment_key: default
 
           depends_on:
             - task_key: bronze_open_meteo_weather
-
-          environment_key: default
 
           python_wheel_task:
             package_name: crimenet
@@ -156,11 +169,105 @@ resources:
 
               - --checkpoint-path
               - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/silver/weather_hourly
+
+          max_retries: 1
+          min_retry_interval_millis: 60000
+
+        # ============================================================
+        # ACS 5-YEAR SOCIOECONOMIC DATA
+        #
+        # Source acquisition is intentionally excluded from this job.
+        # The raw ACS files must already exist in the shared landing
+        # volume before staging or production runs.
+        # ============================================================
+
+        - task_key: bronze_acs5_tracts
+          environment_key: default
+
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: bronze_ingestion
+            parameters:
+              - --catalog
+              - ${var.catalog}
+
+              - --bronze-schema
+              - ${var.bronze_schema}
+
+              - --source
+              - acs5_tract
+
+              - --input-path
+              - ${var.raw_landing_path}/socioeconomic/acs5/tract
+
+              - --schema-path
+              - /Volumes/${var.catalog}/${var.ops_schema}/${var.autoloader_schemas_volume}/acs5_tract
+
+              - --checkpoint-path
+              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/bronze/acs5_tract
+
+              - --write-mode
+              - append
+
+          max_retries: 2
+          min_retry_interval_millis: 60000
+
+        - task_key: silver_acs5_tracts
+          environment_key: default
+
+          depends_on:
+            - task_key: bronze_acs5_tracts
+
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: silver_socioeconomic
+            parameters:
+              - --catalog
+              - ${var.catalog}
+
+              - --bronze-schema
+              - ${var.bronze_schema}
+
+              - --silver-schema
+              - ${var.silver_schema}
+
+              - --checkpoint-path
+              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/silver/acs5_tract
+
+          max_retries: 1
+          min_retry_interval_millis: 60000
+
+        # ============================================================
+        # LIGHTING CONDITIONS
+        # ============================================================
+
+        - task_key: silver_lighting_conditions
+          environment_key: default
+
+          depends_on:
+            - task_key: silver_transform
+
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: silver_lighting
+            parameters:
+              - --catalog
+              - ${var.catalog}
+
+              - --silver-schema
+              - ${var.silver_schema}
+
+          max_retries: 1
+          min_retry_interval_millis: 60000
+
+        # ============================================================
+        # GOLD FEATURE TABLE
+        # ============================================================
+
         - task_key: gold_crime_features
           environment_key: default
 
           depends_on:
-            - task_key: quality_checks
             - task_key: silver_weather_hourly
             - task_key: silver_acs5_tracts
             - task_key: silver_lighting_conditions
@@ -189,98 +296,7 @@ resources:
 
           max_retries: 1
           min_retry_interval_millis: 120000
-        - task_key: land_acs5_tracts
-          environment_key: default
 
-          python_wheel_task:
-            package_name: crimenet
-            entry_point: acs5_landing
-            parameters:
-              - --landing-path
-              - /Volumes/${var.catalog}/${var.raw_files_schema}/${var.landing_volume}/socioeconomic
-
-              - --start-vintage
-              - "2012"
-
-              - --end-vintage
-              - "2024"
-
-              - --state-fips
-              - "48"
-
-        - task_key: bronze_acs5_tracts
-
-          depends_on:
-            - task_key: land_acs5_tracts
-
-          environment_key: default
-
-          python_wheel_task:
-            package_name: crimenet
-            entry_point: bronze_ingestion
-            parameters:
-              - --catalog
-              - ${var.catalog}
-
-              - --bronze-schema
-              - ${var.bronze_schema}
-
-              - --source
-              - acs5_tract
-
-              - --input-path
-              - /Volumes/${var.catalog}/${var.raw_files_schema}/${var.landing_volume}/socioeconomic/acs5/tract
-
-              - --schema-path
-              - /Volumes/${var.catalog}/${var.ops_schema}/${var.autoloader_schemas_volume}/acs5_tract
-
-              - --checkpoint-path
-              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/bronze/acs5_tract
-
-              - --write-mode
-              - append
-        - task_key: silver_acs5_tracts
-          depends_on:
-            - task_key: bronze_acs5_tracts
-
-          environment_key: default
-
-          python_wheel_task:
-            package_name: crimenet
-            entry_point: silver_socioeconomic
-            parameters:
-              - --catalog
-              - ${var.catalog}
-
-              - --bronze-schema
-              - ${var.bronze_schema}
-
-              - --silver-schema
-              - ${var.silver_schema}
-
-              - --checkpoint-path
-              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/silver/acs5_tract
-
-          max_retries: 1
-          min_retry_interval_millis: 60000
-        - task_key: silver_lighting_conditions
-          environment_key: default
-
-          depends_on:
-            - task_key: silver_transform
-
-          python_wheel_task:
-            package_name: crimenet
-            entry_point: silver_lighting
-            parameters:
-              - --catalog
-              - ${var.catalog}
-
-              - --silver-schema
-              - ${var.silver_schema}
-
-          max_retries: 1
-          min_retry_interval_millis: 60000
       environments:
         - environment_key: default
           spec:

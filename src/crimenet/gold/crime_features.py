@@ -11,20 +11,11 @@ from pyspark.databricks.sql import functions as dbf
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
+from crimenet.contracts.lighting import LIGHTING_DEFINITION_VERSION, LIGHTING_KEYS
+from crimenet.contracts.socioeconomic import LOCATION_KEYS
+from crimenet.contracts.weather import WEATHER_KEYS
 
 LOGGER = logging.getLogger(__name__)
-
-LOCATION_KEYS = (
-    "tiger_line_year",
-    "latitude",
-    "longitude",
-)
-
-WEATHER_KEYS = (
-    "weather_query_cell_id",
-    "weather_timestamp",
-)
-
 
 @dataclass(frozen=True)
 class FeatureTables:
@@ -217,44 +208,23 @@ def build_calendar_ranges(
         .drop("_next_eligible_start_date")
     )
 
-
 def prepare_crimes(
     crime_dataframe: DataFrame,
 ) -> DataFrame:
     return (
         crime_dataframe
         .withColumn(
-            "crime_offense_id",
-            F.sha2(
-                F.concat_ws(
-                    "||",
-                    F.coalesce(F.col("source_city"), F.lit("")),
-                    F.coalesce(F.col("source_file"), F.lit("")),
-                    F.coalesce(F.col("source_row_hash"), F.lit("")),
-                    F.coalesce(F.col("source_record_id"), F.lit("")),
-                    F.coalesce(F.col("offense_code"), F.lit("")),
-                    F.coalesce(
-                        F.col("occurred_at").cast("string"),
-                        F.lit(""),
-                    ),
-                ),
-                256,
-            ),
-        )
-        .withColumn(
             "occurred_date",
             F.to_date("occurred_at"),
         )
         .withColumn(
-            "weather_timestamp",
+            "occurred_at_hour",
             F.date_trunc(
                 "hour",
                 F.col("occurred_at"),
             ),
         )
     )
-
-
 def attach_eligible_acs_vintage(
     crime_dataframe: DataFrame,
     calendar_ranges: DataFrame,
@@ -527,11 +497,11 @@ def materialize_location_mapping(
 
 
 def attach_tracts(
-    crime_dataframe: DataFrame,
+    feature_dataframe: DataFrame,
     location_mapping: DataFrame,
 ) -> DataFrame:
     return (
-        crime_dataframe.alias("crime")
+        feature_dataframe.alias("crime")
         .join(
             location_mapping.alias("mapping"),
             (
@@ -628,7 +598,7 @@ def attach_socioeconomic_features(
 
 
 def build_weather_lookup(
-    crime_dataframe: DataFrame,
+    feature_dataframe: DataFrame,
     weather_dataframe: DataFrame,
     *,
     provider: str,
@@ -636,12 +606,12 @@ def build_weather_lookup(
     h3_resolution: int,
 ) -> DataFrame:
     crime_date_bounds = (
-        crime_dataframe
+        feature_dataframe
         .agg(
-            F.min(F.to_date("occurred_at")).alias(
+            F.min("occurred_date").alias(
                 "minimum_crime_date"
             ),
-            F.max(F.to_date("occurred_at")).alias(
+            F.max("occurred_date").alias(
                 "maximum_crime_date"
             ),
         )
@@ -661,7 +631,7 @@ def build_weather_lookup(
         )
 
     relevant_weather_cells = (
-        crime_dataframe
+        feature_dataframe
         .filter(
             F.col("weather_query_cell_id").isNotNull()
         )
@@ -707,25 +677,25 @@ def build_weather_lookup(
 
 
 def attach_weather_features(
-    crime_dataframe: DataFrame,
+    feature_dataframe: DataFrame,
     weather_lookup: DataFrame,
 ) -> DataFrame:
     return (
-        crime_dataframe.alias("crime")
+        feature_dataframe.alias("features")
         .join(
             weather_lookup.alias("weather"),
             (
-                F.col("crime.weather_query_cell_id")
+                F.col("features.weather_query_cell_id")
                 == F.col("weather.weather_query_cell_id")
             )
             & (
-                F.col("crime.weather_timestamp")
+                F.col("features.occurred_at_hour")
                 == F.col("weather.weather_timestamp")
             ),
             "left",
         )
         .select(
-            "crime.*",
+            "features.*",
             F.col("weather.temperature_2m_c"),
             F.col("weather.grid_elevation"),
             F.coalesce(
@@ -735,20 +705,19 @@ def attach_weather_features(
         )
     )
 
-LIGHTING_KEYS = (
-    "weather_query_cell_id",
-    "solar_timestamp",
-)
-
-
 def build_lighting_lookup(
     lighting_dataframe: DataFrame,
 ) -> DataFrame:
     lookup = (
         lighting_dataframe
+        .filter(
+            F.col("lighting_definition_version")
+            == LIGHTING_DEFINITION_VERSION
+        )
         .select(
             "weather_query_cell_id",
-            "solar_timestamp",
+            "solar_timestamp_hour",
+            "lighting_definition_version",
             "solar_elevation_deg",
             "apparent_solar_elevation_deg",
             "solar_zenith_deg",
@@ -770,34 +739,34 @@ def build_lighting_lookup(
 
     return lookup
 
+
 def attach_lighting_features(
-    crime_dataframe: DataFrame,
+    feature_dataframe: DataFrame,
     lighting_lookup: DataFrame,
 ) -> DataFrame:
     return (
-        crime_dataframe.alias("crime")
+        feature_dataframe.alias("features")
         .join(
             lighting_lookup.alias("light"),
             (
-                F.col("crime.weather_query_cell_id")
+                F.col("features.weather_query_cell_id")
                 == F.col("light.weather_query_cell_id")
             )
             & (
-                F.col("crime.weather_timestamp")
-                == F.col("light.solar_timestamp")
+                F.col("features.occurred_at_hour")
+                == F.col("light.solar_timestamp_hour")
             ),
             "left",
         )
         .select(
-            "crime.*",
+            "features.*",
             F.col("light.solar_elevation_deg"),
-            F.col(
-                "light.apparent_solar_elevation_deg"
-            ),
+            F.col("light.apparent_solar_elevation_deg"),
             F.col("light.solar_zenith_deg"),
             F.col("light.solar_azimuth_deg"),
             F.col("light.lighting_condition"),
             F.col("light.is_daylight"),
+            F.col("light.lighting_definition_version"),
             F.coalesce(
                 F.col("light._lighting_row_found"),
                 F.lit(False),
@@ -849,7 +818,15 @@ def log_coverage_metrics(
                 ),
                 8,
             ).alias("weather_match_rate"),
-        )
+            F.sum(
+            F.col("lighting_match_found").cast("long")).alias("rows_with_lighting_record"),
+            F.round(
+                F.avg(
+                    F.col("lighting_match_found").cast("double")
+                ),
+                8,
+            ).alias("lighting_match_rate"),
+            )
         .first()
         .asDict()
     )
@@ -860,3 +837,37 @@ def log_coverage_metrics(
     )
 
     return metrics
+def validate_crime_identities(
+    feature_dataframe: DataFrame,
+) -> None:
+    missing_ids = feature_dataframe.filter(
+        F.col("crime_offense_id").isNull()
+    )
+
+    if not missing_ids.isEmpty():
+        examples = [
+            row.asDict()
+            for row in (
+                missing_ids
+                .select(
+                    "source_city",
+                    "source_incident_id",
+                    "source_record_id",
+                    "offense_code",
+                    "source_row_hash",
+                )
+                .limit(20)
+                .collect()
+            )
+        ]
+
+        raise RuntimeError(
+            "Some crime records could not be assigned "
+            f"a crime_offense_id. Examples: {examples}"
+        )
+
+    _raise_on_duplicate_keys(
+        feature_dataframe,
+        keys=("crime_offense_id",),
+        dataset_name="Prepared crime offenses",
+    )
