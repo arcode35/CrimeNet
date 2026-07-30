@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
@@ -11,6 +12,8 @@ from crimenet.silver.lighting import (
     extract_lighting_key_grain,
     select_missing_lighting_keys,
 )
+
+pytestmark = pytest.mark.integration
 
 
 def test_lighting_full_and_incremental_key_sets_are_equivalent(

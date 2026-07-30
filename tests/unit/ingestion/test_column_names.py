@@ -10,6 +10,8 @@ from crimenet.ingestion.column_names import (
 )
 from crimenet.jobs.bronze_ingestion import COLUMN_OVERRIDES
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.mark.parametrize(
     ("source_name", "expected"),

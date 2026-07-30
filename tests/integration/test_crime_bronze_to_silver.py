@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
@@ -21,6 +22,7 @@ from crimenet.transforms.canonical import (
     deduplicate_crime_offenses,
 )
 
+pytestmark = pytest.mark.integration
 
 def _fixture_bronze_crimes(
     spark: SparkSession,

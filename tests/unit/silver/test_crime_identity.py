@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import pytest
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
 from crimenet.transforms.canonical import add_crime_offense_id
 
+pytestmark = pytest.mark.unit
 
 def test_fixture_crime_ids_are_non_null_unique_content_hashes(
     crime_offenses_with_ids: DataFrame,

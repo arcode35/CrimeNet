@@ -24,6 +24,8 @@ from crimenet.silver.lighting import (
     validate_lighting_results,
 )
 
+pytestmark = pytest.mark.unit
+
 CELL_ID = 604164855133372415
 
 

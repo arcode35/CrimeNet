@@ -77,6 +77,7 @@ def spark(
         .config("spark.sql.catalogImplementation", "in-memory")
         .config("spark.sql.session.timeZone", "UTC")
         .config("spark.sql.shuffle.partitions", "2")
+        .config("spark.default.parallelism", "2")
         .getOrCreate()
     )
     session.sparkContext.setLogLevel("ERROR")

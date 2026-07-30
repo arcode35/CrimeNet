@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import pytest
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
+
+pytestmark = pytest.mark.unit
 
 
 def _only_source_file(dataframe: DataFrame) -> str:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
@@ -9,6 +10,7 @@ from crimenet.silver.socioeconomic import (
     transform_acs5_tracts,
 )
 
+pytestmark = pytest.mark.integration
 
 def test_socioeconomic_fixture_bronze_to_silver_is_idempotent(
     socioeconomic_bronze: DataFrame,

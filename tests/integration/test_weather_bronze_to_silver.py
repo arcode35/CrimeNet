@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
@@ -15,6 +16,7 @@ from crimenet.silver.weather import (
     transform_open_meteo_weather,
 )
 
+pytestmark = pytest.mark.integration
 
 def test_weather_fixture_bronze_to_silver_contract(
     weather_raw: DataFrame,

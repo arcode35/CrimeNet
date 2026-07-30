@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
@@ -12,6 +13,8 @@ from crimenet.ingestion.metadata import (
     source_row_hash,
 )
 from crimenet.ingestion.readers import read_houston_raw
+
+pytestmark = pytest.mark.unit
 
 
 def test_fixture_bronze_metadata_is_complete_and_source_specific(

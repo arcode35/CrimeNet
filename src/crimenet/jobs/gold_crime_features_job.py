@@ -26,7 +26,6 @@ from crimenet.gold.crime_features import (
 )
 from crimenet.quality import validate_gold
 
-
 LOGGER = logging.getLogger(__name__)
 
 

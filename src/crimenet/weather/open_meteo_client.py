@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Mapping
+from typing import Any
 
-import logging
-
+import requests
 from requests import Session
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
 logger = logging.getLogger(__name__)
 
 

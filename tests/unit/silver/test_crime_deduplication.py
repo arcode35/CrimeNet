@@ -9,6 +9,7 @@ from crimenet.transforms.canonical import (
     deduplicate_crime_offenses,
 )
 
+pytestmark = pytest.mark.unit
 
 def test_fixture_duplicates_collapse_to_unique_ids(
     deduplicated_crimes: DataFrame,

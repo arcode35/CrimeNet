@@ -20,7 +20,6 @@ from crimenet.ingestion.readers import (
 )
 from crimenet.observability.logging import get_logger
 
-
 LOGGER = get_logger(__name__)
 
 
