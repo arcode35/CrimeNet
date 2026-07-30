@@ -57,7 +57,10 @@ def assert_silver_contract(dataframe: DataFrame) -> None:
 
     mismatches: list[str] = []
 
-    for expected, actual in zip(expected_fields, actual_fields):
+    for expected, actual in zip(
+    expected_fields,
+    actual_fields,
+    strict=True):
         if expected.name != actual.name or expected.dataType != actual.dataType:
             mismatches.append(
                 f"expected {expected.name}:{expected.dataType.simpleString()}, "

@@ -10,21 +10,21 @@ from pyspark.sql import SparkSession
 from crimenet.gold.crime_features import (
     FeatureTables,
     attach_eligible_acs_vintage,
+    attach_lighting_features,
     attach_socioeconomic_features,
     attach_tracts,
     attach_weather_features,
     build_calendar_ranges,
+    build_lighting_lookup,
     build_weather_lookup,
     extract_unique_locations,
     log_coverage_metrics,
     materialize_location_mapping,
     prepare_crimes,
     validate_boundary_inputs,
-    attach_lighting_features,
-    build_lighting_lookup,
-    validate_crime_identities
+    validate_crime_identities,
 )
-
+from crimenet.quality import validate_gold
 
 LOGGER = logging.getLogger(__name__)
 
@@ -201,19 +201,16 @@ def run(
     metrics = log_coverage_metrics(
         materialized_features
     )
-
-    final_count = metrics["final_rows"]
-
-    if source_count != final_count:
-        raise RuntimeError(
-            "Crime feature build changed row cardinality: "
-            f"source={source_count}, "
-            f"final={final_count}."
-        )
+    quality_report = validate_gold(
+        materialized_features,
+        source_crime_count=source_count,
+    )
 
     LOGGER.info(
-        "Successfully materialized %s",
+        "Successfully materialized %s with %s quality checks; metrics=%s",
         tables.features,
+        len(quality_report.checks),
+        metrics,
     )
 
 

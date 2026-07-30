@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+TARGET="${1:-dev}"
+
 uv run ruff check src tests
-uv run pytest
-databricks bundle validate --target dev
+uv run pytest tests/unit tests/integration -m "not databricks"
+databricks bundle validate --target "${TARGET}"

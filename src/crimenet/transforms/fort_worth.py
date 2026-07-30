@@ -8,11 +8,44 @@ from pyspark.sql import functions as F
 from crimenet.contracts.silver import SILVER_COLUMNS, assert_silver_contract
 from crimenet.transforms.common import (
     null_string,
+    require_columns,
     timestamp_millis,
+    try_cast,
+)
+
+_REQUIRED_COLUMNS = (
+    "case_no_offense",
+    "objectid",
+    "case_no",
+    "offense",
+    "nature_of_call",
+    "offense_desc",
+    "from_date",
+    "reported_date",
+    "lastupdated",
+    "address",
+    "block_address",
+    "city",
+    "state",
+    "beat",
+    "locationtypedescription",
+    "latitude",
+    "longitude",
+    "alternate_latitude",
+    "alternate_longitude",
+    "x_coordinate",
+    "y_coordinate",
+    "source_file",
+    "source_row_hash",
 )
 
 
 def to_canonical(dataframe: DataFrame) -> DataFrame:
+    require_columns(
+        dataframe,
+        _REQUIRED_COLUMNS,
+        context="Fort Worth canonical input",
+    )
     result = dataframe.select(
         F.lit("fort_worth").alias("source_city"),
         F.coalesce(
@@ -42,20 +75,24 @@ def to_canonical(dataframe: DataFrame) -> DataFrame:
         F.col("locationtypedescription")
         .cast("string")
         .alias("premise_type"),
-        F.col("latitude").cast("double").alias("latitude"),
-        F.col("longitude").cast("double").alias("longitude"),
-        F.col("alternate_latitude")
-        .cast("double")
-        .alias("alternate_latitude"),
-        F.col("alternate_longitude")
-        .cast("double")
-        .alias("alternate_longitude"),
-        F.col("x_coordinate")
-        .cast("double")
-        .alias("source_x_coordinate"),
-        F.col("y_coordinate")
-        .cast("double")
-        .alias("source_y_coordinate"),
+        try_cast("latitude", "double").alias("latitude"),
+        try_cast("longitude", "double").alias("longitude"),
+        try_cast(
+            "alternate_latitude",
+            "double",
+        ).alias("alternate_latitude"),
+        try_cast(
+            "alternate_longitude",
+            "double",
+        ).alias("alternate_longitude"),
+        try_cast(
+            "x_coordinate",
+            "double",
+        ).alias("source_x_coordinate"),
+        try_cast(
+            "y_coordinate",
+            "double",
+        ).alias("source_y_coordinate"),
         F.col("source_file").cast("string").alias("source_file"),
         F.col("source_row_hash").cast("string").alias("source_row_hash"),
     ).select(*SILVER_COLUMNS)

@@ -74,3 +74,7 @@ derby.log
 
 # Local data exports
 *.parquet
+# Generated repository archives
+resources.zip
+src.zip
+tests.zip

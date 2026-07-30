@@ -16,7 +16,6 @@ from crimenet.weather.request_mapping import (
     weather_request_from_manifest_row,
 )
 
-
 logger = logging.getLogger(__name__)
 
 def fetch_weather_manifest(

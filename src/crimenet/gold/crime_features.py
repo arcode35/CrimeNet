@@ -5,17 +5,31 @@ from __future__ import annotations
 import argparse
 import logging
 from dataclasses import dataclass
+from typing import Any
 
-from delta.tables import DeltaTable
-from pyspark.databricks.sql import functions as dbf
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
+
 from crimenet.contracts.lighting import LIGHTING_DEFINITION_VERSION, LIGHTING_KEYS
 from crimenet.contracts.socioeconomic import LOCATION_KEYS
 from crimenet.contracts.weather import WEATHER_KEYS
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _databricks_functions() -> Any:
+    """Load Databricks-only SQL functions only when spatial work is requested."""
+    try:
+        from pyspark.databricks.sql import functions as dbf
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Databricks spatial functions are required for tract geometry "
+            "validation and point-in-polygon mapping."
+        ) from exc
+
+    return dbf
+
 
 @dataclass(frozen=True)
 class FeatureTables:
@@ -35,7 +49,7 @@ class FeatureTables:
         catalog: str,
         silver_schema: str,
         gold_schema: str,
-    ) -> "FeatureTables":
+    ) -> FeatureTables:
         silver = f"{catalog}.{silver_schema}"
         gold = f"{catalog}.{gold_schema}"
 
@@ -87,12 +101,31 @@ def _has_rows(dataframe: DataFrame) -> bool:
     return not dataframe.isEmpty()
 
 
+def _require_columns(
+    dataframe: DataFrame,
+    *,
+    required: tuple[str, ...],
+    dataset_name: str,
+) -> None:
+    missing_columns = sorted(set(required).difference(dataframe.columns))
+    if missing_columns:
+        raise ValueError(
+            f"{dataset_name} is missing required columns: {missing_columns}"
+        )
+
+
 def _raise_on_duplicate_keys(
     dataframe: DataFrame,
     *,
     keys: tuple[str, ...],
     dataset_name: str,
 ) -> None:
+    _require_columns(
+        dataframe,
+        required=keys,
+        dataset_name=dataset_name,
+    )
+
     duplicates = (
         dataframe
         .groupBy(*keys)
@@ -121,6 +154,8 @@ def validate_boundary_inputs(
     calendar_dataframe: DataFrame,
     boundary_dataframe: DataFrame,
 ) -> None:
+    dbf = _databricks_functions()
+
     missing_boundary_years = (
         calendar_dataframe
         .select(
@@ -181,10 +216,67 @@ def validate_boundary_inputs(
 def build_calendar_ranges(
     calendar_dataframe: DataFrame,
 ) -> DataFrame:
+    required_columns = {
+        "acs_vintage",
+        "acs_release_date",
+        "tiger_line_year",
+        "tract_definition_vintage",
+    }
+    missing_columns = sorted(
+        required_columns.difference(calendar_dataframe.columns)
+    )
+
+    if missing_columns:
+        raise ValueError(
+            "ACS vintage calendar is missing required columns: "
+            f"{missing_columns}"
+        )
+
+    null_keys = calendar_dataframe.filter(
+        F.col("acs_vintage").isNull()
+        | F.col("acs_release_date").isNull()
+        | F.col("tiger_line_year").isNull()
+        | F.col("tract_definition_vintage").isNull()
+    )
+
+    if _has_rows(null_keys):
+        raise ValueError(
+            "ACS vintage calendar contains null release or lineage fields."
+        )
+
+    _raise_on_duplicate_keys(
+        calendar_dataframe,
+        keys=("acs_vintage",),
+        dataset_name="ACS vintage calendar",
+    )
+    _raise_on_duplicate_keys(
+        calendar_dataframe,
+        keys=("acs_release_date",),
+        dataset_name="ACS vintage calendar",
+    )
+
     calendar_window = Window.orderBy("acs_release_date")
 
-    return (
+    ordered_calendar = (
         calendar_dataframe
+        .withColumn(
+            "_previous_acs_vintage",
+            F.lag("acs_vintage").over(calendar_window),
+        )
+    )
+
+    invalid_order = ordered_calendar.filter(
+        F.col("_previous_acs_vintage").isNotNull()
+        & (F.col("acs_vintage") <= F.col("_previous_acs_vintage"))
+    )
+
+    if _has_rows(invalid_order):
+        raise ValueError(
+            "ACS vintages must increase in release-date order."
+        )
+
+    return (
+        ordered_calendar
         .withColumn(
             "eligible_start_date",
             F.date_add(
@@ -205,12 +297,22 @@ def build_calendar_ranges(
                 1,
             ),
         )
-        .drop("_next_eligible_start_date")
+        .drop(
+            "_previous_acs_vintage",
+            "_next_eligible_start_date",
+        )
     )
+
 
 def prepare_crimes(
     crime_dataframe: DataFrame,
 ) -> DataFrame:
+    _require_columns(
+        crime_dataframe,
+        required=("occurred_at",),
+        dataset_name="Silver crime offenses",
+    )
+
     return (
         crime_dataframe
         .withColumn(
@@ -225,6 +327,8 @@ def prepare_crimes(
             ),
         )
     )
+
+
 def attach_eligible_acs_vintage(
     crime_dataframe: DataFrame,
     calendar_ranges: DataFrame,
@@ -285,6 +389,8 @@ def spatially_map_locations(
     location_dataframe: DataFrame,
     boundary_dataframe: DataFrame,
 ) -> DataFrame:
+    dbf = _databricks_functions()
+
     locations = location_dataframe.withColumn(
         "crime_point",
         dbf.st_point(
@@ -474,6 +580,14 @@ def materialize_location_mapping(
         AND target.longitude = source.longitude
     """
 
+    try:
+        from delta.tables import DeltaTable
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Delta Lake is required to incrementally materialize the "
+            "location-to-tract mapping."
+        ) from exc
+
     (
         DeltaTable.forName(spark, target_table)
         .alias("target")
@@ -500,6 +614,12 @@ def attach_tracts(
     feature_dataframe: DataFrame,
     location_mapping: DataFrame,
 ) -> DataFrame:
+    _raise_on_duplicate_keys(
+        location_mapping,
+        keys=LOCATION_KEYS,
+        dataset_name="Location-to-tract mapping",
+    )
+
     return (
         feature_dataframe.alias("crime")
         .join(
@@ -658,6 +778,15 @@ def build_weather_lookup(
         .select(
             "weather_query_cell_id",
             "weather_timestamp",
+            F.col("provider").alias("weather_provider"),
+            F.col("model").alias("weather_model"),
+            F.col("h3_resolution").alias(
+                "weather_h3_resolution"
+            ),
+            F.col("request_id").alias("weather_request_id"),
+            F.col("source_row_hash").alias(
+                "weather_source_row_hash"
+            ),
             "temperature_2m_c",
             "grid_elevation",
         )
@@ -696,6 +825,11 @@ def attach_weather_features(
         )
         .select(
             "features.*",
+            F.col("weather.weather_provider"),
+            F.col("weather.weather_model"),
+            F.col("weather.weather_h3_resolution"),
+            F.col("weather.weather_request_id"),
+            F.col("weather.weather_source_row_hash"),
             F.col("weather.temperature_2m_c"),
             F.col("weather.grid_elevation"),
             F.coalesce(
@@ -704,6 +838,7 @@ def attach_weather_features(
             ).alias("weather_match_found"),
         )
     )
+
 
 def build_lighting_lookup(
     lighting_dataframe: DataFrame,
@@ -724,6 +859,7 @@ def build_lighting_lookup(
             "solar_azimuth_deg",
             "lighting_condition",
             "is_daylight",
+            "pvlib_version",
         )
         .withColumn(
             "_lighting_row_found",
@@ -767,12 +903,16 @@ def attach_lighting_features(
             F.col("light.lighting_condition"),
             F.col("light.is_daylight"),
             F.col("light.lighting_definition_version"),
+            F.col("light.pvlib_version").alias(
+                "lighting_pvlib_version"
+            ),
             F.coalesce(
                 F.col("light._lighting_row_found"),
                 F.lit(False),
             ).alias("lighting_match_found"),
         )
     )
+
 
 def log_coverage_metrics(
     feature_dataframe: DataFrame,
@@ -819,14 +959,15 @@ def log_coverage_metrics(
                 8,
             ).alias("weather_match_rate"),
             F.sum(
-            F.col("lighting_match_found").cast("long")).alias("rows_with_lighting_record"),
+                F.col("lighting_match_found").cast("long")
+            ).alias("rows_with_lighting_record"),
             F.round(
                 F.avg(
                     F.col("lighting_match_found").cast("double")
                 ),
                 8,
             ).alias("lighting_match_rate"),
-            )
+        )
         .first()
         .asDict()
     )
@@ -837,6 +978,8 @@ def log_coverage_metrics(
     )
 
     return metrics
+
+
 def validate_crime_identities(
     feature_dataframe: DataFrame,
 ) -> None:

@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
+SOCIOECONOMIC_KEYS = (
+    "geoid",
+    "acs_vintage",
+)
 
 ACS_COLUMN_NAMES = {
     "b01003_001e": "population",
@@ -143,6 +148,8 @@ def enforce_acs_numeric_domains(
     )
 
     return result
+
+
 def safe_rate(
     numerator: str,
     denominator: str,
@@ -198,13 +205,13 @@ def cast_acs_columns(
     for column_name in INTEGER_COLUMNS:
         result = result.withColumn(
             column_name,
-            F.col(column_name).cast("long"),
+            F.col(column_name).try_cast("long"),
         )
 
     for column_name in DOUBLE_COLUMNS:
         result = result.withColumn(
             column_name,
-            F.col(column_name).cast("double"),
+            F.col(column_name).try_cast("double"),
         )
 
     return result
@@ -237,9 +244,9 @@ def transform_acs5_tracts(
             F.col("state").alias("state_fips"),
             F.col("county").alias("county_fips"),
             F.col("tract").alias("tract_code"),
-            F.col("acs_vintage").cast("int"),
-            F.col("period_start_year").cast("int"),
-            F.col("period_end_year").cast("int"),
+            F.col("acs_vintage").try_cast("int"),
+            F.col("period_start_year").try_cast("int"),
+            F.col("period_end_year").try_cast("int"),
             F.col("geography_type"),
             F.col("population"),
             F.col("population_moe"),
@@ -316,5 +323,78 @@ def transform_acs5_tracts(
         .filter(
             F.col("geoid").isNotNull()
             & F.col("acs_vintage").isNotNull()
+        )
+    )
+
+
+def deduplicate_socioeconomic_records(
+    dataframe: DataFrame,
+) -> DataFrame:
+    """Select one deterministic row for each tract/vintage key."""
+    missing_columns = [
+        column_name
+        for column_name in SOCIOECONOMIC_KEYS
+        if column_name not in dataframe.columns
+    ]
+
+    if missing_columns:
+        raise ValueError(
+            "Socioeconomic deduplication is missing key columns: "
+            f"{missing_columns}"
+        )
+
+    stable_columns = sorted(
+        column_name
+        for column_name in dataframe.columns
+        if column_name
+        not in {
+            "bronze_ingested_at",
+            "silver_processed_at",
+        }
+    )
+
+    fingerprint = F.sha2(
+        F.to_json(
+            F.struct(
+                *[
+                    F.col(column_name)
+                    for column_name in stable_columns
+                ]
+            ),
+            options={"ignoreNullFields": "false"},
+        ),
+        256,
+    )
+
+    latest_record_window = (
+        Window
+        .partitionBy(
+            *SOCIOECONOMIC_KEYS
+        )
+        .orderBy(
+            F.col("bronze_ingested_at")
+            .desc_nulls_last(),
+            fingerprint.desc(),
+            F.col("source_file")
+            .desc_nulls_last(),
+        )
+    )
+
+    return (
+        dataframe
+        .withColumn(
+            "_socioeconomic_deduplication_rank",
+            F.row_number().over(
+                latest_record_window
+            ),
+        )
+        .filter(
+            F.col(
+                "_socioeconomic_deduplication_rank"
+            )
+            == 1
+        )
+        .drop(
+            "_socioeconomic_deduplication_rank"
         )
     )

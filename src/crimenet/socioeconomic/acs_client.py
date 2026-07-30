@@ -9,7 +9,6 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-
 CENSUS_API_BASE_URL = "https://api.census.gov/data"
 ACS5_DATASET = "acs/acs5"
 

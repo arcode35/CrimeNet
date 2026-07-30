@@ -11,7 +11,6 @@ from crimenet.silver.lighting import (
     materialize_lighting_conditions,
 )
 
-
 LOGGER = get_logger(__name__)
 
 def parse_args() -> argparse.Namespace:
@@ -46,7 +45,8 @@ def run(
     silver_schema: str,
     full_rebuild: bool,
 ) -> None:
-    # Spark-to-pandas timestamp conversion must use UTC because pvlib receives timezone aware UTC timestamps.
+    # Spark-to-pandas timestamp conversion must use UTC because 
+    # receives timezone aware UTC timestamps.
     spark.conf.set(
         "spark.sql.session.timeZone",
         "UTC",

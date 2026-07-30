@@ -3,28 +3,22 @@
 from __future__ import annotations
 
 import argparse
+from importlib import import_module
 
-from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql import functions as F
-from pyspark.sql.window import Window
 
 from crimenet.config.resources import CrimeNetTables
 from crimenet.observability.logging import get_logger
 from crimenet.silver.weather import (
+    WEATHER_MERGE_KEYS,
+    deduplicate_weather_records,
     transform_open_meteo_weather,
 )
-
 
 LOGGER = get_logger(__name__)
 
 
-MERGE_KEYS = (
-    "provider",
-    "model",
-    "weather_query_cell_id",
-    "weather_timestamp",
-)
+MERGE_KEYS = WEATHER_MERGE_KEYS
 
 
 def parse_args() -> argparse.Namespace:
@@ -100,32 +94,15 @@ def merge_weather_batch(
         )
         return
 
-    latest_record_window = (
-        Window
-        .partitionBy(*MERGE_KEYS)
-        .orderBy(
-            F.col(
-                "bronze_ingested_at"
-            ).desc_nulls_last(),
-            F.col(
-                "silver_processed_at"
-            ).desc_nulls_last(),
+    deduplicated_dataframe = (
+        deduplicate_weather_records(
+            batch_dataframe
         )
     )
 
-    deduplicated_dataframe = (
-        batch_dataframe
-        .withColumn(
-            "_row_number",
-            F.row_number().over(
-                latest_record_window
-            ),
-        )
-        .filter(
-            F.col("_row_number") == 1
-        )
-        .drop("_row_number")
-    )
+    DeltaTable = import_module(
+        "delta.tables"
+    ).DeltaTable
 
     target = DeltaTable.forName(
         spark,

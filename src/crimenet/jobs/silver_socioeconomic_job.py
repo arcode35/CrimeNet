@@ -3,26 +3,23 @@
 from __future__ import annotations
 
 import argparse
+from importlib import import_module
 
-from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType
-from pyspark.sql.window import Window
 
 from crimenet.config.resources import CrimeNetTables
 from crimenet.observability.logging import get_logger
 from crimenet.silver.socioeconomic import (
+    SOCIOECONOMIC_KEYS,
+    deduplicate_socioeconomic_records,
     transform_acs5_tracts,
 )
 
-
 LOGGER = get_logger(__name__)
 
-MERGE_KEYS = (
-    "geoid",
-    "acs_vintage",
-)
+MERGE_KEYS = SOCIOECONOMIC_KEYS
 
 
 def parse_args() -> argparse.Namespace:
@@ -73,41 +70,16 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def deduplicate_socioeconomic_records(
-    dataframe: DataFrame,
-) -> DataFrame:
-    latest_record_window = (
-        Window
-        .partitionBy(*MERGE_KEYS)
-        .orderBy(
-            F.col("bronze_ingested_at")
-            .desc_nulls_last(),
-            F.col("source_file")
-            .desc_nulls_last(),
-        )
-    )
-
-    return (
-        dataframe
-        .withColumn(
-            "_row_number",
-            F.row_number().over(
-                latest_record_window
-            ),
-        )
-        .filter(
-            F.col("_row_number") == 1
-        )
-        .drop("_row_number")
-    )
-
-
 def ensure_target_table(
     spark: SparkSession,
     *,
     target_table: str,
     schema: StructType,
 ) -> None:
+    DeltaTable = import_module(
+        "delta.tables"
+    ).DeltaTable
+
     (
         DeltaTable.createIfNotExists(spark)
         .tableName(target_table)
@@ -185,6 +157,10 @@ def merge_socioeconomic_batch(
             batch_dataframe
         )
     )
+
+    DeltaTable = import_module(
+        "delta.tables"
+    ).DeltaTable
 
     target = DeltaTable.forName(
         spark,

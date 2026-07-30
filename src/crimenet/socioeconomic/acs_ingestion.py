@@ -5,14 +5,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from crimenet.socioeconomic.acs_client import (
     build_census_session,
     fetch_acs5_tracts,
 )
-
 
 logger = logging.getLogger(__name__)
 
