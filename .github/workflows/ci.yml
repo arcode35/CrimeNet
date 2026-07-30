@@ -43,19 +43,17 @@ jobs:
       # identity, even with a literal CI root path. Keep it credential-gated
       # while the complete local test job above remains credential-free.
       - name: Install Databricks CLI
-        if: ${{ secrets.DATABRICKS_HOST != '' && secrets.DATABRICKS_TOKEN != '' }}
+        if: env.DATABRICKS_HOST != '' && env.DATABRICKS_TOKEN != ''
         uses: databricks/setup-cli@main
 
       - name: Validate Databricks bundle
-        if: ${{ secrets.DATABRICKS_HOST != '' && secrets.DATABRICKS_TOKEN != '' }}
-        env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-        run: databricks bundle validate --target dev
+        if: env.DATABRICKS_HOST != '' && env.DATABRICKS_TOKEN != ''
+        run: databricks bundle validate -t dev
 
-      - name: Explain credential-gated bundle validation
-        if: ${{ secrets.DATABRICKS_HOST == '' || secrets.DATABRICKS_TOKEN == '' }}
-        run: >
+      - name: Skip Databricks validation
+        if: env.DATABRICKS_HOST == '' || env.DATABRICKS_TOKEN == ''
+        run: |
+          echo "Databricks validation skipped because credentials are unavailable."
           echo "Authenticated bundle validation was not run because
           DATABRICKS_HOST and DATABRICKS_TOKEN are not configured;
           ordinary unit and local integration tests remain mandatory."
