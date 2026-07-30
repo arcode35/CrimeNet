@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
+from importlib import import_module
 
 import numpy as np
-import pandas as pd
-import pvlib
-from delta.tables import DeltaTable
-from pyspark.databricks.sql import functions as dbf
+import pandas as pd  # type: ignore[import-untyped]
+import pvlib  # type: ignore[import-untyped]
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
@@ -21,8 +20,11 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
+from crimenet.contracts.lighting import (
+    LIGHTING_DEFINITION_VERSION,
+    LIGHTING_KEYS,
+)
 from crimenet.observability.logging import get_logger
-
 
 LOGGER = get_logger(__name__)
 
@@ -30,16 +32,6 @@ CENTER_SCHEMA = """
     type STRING,
     coordinates ARRAY<DOUBLE>
 """
-
-LIGHTING_KEYS = (
-    "weather_query_cell_id",
-    "solar_timestamp_hour",
-    "lighting_definition_version",
-)
-
-LIGHTING_DEFINITION_VERSION = (
-    "solar_elevation_twilight_v1"
-)
 
 OUTPUT_SCHEMA = StructType(
     [
@@ -130,12 +122,26 @@ def classify_lighting_condition(
 def extract_lighting_keys(
     crime_dataframe: DataFrame,
 ) -> DataFrame:
+    """Extract cell-hour keys and attach Databricks H3 cell centers."""
+    unique_keys = extract_lighting_key_grain(
+        crime_dataframe
+    )
+
+    return attach_lighting_cell_centers(
+        unique_keys
+    )
+
+
+def extract_lighting_key_grain(
+    crime_dataframe: DataFrame,
+) -> DataFrame:
+    """Extract the deterministic active-version cell-hour grain."""
     valid_condition = (
         F.col("weather_query_cell_id").isNotNull()
         & F.col("occurred_at").isNotNull()
     )
 
-    unique_keys = (
+    return (
         crime_dataframe
         .filter(valid_condition)
         .select(
@@ -151,8 +157,17 @@ def extract_lighting_keys(
         .dropDuplicates(list(LIGHTING_KEYS))
     )
 
+
+def attach_lighting_cell_centers(
+    lighting_keys: DataFrame,
+) -> DataFrame:
+    """Attach H3 centers using Databricks-only SQL functions."""
+    dbf = import_module(
+        "pyspark.databricks.sql.functions"
+    )
+
     return (
-        unique_keys
+        lighting_keys
         .withColumn(
             "_center",
             F.from_json(
@@ -174,12 +189,56 @@ def extract_lighting_keys(
         .filter(
             F.col("query_latitude").isNotNull()
             & F.col("query_longitude").isNotNull()
+            & F.col("query_latitude").between(
+                -90.0,
+                90.0,
+            )
+            & F.col("query_longitude").between(
+                -180.0,
+                180.0,
+            )
+        )
+    )
+
+
+def select_missing_lighting_keys(
+    candidate_keys: DataFrame,
+    existing_keys: DataFrame,
+) -> DataFrame:
+    """Return active candidate keys absent from an existing key set."""
+    for dataset_name, dataframe in (
+        ("candidate", candidate_keys),
+        ("existing", existing_keys),
+    ):
+        missing_columns = [
+            column_name
+            for column_name in LIGHTING_KEYS
+            if column_name
+            not in dataframe.columns
+        ]
+
+        if missing_columns:
+            raise ValueError(
+                f"{dataset_name.title()} lighting keys are missing "
+                f"columns: {missing_columns}"
+            )
+
+    return (
+        candidate_keys
+        .join(
+            existing_keys
+            .select(*LIGHTING_KEYS)
+            .dropDuplicates(
+                list(LIGHTING_KEYS)
+            ),
+            on=list(LIGHTING_KEYS),
+            how="left_anti",
         )
     )
 
 
 def calculate_solar_positions(
-    batches: Iterator[pd.DataFrame],
+    batches: Iterable[pd.DataFrame],
 ) -> Iterator[pd.DataFrame]:
     output_columns = [
         field.name
@@ -208,7 +267,7 @@ def calculate_solar_positions(
         )
 
         for (
-            weather_query_cell_id,
+            _weather_query_cell_id,
             query_latitude,
             query_longitude,
         ), group in grouped:
@@ -330,6 +389,45 @@ def compute_lighting_conditions(
 def validate_lighting_results(
     dataframe: DataFrame,
 ) -> None:
+    missing_columns = [
+        field.name
+        for field in OUTPUT_SCHEMA.fields
+        if field.name not in dataframe.columns
+    ]
+
+    if missing_columns:
+        raise ValueError(
+            "Lighting results are missing required columns: "
+            f"{missing_columns}"
+        )
+
+    invalid_keys = dataframe.filter(
+        F.col("weather_query_cell_id").isNull()
+        | F.col("solar_timestamp_hour").isNull()
+        | F.col(
+            "lighting_definition_version"
+        ).isNull()
+        | (
+            F.col(
+                "lighting_definition_version"
+            )
+            != LIGHTING_DEFINITION_VERSION
+        )
+        | (
+            F.col("solar_timestamp_hour")
+            != F.date_trunc(
+                "hour",
+                F.col("solar_timestamp_hour"),
+            )
+        )
+    )
+
+    if not invalid_keys.isEmpty():
+        raise RuntimeError(
+            "Lighting results contain null, misaligned, or "
+            "unsupported active-version keys."
+        )
+
     duplicate_keys = (
         dataframe
         .groupBy(*LIGHTING_KEYS)
@@ -353,6 +451,28 @@ def validate_lighting_results(
         "night",
     )
 
+    expected_condition = (
+        F.when(
+            F.col("solar_elevation_deg") >= 0.0,
+            F.lit("daylight"),
+        )
+        .when(
+            F.col("solar_elevation_deg") >= -6.0,
+            F.lit("civil_twilight"),
+        )
+        .when(
+            F.col("solar_elevation_deg") >= -12.0,
+            F.lit("nautical_twilight"),
+        )
+        .when(
+            F.col("solar_elevation_deg") >= -18.0,
+            F.lit("astronomical_twilight"),
+        )
+        .otherwise(
+            F.lit("night")
+        )
+    )
+
     invalid_rows = (
         dataframe
         .filter(
@@ -362,6 +482,12 @@ def validate_lighting_results(
             | F.col(
                 "query_longitude"
             ).isNull()
+            | F.isnan(
+                F.col("query_latitude")
+            )
+            | F.isnan(
+                F.col("query_longitude")
+            )
             | ~F.col(
                 "query_latitude"
             ).between(
@@ -386,6 +512,20 @@ def validate_lighting_results(
             | F.col(
                 "solar_azimuth_deg"
             ).isNull()
+            | F.isnan(
+                F.col("solar_elevation_deg")
+            )
+            | F.isnan(
+                F.col(
+                    "apparent_solar_elevation_deg"
+                )
+            )
+            | F.isnan(
+                F.col("solar_zenith_deg")
+            )
+            | F.isnan(
+                F.col("solar_azimuth_deg")
+            )
             | ~F.col(
                 "solar_elevation_deg"
             ).between(
@@ -414,12 +554,26 @@ def validate_lighting_results(
                 "lighting_condition"
             ).isin(*valid_conditions)
             | (
+                F.col("lighting_condition")
+                != expected_condition
+            )
+            | F.col("is_daylight").isNull()
+            | (
                 F.col("is_daylight")
                 != (
                     F.col(
                         "solar_elevation_deg"
                     ) >= 0.0
                 )
+            )
+            | F.col("pvlib_version").isNull()
+            | (
+                F.length(
+                    F.trim(
+                        F.col("pvlib_version")
+                    )
+                )
+                == 0
             )
         )
     )
@@ -473,11 +627,9 @@ def materialize_lighting_conditions(
         )
 
         keys_to_compute = (
-            candidate_keys
-            .join(
+            select_missing_lighting_keys(
+                candidate_keys,
                 existing_keys,
-                on=list(LIGHTING_KEYS),
-                how="left_anti",
             )
         )
 
@@ -490,6 +642,11 @@ def materialize_lighting_conditions(
     # This action evaluates only the Spark key extraction and
     # anti-join. It does not execute pvlib.
     if keys_to_compute.isEmpty():
+        if table_exists:
+            validate_lighting_results(
+                spark.table(target_table)
+            )
+
         LOGGER.info(
             "lighting_no_new_keys",
             target_table=target_table,
@@ -521,9 +678,15 @@ def materialize_lighting_conditions(
         merge_condition = """
             target.weather_query_cell_id
                 = source.weather_query_cell_id
-            AND target.solar_timestamp
-                = source.solar_timestamp
+            AND target.solar_timestamp_hour
+                = source.solar_timestamp_hour
+            AND target.lighting_definition_version
+                = source.lighting_definition_version
         """
+
+        DeltaTable = import_module(
+            "delta.tables"
+        ).DeltaTable
 
         (
             DeltaTable.forName(

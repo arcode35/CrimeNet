@@ -2,8 +2,27 @@
 
 from __future__ import annotations
 
-from pyspark.sql import Column
+from collections.abc import Iterable
+
+from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
+
+
+def require_columns(
+    dataframe: DataFrame,
+    required_columns: Iterable[str],
+    *,
+    context: str,
+) -> None:
+    """Raise a clear contract error before Spark resolves expressions."""
+    missing_columns = sorted(
+        set(required_columns) - set(dataframe.columns)
+    )
+    if missing_columns:
+        raise ValueError(
+            f"{context} is missing required columns: "
+            + ", ".join(missing_columns)
+        )
 
 
 def null_string() -> Column:
@@ -29,8 +48,12 @@ def try_cast(column_name: str, data_type: str) -> Column:
 
 def timestamp_millis(column_name: str) -> Column:
     """Convert a possibly string/long epoch-millisecond field to timestamp."""
-    return F.expr(
-        f"timestamp_millis(try_cast(`{column_name}` AS BIGINT))"
+    epoch_millis = F.expr(
+        f"try_cast(`{column_name}` AS BIGINT)"
+    )
+    return F.when(
+        epoch_millis >= F.lit(0),
+        F.timestamp_millis(epoch_millis),
     )
 
 

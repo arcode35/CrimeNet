@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import argparse
 
+from pyspark.sql import SparkSession
+
 from crimenet.observability.logging import get_logger
 from crimenet.socioeconomic.acs_client import TEXAS_STATE_FIPS
 from crimenet.socioeconomic.acs_ingestion import (
     ingest_acs5_tract_vintages,
 )
-from pyspark.dbutils import DBUtils
-from pyspark.sql import SparkSession
-
 
 logger = get_logger(__name__)
 
@@ -63,6 +62,8 @@ def main() -> None:
     )
 
     try:
+        from pyspark.dbutils import DBUtils
+
         dbutils = DBUtils(spark)
 
         api_key = dbutils.secrets.get(

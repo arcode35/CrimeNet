@@ -35,6 +35,11 @@ packages = ["src/crimenet"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+markers = [
+    "unit: deterministic local unit tests",
+    "integration: local multi-component and materialization tests",
+    "databricks: requires Databricks-only functions or workspace resources",
+]
 
 [tool.ruff]
 line-length = 88

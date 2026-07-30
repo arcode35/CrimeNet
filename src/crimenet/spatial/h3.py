@@ -1,7 +1,7 @@
-from pyspark.databricks.sql import functions as dbf
+from typing import Any
+
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
-
 
 CENTER_SCHEMA = """
     type STRING,
@@ -9,6 +9,18 @@ CENTER_SCHEMA = """
 """
 
 DEFAULT_WEATHER_H3_RESOLUTION = 6
+
+
+def _databricks_functions() -> Any:
+    """Load H3 functions only inside a Databricks runtime."""
+    try:
+        from pyspark.databricks.sql import functions as dbf
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Databricks H3 SQL functions are required for H3 enrichment."
+        ) from exc
+
+    return dbf
 
 
 def add_weather_query_cell(
@@ -23,6 +35,8 @@ def add_weather_query_cell(
         raise ValueError(
             "H3 resolution must be between 0 and 15"
         )
+
+    dbf = _databricks_functions()
 
     return df.withColumn(
         output_column,
@@ -39,6 +53,8 @@ def extract_h3_centers(
     *,
     cell_column: str = "weather_query_cell_id",
 ) -> DataFrame:
+    dbf = _databricks_functions()
+
     return (
         weather_query_cell_df
         .withColumn(

@@ -6,7 +6,11 @@ from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 
 from crimenet.contracts.silver import SILVER_COLUMNS, assert_silver_contract
-from crimenet.transforms.common import null_double, try_cast
+from crimenet.transforms.common import (
+    null_double,
+    require_columns,
+    try_cast,
+)
 
 _COORDINATE_PATTERN = (
     r"\(\s*"
@@ -14,6 +18,31 @@ _COORDINATE_PATTERN = (
     r"\s*,\s*"
     r"(-?\d+(?:\.\d+)?)"
     r"\s*\)"
+)
+
+_REQUIRED_COLUMNS = (
+    "service_number_id",
+    "incident_number_w_year",
+    "nibrs_code",
+    "nibrs_crime",
+    "ucr_offense_name",
+    "type_of_incident",
+    "ucr_offense_description",
+    "date1_of_occurrence",
+    "time1_of_occurrence",
+    "date_of_report",
+    "update_date",
+    "incident_address",
+    "city",
+    "state",
+    "zip_code",
+    "beat",
+    "type_location",
+    "location1",
+    "x_coordinate",
+    "y_cordinate",
+    "source_file",
+    "source_row_hash",
 )
 
 
@@ -46,6 +75,11 @@ def _occurrence_timestamp() -> Column:
 
 
 def to_canonical(dataframe: DataFrame) -> DataFrame:
+    require_columns(
+        dataframe,
+        _REQUIRED_COLUMNS,
+        context="Dallas canonical input",
+    )
     latitude_text = F.regexp_extract(
         F.col("location1"),
         _COORDINATE_PATTERN,

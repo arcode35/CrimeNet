@@ -5,8 +5,6 @@ from __future__ import annotations
 import argparse
 
 from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
-from pyspark.sql.window import Window
 
 from crimenet.config.resources import CrimeNetTables
 from crimenet.observability.logging import get_logger
@@ -16,7 +14,8 @@ from crimenet.spatial.h3 import (
 )
 from crimenet.transforms.canonical import (
     add_crime_offense_id,
-    build_crime_offenses
+    build_crime_offenses,
+    deduplicate_crime_offenses,
 )
 
 LOGGER = get_logger(__name__)
@@ -54,6 +53,11 @@ def run(
     bronze_schema: str,
     silver_schema: str,
 ) -> None:
+    spark.conf.set(
+        "spark.sql.session.timeZone",
+        "UTC",
+    )
+
     tables = CrimeNetTables(
         catalog=catalog,
         bronze_schema=bronze_schema,
@@ -87,55 +91,8 @@ def run(
         silver_dataframe
     )
 
-    missing_ids = silver_dataframe.filter(
-        F.col("crime_offense_id").isNull()
-    )
-
-    if not missing_ids.isEmpty():
-        examples = [
-            row.asDict()
-            for row in (
-                missing_ids
-                .select(
-                    "source_city",
-                    "source_incident_id",
-                    "source_record_id",
-                    "offense_code",
-                    "source_row_hash",
-                )
-                .limit(20)
-                .collect()
-            )
-        ]
-
-        raise RuntimeError(
-            "Some canonical crime records have no "
-            f"crime_offense_id. Examples: {examples}"
-        )
-
-    deduplication_window = (
-        Window
-        .partitionBy("crime_offense_id")
-        .orderBy(
-            F.col("updated_at").desc_nulls_last(),
-            F.col("reported_at").desc_nulls_last(),
-            F.col("occurred_at").desc_nulls_last(),
-            F.col("source_file").desc_nulls_last(),
-        )
-    )
-
-    silver_dataframe = (
+    silver_dataframe = deduplicate_crime_offenses(
         silver_dataframe
-        .withColumn(
-            "_deduplication_rank",
-            F.row_number().over(
-                deduplication_window
-            ),
-        )
-        .filter(
-            F.col("_deduplication_rank") == 1
-        )
-        .drop("_deduplication_rank")
     )
 
     silver_dataframe = add_weather_query_cell(

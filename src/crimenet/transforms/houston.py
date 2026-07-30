@@ -9,12 +9,39 @@ from crimenet.contracts.silver import SILVER_COLUMNS, assert_silver_contract
 from crimenet.transforms.common import (
     null_double,
     null_timestamp,
+    require_columns,
     trimmed_address,
     try_cast,
 )
 
+_REQUIRED_COLUMNS = (
+    "source_row_hash",
+    "incident",
+    "nibrsclass",
+    "nibrsdescription",
+    "rmsoccurrencedate",
+    "rmsoccurrencehour",
+    "offensecount",
+    "streetno",
+    "streetname",
+    "streettype",
+    "suffix",
+    "city",
+    "zipcode",
+    "beat",
+    "premise",
+    "maplatitude",
+    "maplongitude",
+    "source_file",
+)
+
 
 def to_canonical(dataframe: DataFrame) -> DataFrame:
+    require_columns(
+        dataframe,
+        _REQUIRED_COLUMNS,
+        context="Houston canonical input",
+    )
     result = dataframe.select(
         F.lit("houston").alias("source_city"),
         F.col("source_row_hash").cast("string").alias("source_record_id"),
