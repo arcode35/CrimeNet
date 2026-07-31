@@ -189,14 +189,49 @@ resources:
 
         # ============================================================
         # ACS 5-YEAR SOCIOECONOMIC DATA
-        #
-        # Source acquisition is intentionally excluded from this job.
-        # The raw ACS files must already exist in the shared landing
-        # volume before staging or production runs.
         # ============================================================
+
+        - task_key: acquire_acs5_tracts
+          environment_key: default
+
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: acs5_landing
+            parameters:
+              - --metros
+              - new_york
+              - chicago
+              - san_francisco
+              - seattle
+              - baltimore
+              - washington_dc
+
+              - --start-vintage
+              - "2012"
+
+              - --end-vintage
+              - "2024"
+
+              - --output-root
+              - ${var.raw_landing_path}/socioeconomic/acs5/tract
+
+              - --secret-scope
+              - crimenet
+
+              - --secret-key
+              - census-api-key
+
+              - --pause-seconds
+              - "0.25"
+
+          max_retries: 2
+          min_retry_interval_millis: 120000
 
         - task_key: bronze_acs5_tracts
           environment_key: default
+
+          depends_on:
+            - task_key: acquire_acs5_tracts
 
           python_wheel_task:
             package_name: crimenet
