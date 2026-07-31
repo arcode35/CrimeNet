@@ -16,6 +16,7 @@ acs5_landing = "crimenet.jobs.acs5_landing_job:main"
 silver_socioeconomic = "crimenet.jobs.silver_socioeconomic_job:main"
 gold_crime_features = "crimenet.jobs.gold_crime_features_job:main"
 silver_lighting = "crimenet.jobs.silver_lighting_job:main"
+weather_acquisition = "crimenet.jobs.weather_acquisition_job:main"
 [dependency-groups]
 dev = [
     "pytest>=8.0",

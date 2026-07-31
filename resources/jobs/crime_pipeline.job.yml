@@ -4,10 +4,9 @@ resources:
       name: ${bundle.target}-CrimeNet-crime-data-pipeline
 
       description: >
-        Ingests Dallas, Houston, and Fort Worth crime data into Bronze,
-        standardizes the sources into Silver, validates quality, enriches the
-        canonical crime data with weather, socioeconomic, and lighting data,
-        and refreshes Gold feature tables.
+        Ingests and standardizes multi-city crime data into Bronze and Silver,
+        enriches canonical incidents with weather, socioeconomic, lighting,
+        and OpenStreetMap features, and refreshes Gold modeling tables.
 
       max_concurrent_runs: 1
 
@@ -15,72 +14,87 @@ resources:
         # ============================================================
         # CRIME BRONZE INGESTION
         # ============================================================
+        - task_key: acquire_open_meteo_weather
+          depends_on:
+            - task_key: silver_transform
 
-        - task_key: bronze_dallas
           environment_key: default
 
           python_wheel_task:
             package_name: crimenet
-            entry_point: bronze_ingestion
+            entry_point: weather_acquisition
             parameters:
               - --catalog
               - ${var.catalog}
 
-              - --bronze-schema
-              - ${var.bronze_schema}
+              - --silver-schema
+              - ${var.silver_schema}
 
-              - --source
+              - --ops-schema
+              - ${var.ops_schema}
+
+              - --crime-table
+              - crime_offenses
+
+              - --raw-landing-path
+              - ${var.raw_landing_path}
+
+              - --cities
               - dallas
-
-              - --input-path
-              - ${var.raw_landing_path}/dallas
-
-          max_retries: 2
-          min_retry_interval_millis: 60000
-
-        - task_key: bronze_houston
-          environment_key: default
-
-          python_wheel_task:
-            package_name: crimenet
-            entry_point: bronze_ingestion
-            parameters:
-              - --catalog
-              - ${var.catalog}
-
-              - --bronze-schema
-              - ${var.bronze_schema}
-
-              - --source
-              - houston
-
-              - --input-path
-              - ${var.raw_landing_path}/houston
-
-          max_retries: 2
-          min_retry_interval_millis: 60000
-
-        - task_key: bronze_fort_worth
-          environment_key: default
-
-          python_wheel_task:
-            package_name: crimenet
-            entry_point: bronze_ingestion
-            parameters:
-              - --catalog
-              - ${var.catalog}
-
-              - --bronze-schema
-              - ${var.bronze_schema}
-
-              - --source
               - fort_worth
+              - new_york
+              - chicago
+              - san_francisco
+              - seattle
+              - baltimore
+              - washington_dc
 
-              - --input-path
-              - ${var.raw_landing_path}/fort_worth
+              - --start-year
+              - "2013"
+
+              - --end-year
+              - "2025"
+
+              - --model
+              - era5_land
+
+              - --h3-resolution
+              - "6"
+
+              - --max-requests
+              - "2"
+
+              - --pause-seconds
+              - "0.25"
 
           max_retries: 2
-          min_retry_interval_millis: 60000
+          min_retry_interval_millis: 120000
+
+        - task_key: bronze_cities
+
+          for_each_task:
+            inputs: ${var.crime_cities}
+            concurrency: 2
+
+            task:
+              task_key: bronze_city
+              environment_key: default
+
+              python_wheel_task:
+                package_name: crimenet
+                entry_point: bronze_ingestion
+                parameters:
+                  - --catalog
+                  - ${var.catalog}
+
+                  - --bronze-schema
+                  - ${var.bronze_schema}
+
+                  - --source
+                  - "{{input}}"
+
+                  - --input-path
+                  - "${var.raw_landing_path}/{{input}}"
 
         # ============================================================
         # CANONICAL CRIME SILVER
@@ -90,9 +104,7 @@ resources:
           environment_key: default
 
           depends_on:
-            - task_key: bronze_dallas
-            - task_key: bronze_houston
-            - task_key: bronze_fort_worth
+            - task_key: bronze_cities
 
           python_wheel_task:
             package_name: crimenet
@@ -116,9 +128,11 @@ resources:
         # ============================================================
         # WEATHER
         # ============================================================
-
         - task_key: bronze_open_meteo_weather
           environment_key: default
+
+          depends_on:
+            - task_key: acquire_open_meteo_weather
 
           python_wheel_task:
             package_name: crimenet

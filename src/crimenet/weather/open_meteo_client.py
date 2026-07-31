@@ -1,3 +1,5 @@
+"""open_meteo_client.py"""
+
 from __future__ import annotations
 
 import logging
@@ -149,7 +151,7 @@ def fetch_historical_weather(
             f"reason={payload.get('reason')}"
         )
 
-    _validate_hourly_response(
+    validate_hourly_response(
         request=request,
         payload=payload,
     )
@@ -268,7 +270,7 @@ def _validate_weather_request(
         )
 
 
-def _validate_hourly_response(
+def validate_hourly_response(
     *,
     request: WeatherRequest,
     payload: Mapping[str, Any],
