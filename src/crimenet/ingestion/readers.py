@@ -17,56 +17,48 @@ def _with_source_file(
     )
 
 
-def read_dallas_raw(
+    return _with_source_file(dataframe)
+
+def read_city_raw(
     spark: SparkSession,
     input_path: str,
+    *,
+    schema_path: str,
 ) -> DataFrame:
+    """Incrementally ingest landed city Parquet files."""
+
     dataframe = (
-        spark.read
-        .format("csv")
-        .option("header", "true")
-        .option("multiLine", "true")
-        .option("quote", '"')
-        .option("escape", '"')
-        .option("recursiveFileLookup", "true")
-        .option("pathGlobFilter", "*.csv")
+        spark.readStream
+        .format("cloudFiles")
+        .option(
+            "cloudFiles.format",
+            "parquet",
+        )
+        .option(
+            "cloudFiles.schemaLocation",
+            schema_path,
+        )
+        .option(
+            "cloudFiles.schemaEvolutionMode",
+            "rescue",
+        )
+        .option(
+            "rescuedDataColumn",
+            "_rescued_data",
+        )
+        .option(
+            "cloudFiles.includeExistingFiles",
+            "true",
+        )
+        .option(
+            "pathGlobFilter",
+            "*.parquet",
+        )
         .load(input_path)
     )
 
     return _with_source_file(dataframe)
 
-
-def read_houston_raw(
-    spark: SparkSession,
-    input_path: str,
-) -> DataFrame:
-    dataframe = (
-        spark.read
-        .format("csv")
-        .option("header", "true")
-        .option("recursiveFileLookup", "true")
-        .option("pathGlobFilter", "*.csv")
-        .load(input_path)
-    )
-
-    return _with_source_file(dataframe)
-
-
-def read_fort_worth_raw(
-    spark: SparkSession,
-    input_path: str,
-) -> DataFrame:
-    """Read Fort Worth JSON Lines data from either .json or .jsonl files."""
-    dataframe = (
-        spark.read
-        .format("json")
-        .option("multiLine", "false")
-        .option("recursiveFileLookup", "true")
-        .option("pathGlobFilter", "*.json*")
-        .load(input_path)
-    )
-
-    return _with_source_file(dataframe)
 
 
 def _read_json_lines_batch(

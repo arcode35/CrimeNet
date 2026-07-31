@@ -1,0 +1,1 @@
+"""Source-specific canonical city adapters."""

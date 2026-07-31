@@ -8,7 +8,6 @@ dependencies = [
 ]
 [project.scripts]
 bronze_ingestion = "crimenet.jobs.bronze_ingestion:main"
-silver_transform = "crimenet.jobs.silver_transform:main"
 quality_checks = "crimenet.jobs.quality_checks:main"
 gold_refresh = "crimenet.jobs.gold_refresh:main"
 silver_weather = "crimenet.jobs.silver_weather_job:main"
@@ -17,6 +16,10 @@ silver_socioeconomic = "crimenet.jobs.silver_socioeconomic_job:main"
 gold_crime_features = "crimenet.jobs.gold_crime_features_job:main"
 silver_lighting = "crimenet.jobs.silver_lighting_job:main"
 weather_acquisition = "crimenet.jobs.weather_acquisition_job:main"
+crime_acquisition = "crimenet.jobs.crime_acquisition_job:main"
+canonical_silver = "crimenet.jobs.canonical_silver_job:main"
+publish_canonical_silver = "crimenet.jobs.publish_canonical_silver_job:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",

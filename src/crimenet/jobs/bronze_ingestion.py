@@ -13,9 +13,7 @@ from crimenet.ingestion.column_names import normalize_column_names
 from crimenet.ingestion.metadata import add_ingestion_metadata
 from crimenet.ingestion.readers import (
     read_acs5_tract_raw,
-    read_dallas_raw,
-    read_fort_worth_raw,
-    read_houston_raw,
+    read_city_raw,
     read_weather_raw,
 )
 from crimenet.observability.logging import get_logger
@@ -39,28 +37,40 @@ class StreamingReader(Protocol):
     ) -> DataFrame:
         ...
 
+CITY_SOURCES = (
+    "dallas",
+    "fort_worth",
+    "houston",
+    "seattle",
+    "chicago",
+    "new_york",
+    "san_francisco",
+    "baltimore",
+    "washington_dc",
+)
 
-BATCH_READERS: dict[str, Reader] = {
-    "dallas": read_dallas_raw,
-    "houston": read_houston_raw,
-    "fort_worth": read_fort_worth_raw,
-}
-
-STREAMING_READERS: dict[str, StreamingReader] = {
+STREAMING_READERS: dict[
+    str,
+    StreamingReader,
+] = {
+    **{
+        source: read_city_raw
+        for source in CITY_SOURCES
+    },
     "open_meteo_weather": read_weather_raw,
     "acs5_tract": read_acs5_tract_raw,
 }
+
 
 SOURCE_SYSTEMS = {
     "open_meteo_weather": "open_meteo",
     "acs5_tract": "census_acs5",
 }
 
-SUPPORTED_SOURCES = (
-    *BATCH_READERS.keys(),
-    *STREAMING_READERS.keys(),
-)
 
+SUPPORTED_SOURCES = tuple(
+    STREAMING_READERS.keys()
+)
 COLUMN_OVERRIDES: dict[
     str,
     dict[str, str],
@@ -188,11 +198,21 @@ def _run_streaming_ingestion(
 
     normalized_dataframe = normalize_column_names(
         raw_dataframe,
+        overrides=COLUMN_OVERRIDES.get(source),
+    )
+
+    source_system = SOURCE_SYSTEMS.get(
+        source,
+        source,
     )
 
     bronze_dataframe = add_ingestion_metadata(
         normalized_dataframe,
-        source_system=SOURCE_SYSTEMS[source],
+        source_system=source_system,
+    )
+
+    target_table = tables.bronze_for_source(
+        source
     )
 
     query = (
@@ -209,13 +229,10 @@ def _run_streaming_ingestion(
         .trigger(
             availableNow=True,
         )
-        .toTable(
-            tables.bronze_for_source(source)
-        )
+        .toTable(target_table)
     )
 
     query.awaitTermination()
-
 
 def run(
     spark: SparkSession,
@@ -224,44 +241,35 @@ def run(
     bronze_schema: str,
     source: str,
     input_path: str,
-    write_mode: str,
     schema_path: str | None = None,
     checkpoint_path: str | None = None,
+    write_mode: str = "append",
 ) -> None:
+    del write_mode
+
+    if schema_path is None:
+        raise ValueError(
+            f"schema_path is required for {source}"
+        )
+
+    if checkpoint_path is None:
+        raise ValueError(
+            f"checkpoint_path is required for {source}"
+        )
+
     tables = CrimeNetTables(
         catalog=catalog,
         bronze_schema=bronze_schema,
     )
 
-    if source in STREAMING_READERS:
-        if schema_path is None:
-            raise ValueError(
-                f"schema_path is required for {source}"
-            )
-
-        if checkpoint_path is None:
-            raise ValueError(
-                f"checkpoint_path is required for {source}"
-            )
-
-        _run_streaming_ingestion(
-            spark,
-            tables=tables,
-            source=source,
-            input_path=input_path,
-            schema_path=schema_path,
-            checkpoint_path=checkpoint_path,
-        )
-        return
-
-    _run_batch_ingestion(
+    _run_streaming_ingestion(
         spark,
         tables=tables,
         source=source,
         input_path=input_path,
-        write_mode=write_mode,
+        schema_path=schema_path,
+        checkpoint_path=checkpoint_path,
     )
-
 
 def main() -> None:
     args = parse_args()

@@ -16,7 +16,7 @@ resources:
         # ============================================================
         - task_key: acquire_open_meteo_weather
           depends_on:
-            - task_key: silver_transform
+            - task_key: publish_canonical_silver
 
           environment_key: default
 
@@ -70,12 +70,88 @@ resources:
           max_retries: 2
           min_retry_interval_millis: 120000
 
+        - task_key: acquire_crime_data
+          environment_key: default
+
+          python_wheel_task:
+            package_name: crimenet
+            entry_point: crime_acquisition
+            parameters:
+              - --cities
+              - dallas
+              - fort_worth
+              - chicago
+              - new_york
+              - san_francisco
+              - seattle
+              - baltimore
+              - washington_dc
+
+              - --start-year
+              - "2025"
+
+              - --end-year
+              - "2025"
+
+              - --output-root
+              - ${var.raw_landing_path}
+
+              - --socrata-page-size
+              - "25000"
+
+              - --arcgis-page-size
+              - "2000"
+
+              - --pause-seconds
+              - "0.10"
+
+              - --socrata-secret-scope
+              - crimenet
+
+              - --socrata-secret-key
+              - socrata-app-token
+
+          max_retries: 2
+          min_retry_interval_millis: 120000
+
         - task_key: bronze_cities
-
           for_each_task:
-            inputs: ${var.crime_cities}
-            concurrency: 2
-
+            inputs: >-
+              [
+                {
+                  "source": "seattle",
+                  "directory": "seattle"
+                },
+                {
+                  "source": "chicago",
+                  "directory": "chicago"
+                },
+                {
+                  "source": "new_york",
+                  "directory": "new_york"
+                },
+                {
+                  "source": "san_francisco",
+                  "directory": "san_francisco"
+                },
+                {
+                  "source": "baltimore",
+                  "directory": "baltimore"
+                },
+                {
+                  "source": "washington_dc",
+                  "directory": "washington_dc"
+                },
+                {
+                  "source": "dallas",
+                  "directory": "dallas_parquet"
+                },
+                {
+                  "source": "fort_worth",
+                  "directory": "fort_worth_parquet"
+                }
+              ]
+            concurrency: 4
             task:
               task_key: bronze_city
               environment_key: default
@@ -88,43 +164,83 @@ resources:
                   - ${var.catalog}
 
                   - --bronze-schema
-                  - ${var.bronze_schema}
+                  - bronze
 
                   - --source
-                  - "{{input}}"
+                  - "{{input.source}}"
 
                   - --input-path
-                  - "${var.raw_landing_path}/{{input}}"
+                  - "${var.raw_landing_path}/{{input.directory}}"
 
+                  - --schema-path
+                  - "${var.autoloader_schema_path}/bronze/{{input.source}}"
+
+                  - --checkpoint-path
+                  - "${var.checkpoints_path}/bronze/{{input.source}}"
         # ============================================================
         # CANONICAL CRIME SILVER
         # ============================================================
 
-        - task_key: silver_transform
-          environment_key: default
+        - task_key: canonical_silver_cities
 
           depends_on:
             - task_key: bronze_cities
 
+          for_each_task:
+            inputs: >-
+              [
+                "dallas",
+                "fort_worth",
+                "new_york",
+                "chicago",
+                "san_francisco",
+                "seattle",
+                "baltimore",
+                "washington_dc"
+              ]
+
+            concurrency: 8
+
+            task:
+              task_key: canonical_silver_city
+              environment_key: default
+
+              python_wheel_task:
+                package_name: crimenet
+                entry_point: canonical_silver
+
+                parameters:
+                  - --catalog
+                  - ${var.catalog}
+
+                  - --bronze-schema
+                  - bronze
+
+                  - --silver-schema
+                  - silver
+
+                  - --minimum-year
+                  - "2014"
+
+                  - --city
+                  - "{{input}}"
+        - task_key: publish_canonical_silver
+
+          depends_on:
+            - task_key: canonical_silver_cities
+
+          environment_key: default
+
           python_wheel_task:
             package_name: crimenet
-            entry_point: silver_transform
+            entry_point: publish_canonical_silver
+
             parameters:
               - --catalog
               - ${var.catalog}
 
-              - --bronze-schema
-              - ${var.bronze_schema}
-
               - --silver-schema
-              - ${var.silver_schema}
-
-              - --data-quality-schema
-              - ${var.data_quality_schema}
-
-          max_retries: 1
-          min_retry_interval_millis: 60000
-
+              - silver
         # ============================================================
         # WEATHER
         # ============================================================
@@ -151,10 +267,10 @@ resources:
               - ${var.raw_landing_path}/weather/open_meteo
 
               - --schema-path
-              - /Volumes/${var.catalog}/${var.ops_schema}/${var.autoloader_schemas_volume}/open_meteo_weather
+              - /Volumes/${var.catalog}/${var.ops_schema}/${var.autoloader_schema_path}/open_meteo_weather
 
               - --checkpoint-path
-              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/bronze/open_meteo_weather
+              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_path}/bronze/open_meteo_weather
 
               - --write-mode
               - append
@@ -182,7 +298,7 @@ resources:
               - ${var.silver_schema}
 
               - --checkpoint-path
-              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/silver/weather_hourly
+              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_path}/silver/weather_hourly
 
           max_retries: 1
           min_retry_interval_millis: 60000
@@ -193,6 +309,9 @@ resources:
 
         - task_key: acquire_acs5_tracts
           environment_key: default
+
+          depends_on:
+            - task_key: publish_canonical_silver
 
           python_wheel_task:
             package_name: crimenet
@@ -250,10 +369,10 @@ resources:
               - ${var.raw_landing_path}/socioeconomic/acs5/tract
 
               - --schema-path
-              - /Volumes/${var.catalog}/${var.ops_schema}/${var.autoloader_schemas_volume}/acs5_tract
+              - /Volumes/${var.catalog}/${var.ops_schema}/${var.autoloader_schema_path}/acs5_tract
 
               - --checkpoint-path
-              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/bronze/acs5_tract
+              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_path}/bronze/acs5_tract
 
               - --write-mode
               - append
@@ -281,7 +400,7 @@ resources:
               - ${var.silver_schema}
 
               - --checkpoint-path
-              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_volume}/silver/acs5_tract
+              - /Volumes/${var.catalog}/${var.ops_schema}/${var.checkpoints_path}/silver/acs5_tract
 
           max_retries: 1
           min_retry_interval_millis: 60000
@@ -294,7 +413,7 @@ resources:
           environment_key: default
 
           depends_on:
-            - task_key: silver_transform
+            - task_key: publish_canonical_silver
 
           python_wheel_task:
             package_name: crimenet

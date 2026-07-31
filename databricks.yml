@@ -42,15 +42,15 @@ variables:
     description: Shared read-only raw landing volume
     default: /Volumes/crimenet_dev/raw_files/landing
 
-  autoloader_schemas_volume:
-    description: Target-specific Auto Loader schema state volume
-    default: autoloader_schemas
+  checkpoints_path:
+    description: Root path for Structured Streaming checkpoints
+    default: /Volumes/crimenet_dev/ops/checkpoints
 
-  checkpoints_volume:
-    description: Target-specific checkpoint volume
-    default: checkpoints
+  autoloader_schema_path:
+    description: Root path for Auto Loader inferred schemas
+    default: /Volumes/crimenet_dev/ops/autoloader_schemas
 
-  test_fixtures_volume:
+  test_fixtures_path:
     description: Staging volume receiving CI integration-test fixtures
     default: test_fixtures
 

@@ -1,0 +1,1 @@
+"""Canonical CrimeNet Silver contract."""
