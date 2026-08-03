@@ -1,0 +1,12 @@
+numpy>=2.0
+polars>=1.30
+pyarrow>=18
+pandas>=2.2
+scikit-learn>=1.6
+xgboost>=3.0
+pyyaml>=6.0
+
+[dev]
+pytest>=8.0
+ruff>=0.9
+mypy>=1.14

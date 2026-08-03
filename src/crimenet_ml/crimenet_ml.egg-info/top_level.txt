@@ -1,0 +1,9 @@
+configs
+crimenet_ml
+data
+evaluation
+features
+scripts
+src
+tests
+training

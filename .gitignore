@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environments
+venv/
+.venv/
+
+# IDE and operating system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Generated artifacts
+artifacts/*
+!artifacts/.gitkeep
+
+models/*
+!models/.gitkeep
+
+reports/figures/*
+!reports/figures/.gitkeep
+
+mlruns/
+wandb/
+
+# Local datasets
+crimenet_datasets/
+data/
+
+# Notebooks
+.ipynb_checkpoints/

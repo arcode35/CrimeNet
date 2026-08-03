@@ -1,0 +1,52 @@
+experiment:
+  name: xgb_history_v1
+  feature_set: history_v1
+  random_seed: 42
+
+data:
+  dataset_dir: crimenet_datasets/ml_spatiotemporal_examples_k5
+  parquet_glob: "**/*.parquet"
+  label_column: is_observed_event
+  weight_column: importance_weight
+  use_sample_weight: true
+  normalize_sample_weight: true
+  categorical_columns:
+    - offense_mark
+  metadata_columns:
+    - example_id
+    - example_timestamp_utc
+    - osm_h3_cell_id
+
+split:
+  mode: temporal
+  timestamp_column: example_timestamp_utc
+  validation_start: "2024-01-01T00:00:00"
+  test_start: "2025-01-01T00:00:00"
+
+model:
+  objective: binary:logistic
+  eval_metric:
+    - logloss
+    - aucpr
+  n_estimators: 3000
+  learning_rate: 0.03
+  max_depth: 8
+  min_child_weight: 20
+  subsample: 0.80
+  colsample_bytree: 0.80
+  reg_alpha: 0.10
+  reg_lambda: 5.0
+  gamma: 0.0
+  max_bin: 256
+  max_cat_to_onehot: 8
+  tree_method: hist
+  device: cpu
+  n_jobs: -1
+  early_stopping_rounds: 100
+
+output:
+  artifact_dir: artifacts/xgboost
+  save_test_predictions: true
+
+training:
+  verbose_eval: 25
