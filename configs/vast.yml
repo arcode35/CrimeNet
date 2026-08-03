@@ -1,0 +1,25 @@
+extends: base.yml
+
+environment: vast
+
+data:
+  backend: local
+  path: ${CRIMENET_DATA_PATH}
+
+model:
+  device: cuda
+  n_jobs: -1
+
+tracking:
+  enabled: true
+  tracking_uri: ${MLFLOW_TRACKING_URI}
+  registry_uri: ${MLFLOW_REGISTRY_URI}
+  experiment_name: ${MLFLOW_EXPERIMENT_NAME}
+  register_model: false
+  registered_model_name: crimenet_xgb_history_poisson
+  calibrated_model_artifact_name: model
+  raw_model_artifact_name: raw_xgboost_model
+
+output:
+  artifact_dir: ${CRIMENET_ARTIFACT_DIR}
+  write_test_predictions: false
