@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen --extra local --extra dev
+
+      - run: uv run ruff check .
+
+      - run: uv run pytest -q --disable-warnings
+
+      - name: Verify portable imports
+        run: |
+          uv run python - <<'PY'
+          import sys
+          from crimenet_ml.models.xgb_poisson import XGBPoissonModel
+          from crimenet_ml.training.train import main
+
+          assert "pyspark" not in sys.modules
+          print("Portable imports passed")
+          PY

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
@@ -273,7 +274,12 @@ def train(
             python_model=wrapper,
             input_example=example,
             signature=signature,
-            pip_requirements=["mlflow", "pandas", "numpy", "xgboost"],
+            pip_requirements=[
+                f"mlflow=={version('mlflow')}",
+                f"pandas=={version('pandas')}",
+                f"numpy=={version('numpy')}",
+                f"xgboost=={version('xgboost')}",
+            ],
         )
         loaded = mlflow.pyfunc.load_model(model_info.model_uri)
         round_trip = loaded.predict(example)["predicted_intensity"].to_numpy()

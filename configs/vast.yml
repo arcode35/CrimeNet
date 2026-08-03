@@ -4,7 +4,7 @@ environment: vast
 
 data:
   backend: local
-  path: ${CRIMENET_DATA_PATH}
+  path: ${CRIMENET_DATA_PATH:-/workspace/crimenet_data/ml_spatiotemporal_examples_k5}
 
 model:
   device: cuda
@@ -12,14 +12,14 @@ model:
 
 tracking:
   enabled: true
-  tracking_uri: ${MLFLOW_TRACKING_URI}
-  registry_uri: ${MLFLOW_REGISTRY_URI}
-  experiment_name: ${MLFLOW_EXPERIMENT_NAME}
+  tracking_uri: ${MLFLOW_TRACKING_URI:-http://127.0.0.1:5000}
+  registry_uri: ${MLFLOW_REGISTRY_URI:-http://127.0.0.1:5000}
+  experiment_name: ${MLFLOW_EXPERIMENT_NAME:-crimenet/vast/xgb-history-poisson}
   register_model: false
   registered_model_name: crimenet_xgb_history_poisson
   calibrated_model_artifact_name: model
   raw_model_artifact_name: raw_xgboost_model
 
 output:
-  artifact_dir: ${CRIMENET_ARTIFACT_DIR}
+  artifact_dir: ${CRIMENET_ARTIFACT_DIR:-/workspace/crimenet_state/artifacts}
   write_test_predictions: false

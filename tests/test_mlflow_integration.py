@@ -44,6 +44,13 @@ def _write_split(root: Path, split: str, categories: list[str]) -> None:
 
 
 def test_tiny_training_logs_loadable_calibrated_model(tmp_path: Path, monkeypatch) -> None:
+    for variable in (
+        "MLFLOW_TRACKING_URI",
+        "MLFLOW_REGISTRY_URI",
+        "MLFLOW_EXPERIMENT_NAME",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+
     monkeypatch.chdir(tmp_path)
     dataset = tmp_path / "dataset"
     _write_split(dataset, "train", ["a", "b"] * 8)
