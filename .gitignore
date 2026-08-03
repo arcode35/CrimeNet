@@ -2,7 +2,7 @@ mlflow.db
 mlruns/
 mlartifacts/
 artifacts/
-models/
++/models/
 dist/
 *.egg-info/
 .bundle/
