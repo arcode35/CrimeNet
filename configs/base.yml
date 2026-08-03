@@ -1,0 +1,56 @@
+environment: base
+feature_set: history_v1
+feature_definition_version: "1.0.0"
+split_definition_version: "1.0.0"
+random_seed: 42
+data:
+  backend: local
+  split_column: dataset_split
+  event_count_column: event_multiplicity
+  integration_weight_column: importance_weight
+  categorical_columns: [offense_mark]
+  identifier_columns: [example_id]
+  metadata_columns:
+    - example_timestamp_utc
+    - osm_h3_cell_id
+    - source_city
+    - is_observed_event
+  allow_missing_features:
+    - hours_since_last_cell
+    - hours_since_last_same_mark_cell
+    - hours_since_last_city
+    - hours_since_last_k1
+    - hours_since_last_same_mark_k1
+  collection_row_limit: 5000000
+  allow_large_collection: false
+model:
+  family: xgb_poisson
+  objective: count:poisson
+  eval_metric: poisson-nloglik
+  n_estimators: 3000
+  learning_rate: 0.03
+  max_depth: 8
+  min_child_weight: 1.0
+  subsample: 0.8
+  colsample_bytree: 0.8
+  reg_alpha: 0.0
+  reg_lambda: 1.0
+  gamma: 0.0
+  max_delta_step: 0.7
+  max_bin: 256
+  tree_method: hist
+  device: cpu
+  n_jobs: -1
+  early_stopping_rounds: 100
+tracking:
+  enabled: true
+  tracking_uri: sqlite:///mlflow.db
+  registry_uri: sqlite:///mlflow.db
+  experiment_name: crimenet/local/xgb-history-poisson
+  register_model: false
+  registered_model_name: crimenet_xgb_history_poisson
+  calibrated_model_artifact_name: model
+  raw_model_artifact_name: raw_xgboost_model
+output:
+  artifact_dir: artifacts
+  write_test_predictions: false

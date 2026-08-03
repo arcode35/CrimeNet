@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "crimenet-ml"
+version = "0.1.0"
+description = "CrimeNet weighted Poisson XGBoost training and MLflow deployment"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "mlflow>=2.17,<3",
+  "numpy>=1.26,<3",
+  "pandas>=2.2,<3",
+  "polars>=1.30,<2",
+  "pyarrow>=17,<24",
+  "pydantic>=2.7,<3",
+  "pyyaml>=6,<7",
+  "scikit-learn>=1.5,<2",
+  "xgboost>=2.1,<4",
+]
+
+[project.optional-dependencies]
+databricks = ["databricks-sdk>=0.50,<1", "pyspark>=3.5,<5"]
+dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
+local = []
+
+[project.scripts]
+crimenet-train = "crimenet_ml.training.train:main"
+crimenet-register = "crimenet_ml.registry.register:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/crimenet_ml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

@@ -1,0 +1,9 @@
+extends: base.yml
+environment: prod
+data:
+  backend: databricks
+  table: ${CRIMENET_DATA_TABLE:-crimenet_prod.gold.ml_spatiotemporal_examples_k5}
+tracking:
+  tracking_uri: ${MLFLOW_TRACKING_URI:-databricks}
+  registry_uri: ${MLFLOW_REGISTRY_URI:-databricks-uc}
+  experiment_name: ${MLFLOW_EXPERIMENT_NAME:-/Shared/crimenet/prod/xgb-history-poisson}

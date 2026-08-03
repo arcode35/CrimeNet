@@ -1,0 +1,14 @@
+mlflow.db
+mlruns/
+mlartifacts/
+artifacts/
+models/
+dist/
+*.egg-info/
+.bundle/
+.databricks/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+crimenet_datasets/

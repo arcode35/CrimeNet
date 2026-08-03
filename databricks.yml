@@ -1,0 +1,46 @@
+bundle:
+  name: crimenet-ml
+
+include:
+  - resources/jobs/*.yml
+
+artifacts:
+  default:
+    type: whl
+    build: uv build --wheel
+    path: .
+
+variables:
+  catalog:
+    description: Unity Catalog containing CrimeNet data and models
+    default: crimenet_dev
+  experiment_path:
+    description: MLflow workspace experiment path
+    default: /Shared/crimenet/dev/xgb-history-poisson
+  config_path:
+    description: Configuration passed to crimenet-train
+    default: configs/dev.yml
+  run_as_service_principal:
+    description: Optional service-principal application ID
+    default: ""
+
+targets:
+  dev:
+    default: true
+    mode: development
+    variables:
+      catalog: crimenet_dev
+      config_path: configs/dev.yml
+      experiment_path: /Shared/crimenet/dev/xgb-history-poisson
+  staging:
+    mode: production
+    variables:
+      catalog: crimenet_staging
+      config_path: configs/staging.yml
+      experiment_path: /Shared/crimenet/staging/xgb-history-poisson
+  prod:
+    mode: production
+    variables:
+      catalog: crimenet_prod
+      config_path: configs/prod.yml
+      experiment_path: /Shared/crimenet/prod/xgb-history-poisson

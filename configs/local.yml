@@ -1,0 +1,5 @@
+extends: base.yml
+environment: local
+data:
+  backend: local
+  path: ./crimenet_datasets/ml_spatiotemporal_examples_k5
