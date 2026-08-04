@@ -1,3 +1,9 @@
 extends: vast.yml
 
 feature_set: history_no_k1_v1
+
+data:
+  allow_missing_features:
+    - hours_since_last_cell
+    - hours_since_last_same_mark_cell
+    - hours_since_last_city
