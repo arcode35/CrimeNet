@@ -1,0 +1,3 @@
+extends: vast.yml
+
+feature_set: history_no_k1_v1

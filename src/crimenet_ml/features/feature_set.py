@@ -109,14 +109,53 @@ class FeatureSet:
             raise ValueError("Categorical columns must be model features")
 
 
-HISTORY_V1 = FEATURE_GROUPS["mark"] + FEATURE_GROUPS["temporal"] + FEATURE_GROUPS["history"]
-CORE_V1 = tuple(feature for group in FEATURE_GROUPS.values() for feature in group)
+HISTORY_V1 = (
+    FEATURE_GROUPS["mark"]
+    + FEATURE_GROUPS["temporal"]
+    + FEATURE_GROUPS["history"]
+)
+
+K1_ARTIFACT_FEATURES = frozenset(
+    {
+        "k1_count_6h",
+        "k1_count_24h",
+        "k1_count_7d",
+        "k1_count_28d",
+        "hours_since_last_k1",
+        "same_mark_k1_count_6h",
+        "same_mark_k1_count_24h",
+        "same_mark_k1_count_7d",
+        "same_mark_k1_count_28d",
+        "hours_since_last_same_mark_k1",
+        "cell_share_of_k1_crime_24h",
+        "local_neighbor_crime_difference_24h",
+        "local_neighbor_crime_difference_7d",
+    }
+)
+
+HISTORY_NO_K1_V1 = tuple(
+    feature
+    for feature in HISTORY_V1
+    if feature not in K1_ARTIFACT_FEATURES
+)
+
+CORE_V1 = tuple(
+    feature
+    for group in FEATURE_GROUPS.values()
+    for feature in group
+)
+
 FEATURE_SETS = {
     "history_v1": FeatureSet("history_v1", HISTORY_V1),
+    "history_no_k1_v1": FeatureSet(
+        "history_no_k1_v1",
+        HISTORY_NO_K1_V1,
+    ),
     "core_v1": FeatureSet("core_v1", CORE_V1),
 }
 
 assert len(HISTORY_V1) == 40
+assert len(HISTORY_NO_K1_V1) == 27
 assert len(CORE_V1) == 77
 
 
