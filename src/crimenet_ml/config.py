@@ -77,7 +77,11 @@ class OutputConfig(StrictModel):
 
 class AppConfig(StrictModel):
     environment: str
-    feature_set: Literal["history_v1", "core_v1"] = "history_v1"
+    feature_set: Literal[
+    "history_v1",
+    "history_no_k1_v1",
+    "core_v1",
+    ] = "history_v1"
     feature_definition_version: str = "1.0.0"
     split_definition_version: str = "1.0.0"
     random_seed: int = 42
