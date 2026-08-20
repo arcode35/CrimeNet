@@ -1,5 +1,5 @@
 model:
-  name: mark_subtype_v1_depth12
+  name: xgb_mark_subtype_v1_depth12
   module: machine_learning.models.xgboost.mark_model
 
 data:
@@ -11,7 +11,7 @@ data:
   seed: 42
 
 target:
-  column: canonical_family_code
+  column: canonical_subtype_code
 
 features:
   feature_set: full_v1
@@ -25,7 +25,7 @@ architecture:
   tree_method: hist
   device: cuda
   max_bin: 256
-  max_depth: 12
+  max_depth: 10
   max_cat_to_onehot: 4
 
 optimization:
@@ -33,9 +33,9 @@ optimization:
   subsample: 0.8
   colsample_bytree: 0.8
   min_child_weight: 10
-  reg_lambda: 10
-  reg_alpha: 0
-  gamma: 0
+  reg_lambda: 10.0
+  reg_alpha: 0.0
+  gamma: 0.0
 
 training:
   num_boost_round: 2000
