@@ -1,5 +1,5 @@
 model:
-  name: xgb_mark_family_v1
+  name: mark_subtype_v1_depth14
   module: machine_learning.models.xgboost.mark_model
 
 data:
