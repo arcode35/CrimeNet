@@ -25,7 +25,7 @@ architecture:
   tree_method: hist
   device: cuda
   max_bin: 256
-  max_depth: 10
+  max_depth: 12
   max_cat_to_onehot: 4
 
 optimization:
