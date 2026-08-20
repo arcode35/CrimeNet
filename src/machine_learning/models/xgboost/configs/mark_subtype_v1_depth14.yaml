@@ -42,5 +42,9 @@ training:
   early_stopping_rounds: 50
   verbose_eval: 10
 
+validation:
+  year: 2024
+  device: cuda
+
 artifacts:
   output_root: artifacts/experiments
