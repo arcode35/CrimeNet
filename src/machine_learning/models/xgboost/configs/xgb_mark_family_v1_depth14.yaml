@@ -1,0 +1,46 @@
+model:
+  name: xgb_mark_family_v1
+  module: machine_learning.models.xgboost.mark_model
+
+data:
+  model_table_root: gs://crimenet/gold_staging_/model_table_nyc_timestamp_fix
+  train_split: train
+  validation_split: validation
+  train_fraction: 1.0
+  validation_fraction: 0.1
+  seed: 42
+
+target:
+  column: canonical_family_code
+
+features:
+  feature_set: full_v1
+  include_source_city: true
+  include_calendar: true
+  include_context: true
+  include_lighting: true
+  include_history: true
+
+architecture:
+  tree_method: hist
+  device: cuda
+  max_bin: 256
+  max_depth: 14
+  max_cat_to_onehot: 4
+
+optimization:
+  learning_rate: 0.05
+  subsample: 0.8
+  colsample_bytree: 0.8
+  min_child_weight: 10
+  reg_lambda: 10
+  reg_alpha: 0
+  gamma: 0
+
+training:
+  num_boost_round: 2000
+  early_stopping_rounds: 50
+  verbose_eval: 10
+
+artifacts:
+  output_root: artifacts/experiments
