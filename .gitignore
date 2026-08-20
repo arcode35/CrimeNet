@@ -1,3 +1,6 @@
+# macOS
+.DS_Store
+**/.DS_Store
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -201,3 +204,27 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ============================================================
+# CrimeNet generated ML / experiment artifacts
+# ============================================================
+
+# Native training / validation artifacts
+src/machine_learning/artifacts/
+
+# Experiment runtime logs
+src/machine_learning/experiments/log/
+
+# Generated data-pipeline diagnostics / temporary files
+src/crimenet_data/artifacts/
+src/crimenet_data/tmp/
+
+# Generated diagnostic outputs produced by scripts
+src/crimenet_data/scripts/integration_cell_deciles.csv
+src/crimenet_data/scripts/integration_city_year_diagnostics.csv
+src/crimenet_data/scripts/integration_time_deciles.csv
+src/crimenet_data/scripts/integration_window_diagnostics.csv
+src/crimenet_data/scripts/observation_monthly_activity.csv
+src/crimenet_data/scripts/observation_ranges_candidates.json
+src/crimenet_data/scripts/observation_suspicious_gaps.csv
+src/crimenet_data/scripts/observation_yearly_activity.csv

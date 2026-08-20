@@ -1,0 +1,56 @@
+model:
+  family: xgboost
+  module: machine_learning.models.xgboost.model
+  validation_module: machine_learning.models.xgboost.validation
+  name: xgb_pp_full_train_v1_depth16
+  description: Full-feature XGBoost point-process baseline trained on 100% of training split
+
+data:
+  model_table_root: gs://crimenet/gold_staging_/model_table_nyc_timestamp_fix
+  train_split: train
+  validation_split: validation
+  train_fraction: 1.0
+  validation_fraction: 0.10
+  seed: 42
+
+architecture:
+  objective: point_process_poisson
+  tree_method: hist
+  device: cpu
+  max_bin: 256
+  max_depth: 14
+  max_cat_to_onehot: 4
+
+optimization:
+  learning_rate: 0.03
+  subsample: 0.90
+  colsample_bytree: 0.90
+  min_child_weight: 50.0
+  max_delta_step: 1.0
+  reg_lambda: 10.0
+  reg_alpha: 0.0
+
+training:
+  num_boost_round: 1000
+  early_stopping_rounds: 50
+  verbose_eval: 10
+
+validation:
+  year: 2024
+
+features:
+  feature_set: full_v1
+  include_source_city: true
+  include_calendar: true
+  include_context: true
+  include_lighting: true
+  include_history: true
+
+numerics:
+  min_log_intensity: -30.0
+  max_log_intensity: 15.0
+  hessian_floor: 1.0e-6
+  event_exposure_tolerance: 1.0e-12
+
+artifacts:
+  output_root: artifacts/experiments
