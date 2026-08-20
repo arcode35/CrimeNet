@@ -1,66 +1,34 @@
 import polars as pl
 
 GCP = pl.CredentialProviderGCP()
-df = pl.scan_delta("gs://crimenet/gold_staging_/model_table_nyc_timestamp_fix", credential_provider=GCP)
-(
-    df
-    .select(
-        "canonical_subtype_code",
-        "canonical_family_code",
-    )
-    .unique()
-    .group_by(
-        "canonical_subtype_code"
-    )
-    .agg(
-        pl.col("canonical_family_code")
-        .n_unique()
-        .alias("family_count")
-    )
-    .filter(
-        pl.col("family_count") != 1
-    )
+
+pl.Config.set_tbl_rows(-1)
+pl.Config.set_tbl_cols(-1)
+df = pl.scan_delta(
+    "gs://crimenet/gold_staging_/model_table_nyc_timestamp_fix",
+    credential_provider=GCP,
 )
 
-print(
-    df.filter(
-        pl.col("is_observed_event")
-    )
+marks = (
+    df
+    .filter(pl.col("is_observed_event"))
     .select(
         [
-            "model_row_id",
-            "source_city",
-            "row_timestamp_utc",
-            "canonical_family_code",
-            "canonical_offense_family",
             "canonical_subtype_code",
             "canonical_offense_subtype",
-        ]
-    )
-    .head(20)
-    .collect()
-)
-check = (
-    df.filter(
-        pl.col("is_observed_event")
-    )
-    .select(
-        [
-            "canonical_subtype_code",
             "canonical_family_code",
+            "canonical_offense_family",
         ]
     )
     .unique()
-    .group_by(
-        "canonical_subtype_code"
+    .sort(
+        [
+            "canonical_family_code",
+            "canonical_subtype_code",
+        ]
     )
-    .agg(
-        pl.col("canonical_family_code")
-        .n_unique()
-        .alias("family_count")
-    )
-    .filter(
-        pl.col("family_count") != 1
-    )
+    .collect()
 )
 
+print(marks)
+print(f"\nDistinct marks: {marks['canonical_subtype_code'].n_unique()}")

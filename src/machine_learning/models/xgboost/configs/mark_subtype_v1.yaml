@@ -1,6 +1,7 @@
 model:
   name: xgb_mark_subtype_v1
   module: machine_learning.models.xgboost.mark_model
+  validation_module: machine_learning.models.xgboost.mark_validation
 
 data:
   model_table_root: gs://crimenet/gold_staging_/model_table_nyc_timestamp_fix
