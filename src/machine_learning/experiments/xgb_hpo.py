@@ -325,13 +325,24 @@ def suggest_params(
             1e4,
             log=True,
         ),
-        "reg_alpha": trial.suggest_float(
-            "reg_alpha",
+    }
+
+    # L1 regularization has a meaningful exact-zero state, which cannot be
+    # represented by an Optuna log distribution. Model it as off vs log-scale.
+    use_reg_alpha = trial.suggest_categorical(
+        "use_reg_alpha",
+        [False, True],
+    )
+    params["reg_alpha"] = (
+        trial.suggest_float(
+            "reg_alpha_nonzero",
             1e-8,
             1e3,
             log=True,
-        ),
-    }
+        )
+        if use_reg_alpha
+        else 0.0
+    )
 
     if family == "intensity":
         params["max_delta_step"] = trial.suggest_float(
@@ -378,8 +389,12 @@ def params_for_enqueue(
         "colsample_bytree": float(opt["colsample_bytree"]),
         "min_child_weight": float(opt["min_child_weight"]),
         "reg_lambda": float(opt["reg_lambda"]),
-        "reg_alpha": float(opt["reg_alpha"]),
     }
+
+    reg_alpha = float(opt.get("reg_alpha", 0.0))
+    p["use_reg_alpha"] = reg_alpha > 0.0
+    if reg_alpha > 0.0:
+        p["reg_alpha_nonzero"] = reg_alpha
 
     if family == "intensity":
         p["max_delta_step"] = float(opt["max_delta_step"])
@@ -399,6 +414,14 @@ def normalized_params_from_trial(
 ) -> dict[str, Any]:
     """Convert Optuna's conditional parameter dictionary to actual config values."""
     out = dict(params)
+
+    use_reg_alpha = bool(out.pop("use_reg_alpha", False))
+    reg_alpha_nonzero = out.pop("reg_alpha_nonzero", None)
+    out["reg_alpha"] = (
+        float(reg_alpha_nonzero)
+        if use_reg_alpha
+        else 0.0
+    )
 
     if family == "mark":
         use_gamma = bool(out.pop("use_gamma", False))
@@ -541,12 +564,11 @@ def trial_objective(
     keep_artifacts: bool,
 ):
     def objective(trial: optuna.Trial) -> float:
-        raw = suggest_params(
+        params = suggest_params(
             trial,
             family=family,
             space=space,
         )
-        params = normalized_params_from_trial(raw, family=family)
 
         label = f"{study_tag}_{stage.name}_trial_{trial.number:05d}"
 
@@ -648,11 +670,18 @@ def enqueue_trial_params(
     family: str,
 ) -> None:
     enqueue = dict(params)
+
+    reg_alpha = float(enqueue.pop("reg_alpha", 0.0))
+    enqueue["use_reg_alpha"] = reg_alpha > 0.0
+    if reg_alpha > 0.0:
+        enqueue["reg_alpha_nonzero"] = reg_alpha
+
     if family == "mark":
         gamma = float(enqueue.pop("gamma", 0.0))
         enqueue["use_gamma"] = gamma > 0.0
         if gamma > 0.0:
             enqueue["gamma_nonzero"] = gamma
+
     study.enqueue_trial(enqueue)
 
 
