@@ -6,8 +6,12 @@ import gc
 import hashlib
 import importlib
 import json
+import multiprocessing as mp
+import os
+import queue as queue_module
 import re
 import shutil
+import time
 import traceback
 import uuid
 from dataclasses import dataclass
@@ -31,6 +35,12 @@ import yaml
 #   Stage 2 (refine):  full training data, larger validation fraction.
 #   Stage 3 (tournament): top K configs, full train + full validation,
 #                         repeated over multiple seeds.
+#
+# Parallel execution:
+#   One OS process per GPU. Each process sees exactly one GPU through
+#   CUDA_VISIBLE_DEVICES and continuously claims trials from a shared
+#   Optuna JournalStorage study. This is distributed HPO, not multi-GPU
+#   training of a single XGBoost model.
 #
 # The 2025+ test split is never touched.
 #
@@ -56,7 +66,10 @@ MARK_METRIC = "sample_validation_log_loss"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Aggressive Optuna tuning for CrimeNet XGBoost baselines."
+        description=(
+            "Aggressive multi-GPU Optuna tuning for CrimeNet XGBoost baselines. "
+            "One independent trial is trained per GPU."
+        )
     )
 
     parser.add_argument(
@@ -74,7 +87,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--study-name",
         required=True,
-        help="Stable study name. Reusing it resumes SQLite studies.",
+        help="Stable study name. Reusing it resumes JournalStorage studies.",
     )
     parser.add_argument(
         "--module",
@@ -89,12 +102,67 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=Path("hpo"),
-        help="Root for Optuna DBs, summaries, and exported YAML.",
+        help="Root for Optuna journals, summaries, and exported YAML.",
     )
     parser.add_argument(
         "--device",
         default="cuda",
-        help="XGBoost device written into architecture.device.",
+        help="XGBoost device written into architecture.device inside each worker.",
+    )
+
+    # GPU/process topology. These defaults target the selected 8x RTX 5090 host.
+    parser.add_argument(
+        "--gpus",
+        default="0,1,2,3,4,5,6,7",
+        help="Comma-separated physical GPU indices exposed to HPO workers.",
+    )
+    parser.add_argument(
+        "--explore-workers",
+        type=int,
+        default=8,
+        help="Concurrent GPU workers during exploration.",
+    )
+    parser.add_argument(
+        "--refine-workers",
+        type=int,
+        default=8,
+        help="Concurrent GPU workers during refinement.",
+    )
+    parser.add_argument(
+        "--tournament-workers",
+        type=int,
+        default=8,
+        help="Concurrent GPU workers during the finalist tournament.",
+    )
+    parser.add_argument(
+        "--threads-per-worker",
+        type=int,
+        default=0,
+        help=(
+            "CPU thread cap per worker. 0 = automatically partition the host CPU "
+            "set across active workers (about 24 threads each on a 192-thread/8-GPU host)."
+        ),
+    )
+    parser.add_argument(
+        "--monitor-seconds",
+        type=float,
+        default=60.0,
+        help="Coordinator progress-print interval.",
+    )
+    parser.add_argument(
+        "--max-consecutive-failures",
+        type=int,
+        default=8,
+        help="Abort one worker after this many consecutive failed trials.",
+    )
+    parser.add_argument(
+        "--hpo-model-table-root",
+        default=None,
+        help=(
+            "Optional model-table override used only by HPO workers. Stage the Delta "
+            "table to local NVMe and pass its local path to avoid 8 workers repeatedly "
+            "scanning GCS. The exported final YAML keeps the original table root."
+        ),
     )
 
     # Aggressive defaults: exploration first, then expensive confirmation.
@@ -133,6 +201,74 @@ def parse_args() -> argparse.Namespace:
     )
 
     return parser.parse_args()
+
+
+def parse_gpus(raw: str) -> list[str]:
+    gpus = [value.strip() for value in raw.split(",") if value.strip()]
+    if not gpus:
+        raise ValueError("At least one GPU must be supplied through --gpus.")
+    if len(set(gpus)) != len(gpus):
+        raise ValueError(f"Duplicate GPU identifiers in --gpus: {gpus}")
+    return gpus
+
+
+def resolved_worker_count(requested: int, gpus: list[str]) -> int:
+    if requested <= 0:
+        raise ValueError("Worker counts must be positive.")
+    return min(int(requested), len(gpus))
+
+
+def _cpu_slice(worker_index: int, worker_count: int) -> list[int]:
+    try:
+        available = sorted(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        count = os.cpu_count() or 1
+        available = list(range(count))
+
+    start = (len(available) * worker_index) // worker_count
+    end = (len(available) * (worker_index + 1)) // worker_count
+    cpus = available[start:end]
+    return cpus or available[:1]
+
+
+def configure_worker_environment(
+    *,
+    gpu_id: str,
+    worker_index: int,
+    worker_count: int,
+    threads_per_worker: int,
+) -> int:
+    # Must run before importing the training module (and therefore xgboost/polars).
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+
+    cpus = _cpu_slice(worker_index, worker_count)
+    try:
+        os.sched_setaffinity(0, set(cpus))
+    except (AttributeError, OSError):
+        pass
+
+    threads = int(threads_per_worker) if threads_per_worker > 0 else len(cpus)
+    threads = max(1, threads)
+
+    for key in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "POLARS_MAX_THREADS",
+    ):
+        os.environ[key] = str(threads)
+
+    # Keep OpenMP workers inside the CPU partition assigned to this GPU worker.
+    os.environ["OMP_PROC_BIND"] = "close"
+    os.environ["OMP_PLACES"] = "cores"
+
+    print(
+        f"[worker {worker_index}] physical GPU={gpu_id} -> CUDA logical GPU 0; "
+        f"CPU threads={threads}; affinity={cpus[0]}..{cpus[-1]}"
+    )
+    return threads
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -463,6 +599,7 @@ def configure_stage(
     stage: Stage,
     device: str,
     seed: int | None = None,
+    model_table_root: str | None = None,
 ) -> None:
     config["architecture"]["device"] = device
     config["data"]["train_fraction"] = float(stage.train_fraction)
@@ -475,6 +612,9 @@ def configure_stage(
 
     if seed is not None:
         config["data"]["seed"] = int(seed)
+
+    if model_table_root is not None:
+        config["data"]["model_table_root"] = str(model_table_root)
 
 
 def cleanup_result_artifacts(result: dict[str, Any]) -> None:
@@ -509,12 +649,18 @@ def run_train_once(
     run_label: str,
     seed: int | None,
     keep_artifacts: bool,
+    model_table_root: str | None = None,
 ) -> tuple[float, dict[str, float], int]:
     cfg = copy.deepcopy(base_config)
     apply_params(cfg, params, family=family)
-    configure_stage(cfg, stage=stage, device=device, seed=seed)
+    configure_stage(
+        cfg,
+        stage=stage,
+        device=device,
+        seed=seed,
+        model_table_root=model_table_root,
+    )
 
-    base_model_name = str(base_config["model"]["name"])
     cfg["model"]["name"] = f"hpo_{sanitize_name(run_label)}"
 
     run_id = uuid.uuid4().hex
@@ -562,6 +708,7 @@ def trial_objective(
     device: str,
     study_tag: str,
     keep_artifacts: bool,
+    model_table_root: str | None = None,
 ):
     def objective(trial: optuna.Trial) -> float:
         params = suggest_params(
@@ -583,6 +730,7 @@ def trial_objective(
                 run_label=label,
                 seed=None,
                 keep_artifacts=keep_artifacts,
+                model_table_root=model_table_root,
             )
         except Exception:
             trial.set_user_attr("traceback", traceback.format_exc()[-12000:])
@@ -590,7 +738,6 @@ def trial_objective(
 
         trial.set_user_attr("best_iteration", best_iteration)
 
-        # Useful diagnostics without changing the primary proper-scoring objective.
         if family == "intensity":
             for key in (
                 "sample_validation_expected_observed",
@@ -685,49 +832,351 @@ def enqueue_trial_params(
     study.enqueue_trial(enqueue)
 
 
-def study_storage_url(path: Path) -> str:
-    # SQLite URL wants POSIX-style path even on Windows.
-    return f"sqlite:///{path.resolve().as_posix()}"
+def journal_storage(path: Path):
+    from optuna.storages import JournalStorage
+    from optuna.storages.journal import JournalFileBackend
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return JournalStorage(
+        JournalFileBackend(str(path.resolve()))
+    )
 
 
-def run_study(
+def load_journal_study(
     *,
     name: str,
-    db_path: Path,
-    objective,
-    n_trials: int,
-    seed: int,
-    enqueued: Iterable[dict[str, Any]],
-    family: str,
+    journal_path: Path,
+    sampler_seed: int,
 ) -> optuna.Study:
-    study = optuna.create_study(
+    return optuna.create_study(
         study_name=name,
-        storage=study_storage_url(db_path),
+        storage=journal_storage(journal_path),
         direction="minimize",
-        sampler=make_sampler(seed),
+        sampler=make_sampler(sampler_seed),
         load_if_exists=True,
     )
 
-    # Only enqueue when the study is empty, so a resume does not duplicate seeds.
+
+def _study_counts(study: optuna.Study) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for trial in study.get_trials(deepcopy=False):
+        name = trial.state.name
+        counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+def _complete_count(study: optuna.Study) -> int:
+    return sum(
+        1
+        for trial in study.get_trials(deepcopy=False)
+        if trial.state == optuna.trial.TrialState.COMPLETE
+        and trial.value is not None
+    )
+
+
+def _optuna_worker(
+    *,
+    worker_index: int,
+    worker_count: int,
+    gpu_id: str,
+    threads_per_worker: int,
+    module_name: str,
+    base_config: dict[str, Any],
+    family: str,
+    space: dict[str, Any],
+    stage: Stage,
+    device: str,
+    study_tag: str,
+    keep_artifacts: bool,
+    model_table_root: str | None,
+    study_name: str,
+    journal_path: str,
+    target_complete_trials: int,
+    sampler_seed: int,
+    max_consecutive_failures: int,
+) -> None:
+    configure_worker_environment(
+        gpu_id=gpu_id,
+        worker_index=worker_index,
+        worker_count=worker_count,
+        threads_per_worker=threads_per_worker,
+    )
+
+    # Import only after CUDA_VISIBLE_DEVICES/thread limits are configured.
+    module = importlib.import_module(module_name)
+
+    study = load_journal_study(
+        name=study_name,
+        journal_path=Path(journal_path),
+        sampler_seed=sampler_seed + worker_index * 1009,
+    )
+
+    objective = trial_objective(
+        module=module,
+        base_config=base_config,
+        family=family,
+        space=space,
+        stage=stage,
+        device=device,
+        study_tag=study_tag,
+        keep_artifacts=keep_artifacts,
+        model_table_root=model_table_root,
+    )
+
+    consecutive_failures = 0
+
+    while _complete_count(study) < target_complete_trials:
+        captured: list[optuna.trial.FrozenTrial] = []
+
+        def capture(_study: optuna.Study, trial: optuna.trial.FrozenTrial) -> None:
+            captured.append(trial)
+
+        study.optimize(
+            objective,
+            n_trials=1,
+            gc_after_trial=True,
+            callbacks=[capture],
+            catch=(Exception,),
+        )
+
+        if captured and captured[-1].state == optuna.trial.TrialState.COMPLETE:
+            consecutive_failures = 0
+        else:
+            consecutive_failures += 1
+
+        if consecutive_failures >= max_consecutive_failures:
+            raise RuntimeError(
+                f"Worker {worker_index} on GPU {gpu_id} hit "
+                f"{consecutive_failures} consecutive failed trials. "
+                "This usually indicates a systemic configuration/OOM issue."
+            )
+
+    print(
+        f"[worker {worker_index}] {stage.name} target reached; exiting GPU {gpu_id}."
+    )
+
+
+def run_parallel_study(
+    *,
+    name: str,
+    journal_path: Path,
+    base_config: dict[str, Any],
+    family: str,
+    space: dict[str, Any],
+    stage: Stage,
+    device: str,
+    study_tag: str,
+    keep_artifacts: bool,
+    model_table_root: str | None,
+    target_complete_trials: int,
+    sampler_seed: int,
+    enqueued: Iterable[dict[str, Any]],
+    gpus: list[str],
+    worker_count: int,
+    threads_per_worker: int,
+    module_name: str,
+    monitor_seconds: float,
+    max_consecutive_failures: int,
+) -> optuna.Study:
+    study = load_journal_study(
+        name=name,
+        journal_path=journal_path,
+        sampler_seed=sampler_seed,
+    )
+
+    # Only seed an entirely new stage. A resumed study keeps its original queue.
     if len(study.trials) == 0:
         for params in enqueued:
             enqueue_trial_params(study, params, family=family)
 
-    study.optimize(
-        objective,
-        n_trials=n_trials,
-        gc_after_trial=True,
-        # Failed/OOM parameter combinations should not kill a long search.
-        # KeyboardInterrupt/SystemExit remain interruptible.
-        catch=(Exception,),
+    already_complete = _complete_count(study)
+    if already_complete >= target_complete_trials:
+        print(
+            f"[coordinator] {stage.name}: already has {already_complete} complete "
+            f"trials (target={target_complete_trials}); skipping workers."
+        )
+        return study
+
+    active_gpus = gpus[:worker_count]
+    print(
+        f"[coordinator] {stage.name}: launching {len(active_gpus)} workers on "
+        f"GPUs {active_gpus}; complete={already_complete}/{target_complete_trials}."
     )
 
-    return study
+    ctx = mp.get_context("spawn")
+    processes: list[mp.Process] = []
+
+    for worker_index, gpu_id in enumerate(active_gpus):
+        process = ctx.Process(
+            target=_optuna_worker,
+            kwargs={
+                "worker_index": worker_index,
+                "worker_count": len(active_gpus),
+                "gpu_id": gpu_id,
+                "threads_per_worker": threads_per_worker,
+                "module_name": module_name,
+                "base_config": base_config,
+                "family": family,
+                "space": space,
+                "stage": stage,
+                "device": device,
+                "study_tag": study_tag,
+                "keep_artifacts": keep_artifacts,
+                "model_table_root": model_table_root,
+                "study_name": name,
+                "journal_path": str(journal_path),
+                "target_complete_trials": target_complete_trials,
+                "sampler_seed": sampler_seed,
+                "max_consecutive_failures": max_consecutive_failures,
+            },
+            name=f"{stage.name}-gpu-{gpu_id}",
+        )
+        process.start()
+        processes.append(process)
+
+    next_report = 0.0
+    while any(process.is_alive() for process in processes):
+        now = time.monotonic()
+        if now >= next_report:
+            refreshed = load_journal_study(
+                name=name,
+                journal_path=journal_path,
+                sampler_seed=sampler_seed,
+            )
+            counts = _study_counts(refreshed)
+            completed = counts.get("COMPLETE", 0)
+            try:
+                best = f"{refreshed.best_value:.12f}"
+            except ValueError:
+                best = "n/a"
+            print(
+                f"[coordinator] {stage.name}: complete={completed}/"
+                f"{target_complete_trials}, states={counts}, best={best}"
+            )
+            next_report = now + max(5.0, monitor_seconds)
+
+        for process in processes:
+            process.join(timeout=0.25)
+        time.sleep(0.25)
+
+    for process in processes:
+        process.join()
+
+    final_study = load_journal_study(
+        name=name,
+        journal_path=journal_path,
+        sampler_seed=sampler_seed,
+    )
+    complete = _complete_count(final_study)
+    bad_exits = [
+        (process.name, process.exitcode)
+        for process in processes
+        if process.exitcode not in (0, None)
+    ]
+
+    if complete < target_complete_trials:
+        raise RuntimeError(
+            f"{stage.name} ended with only {complete}/{target_complete_trials} "
+            f"successful trials. Worker exits={bad_exits}. If workers were killed "
+            "for host RAM, lower the stage worker count and rerun; JournalStorage "
+            "will resume the completed trials."
+        )
+
+    if bad_exits:
+        print(
+            f"[coordinator] WARNING: some {stage.name} workers exited nonzero "
+            f"after the global target was reached: {bad_exits}"
+        )
+
+    # Concurrent workers can overshoot the target by at most roughly workers-1.
+    print(
+        f"[coordinator] {stage.name} complete: {_complete_count(final_study)} "
+        f"successful trials."
+    )
+    return final_study
 
 
-def run_tournament(
+def _tournament_worker(
     *,
-    module,
+    worker_index: int,
+    worker_count: int,
+    gpu_id: str,
+    threads_per_worker: int,
+    module_name: str,
+    base_config: dict[str, Any],
+    family: str,
+    stage: Stage,
+    device: str,
+    study_tag: str,
+    keep_artifacts: bool,
+    model_table_root: str | None,
+    task_queue,
+    result_queue,
+) -> None:
+    configure_worker_environment(
+        gpu_id=gpu_id,
+        worker_index=worker_index,
+        worker_count=worker_count,
+        threads_per_worker=threads_per_worker,
+    )
+    module = importlib.import_module(module_name)
+
+    while True:
+        task = task_queue.get()
+        if task is None:
+            return
+
+        task_id = task["task_id"]
+        try:
+            score, metrics, best_iteration = run_train_once(
+                module=module,
+                base_config=base_config,
+                family=family,
+                params=task["params"],
+                stage=stage,
+                device=device,
+                run_label=task["run_label"],
+                seed=int(task["seed"]),
+                keep_artifacts=keep_artifacts,
+                model_table_root=model_table_root,
+            )
+            result_queue.put(
+                {
+                    "task_id": task_id,
+                    "ok": True,
+                    "finalist_index": int(task["finalist_index"]),
+                    "seed": int(task["seed"]),
+                    "params": task["params"],
+                    "score": score,
+                    "best_iteration": best_iteration,
+                    "metrics": metrics,
+                    "gpu_id": gpu_id,
+                }
+            )
+        except Exception:
+            result_queue.put(
+                {
+                    "task_id": task_id,
+                    "ok": False,
+                    "finalist_index": int(task["finalist_index"]),
+                    "seed": int(task["seed"]),
+                    "params": task["params"],
+                    "gpu_id": gpu_id,
+                    "error": traceback.format_exc()[-16000:],
+                }
+            )
+
+
+def _atomic_write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    with temp.open("w", encoding="utf-8") as file:
+        json.dump(value, file, indent=2, sort_keys=True)
+    temp.replace(path)
+
+
+def run_parallel_tournament(
+    *,
     base_config: dict[str, Any],
     family: str,
     finalists: list[dict[str, Any]],
@@ -736,69 +1185,164 @@ def run_tournament(
     device: str,
     study_tag: str,
     keep_artifacts: bool,
+    model_table_root: str | None,
+    gpus: list[str],
+    worker_count: int,
+    threads_per_worker: int,
+    module_name: str,
+    monitor_seconds: float,
+    state_path: Path,
 ) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-
-    for index, params in enumerate(finalists, start=1):
-        seed_scores: list[float] = []
-        seed_records: list[dict[str, Any]] = []
-
-        print(
-            f"\n{'=' * 80}\n"
-            f"TOURNAMENT FINALIST {index}/{len(finalists)}\n"
-            f"{json.dumps(params, indent=2, sort_keys=True)}\n"
-            f"{'=' * 80}"
-        )
-
+    tasks: list[dict[str, Any]] = []
+    for finalist_index, params in enumerate(finalists, start=1):
         for seed in seeds:
-            label = f"{study_tag}_tournament_f{index:02d}_seed_{seed}"
-
-            score, metrics, best_iteration = run_train_once(
-                module=module,
-                base_config=base_config,
-                family=family,
-                params=params,
-                stage=stage,
-                device=device,
-                run_label=label,
-                seed=seed,
-                keep_artifacts=keep_artifacts,
-            )
-
-            seed_scores.append(score)
-            seed_records.append(
+            task_id = f"f{finalist_index:02d}_seed_{seed}"
+            tasks.append(
                 {
+                    "task_id": task_id,
+                    "finalist_index": finalist_index,
                     "seed": seed,
-                    "score": score,
-                    "best_iteration": best_iteration,
-                    "metrics": metrics,
+                    "params": params,
+                    "run_label": f"{study_tag}_tournament_{task_id}",
                 }
             )
 
+    saved: dict[str, dict[str, Any]] = {}
+    if state_path.exists():
+        try:
+            raw = json.loads(state_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                saved = {
+                    str(key): value
+                    for key, value in raw.items()
+                    if isinstance(value, dict) and value.get("ok") is True
+                }
+        except Exception:
             print(
-                f"Finalist {index} seed {seed}: "
-                f"{objective_metric(family)}={score:.12f}, "
-                f"best_iteration={best_iteration}"
+                f"[coordinator] WARNING: could not read tournament resume state "
+                f"{state_path}; starting tournament state from scratch."
             )
 
+    pending = [task for task in tasks if task["task_id"] not in saved]
+    print(
+        f"[coordinator] tournament: {len(saved)}/{len(tasks)} tasks already complete; "
+        f"{len(pending)} pending."
+    )
+
+    if pending:
+        active_gpus = gpus[: min(worker_count, len(pending))]
+        ctx = mp.get_context("spawn")
+        task_queue = ctx.Queue()
+        result_queue = ctx.Queue()
+
+        for task in pending:
+            task_queue.put(task)
+        for _ in active_gpus:
+            task_queue.put(None)
+
+        processes: list[mp.Process] = []
+        for worker_index, gpu_id in enumerate(active_gpus):
+            process = ctx.Process(
+                target=_tournament_worker,
+                kwargs={
+                    "worker_index": worker_index,
+                    "worker_count": len(active_gpus),
+                    "gpu_id": gpu_id,
+                    "threads_per_worker": threads_per_worker,
+                    "module_name": module_name,
+                    "base_config": base_config,
+                    "family": family,
+                    "stage": stage,
+                    "device": device,
+                    "study_tag": study_tag,
+                    "keep_artifacts": keep_artifacts,
+                    "model_table_root": model_table_root,
+                    "task_queue": task_queue,
+                    "result_queue": result_queue,
+                },
+                name=f"tournament-gpu-{gpu_id}",
+            )
+            process.start()
+            processes.append(process)
+
+        received = 0
+        expected = len(pending)
+        errors: list[dict[str, Any]] = []
+
+        while received < expected:
+            try:
+                result = result_queue.get(timeout=max(5.0, monitor_seconds))
+            except queue_module.Empty:
+                alive = sum(process.is_alive() for process in processes)
+                print(
+                    f"[coordinator] tournament: received={received}/{expected}, "
+                    f"workers_alive={alive}"
+                )
+                if alive == 0:
+                    break
+                continue
+
+            received += 1
+            if result.get("ok") is True:
+                saved[result["task_id"]] = result
+                _atomic_write_json(state_path, saved)
+                print(
+                    f"[coordinator] tournament {result['task_id']} complete on "
+                    f"GPU {result['gpu_id']}: {objective_metric(family)}="
+                    f"{float(result['score']):.12f}"
+                )
+            else:
+                errors.append(result)
+                print(
+                    f"[coordinator] tournament {result['task_id']} FAILED on "
+                    f"GPU {result.get('gpu_id')}"
+                )
+
+        for process in processes:
+            process.join()
+
+        missing = [task["task_id"] for task in tasks if task["task_id"] not in saved]
+        if errors or missing:
+            details = "\n\n".join(
+                f"{item.get('task_id')}:\n{item.get('error', 'missing result')}"
+                for item in errors
+            )
+            raise RuntimeError(
+                "Tournament did not complete every finalist/seed task. "
+                f"Missing={missing}.\n{details}\n"
+                "Successful tournament tasks were persisted and will be skipped on rerun."
+            )
+
+    records: list[dict[str, Any]] = []
+    for finalist_index, params in enumerate(finalists, start=1):
+        seed_records = [
+            saved[f"f{finalist_index:02d}_seed_{seed}"]
+            for seed in seeds
+        ]
+        seed_scores = [float(item["score"]) for item in seed_records]
         mean_score = sum(seed_scores) / len(seed_scores)
-        variance = (
-            sum((x - mean_score) ** 2 for x in seed_scores) / len(seed_scores)
-        )
-        std_score = variance ** 0.5
+        variance = sum((x - mean_score) ** 2 for x in seed_scores) / len(seed_scores)
 
         records.append(
             {
-                "rank_input": index,
+                "rank_input": finalist_index,
                 "params": params,
                 "mean_score": mean_score,
-                "std_score": std_score,
-                "seed_results": seed_records,
+                "std_score": variance ** 0.5,
+                "seed_results": [
+                    {
+                        "seed": int(item["seed"]),
+                        "score": float(item["score"]),
+                        "best_iteration": int(item["best_iteration"]),
+                        "metrics": item["metrics"],
+                        "gpu_id": item.get("gpu_id"),
+                    }
+                    for item in seed_records
+                ],
             }
         )
 
-    records.sort(key=lambda x: x["mean_score"])
-
+    records.sort(key=lambda item: item["mean_score"])
     for rank, record in enumerate(records, start=1):
         record["rank"] = rank
 
@@ -828,13 +1372,22 @@ def main() -> None:
     base_config = load_yaml(args.config)
     family: str = args.family
     seeds = parse_seeds(args.tournament_seeds)
+    gpus = parse_gpus(args.gpus)
     study_tag = sanitize_name(args.study_name)
 
-    module = resolve_training_module(
+    explore_workers = resolved_worker_count(args.explore_workers, gpus)
+    refine_workers = resolved_worker_count(args.refine_workers, gpus)
+    tournament_workers = resolved_worker_count(args.tournament_workers, gpus)
+
+    # Resolve once in the coordinator so import errors fail fast. Spawned workers
+    # import this module again only after their CUDA/thread environment is isolated.
+    resolved_module = resolve_training_module(
         base_config,
         family=family,
         explicit=args.module,
     )
+    module_name = resolved_module.__name__
+    del resolved_module
 
     space = build_space(base_config, family)
 
@@ -863,18 +1416,32 @@ def main() -> None:
         early_stopping_rounds=args.tournament_early_stop,
     )
 
-    print(f"Family:            {family}")
-    print(f"Base config:       {args.config}")
-    print(f"Base model:        {base_config['model']['name']}")
-    print(f"Objective:         {objective_metric(family)}")
-    print(f"Device:            {args.device}")
-    print(f"Study output:      {root.resolve()}")
-    print(f"Search depth:      {space['depth_low']}..{space['depth_high']}")
-    print(f"Explore trials:    {args.explore_trials}")
-    print(f"Refine trials:     {args.refine_trials}")
-    print(f"Finalists:         {args.finalists}")
-    print(f"Tournament seeds:  {seeds}")
+    print(f"Family:              {family}")
+    print(f"Base config:         {args.config}")
+    print(f"Base model:          {base_config['model']['name']}")
+    print(f"Training module:     {module_name}")
+    print(f"Objective:           {objective_metric(family)}")
+    print(f"Device:              {args.device}")
+    print(f"Physical GPUs:       {gpus}")
+    print(f"Explore workers:     {explore_workers}")
+    print(f"Refine workers:      {refine_workers}")
+    print(f"Tournament workers:  {tournament_workers}")
+    print(f"Threads/worker:      {'auto' if args.threads_per_worker <= 0 else args.threads_per_worker}")
+    print(f"Study output:        {root.resolve()}")
+    print(f"HPO table override:  {args.hpo_model_table_root or 'none (base config)'}")
+    print(f"Search depth:        {space['depth_low']}..{space['depth_high']}")
+    print(f"Explore target:      {args.explore_trials} successful trials")
+    print(f"Refine target:       {args.refine_trials} successful trials")
+    print(f"Finalists:           {args.finalists}")
+    print(f"Tournament seeds:    {seeds}")
+    print("Parallel mode:       one independent XGBoost trial per GPU")
     print("TEST SPLIT WILL NOT BE ACCESSED.")
+
+    if (root / "explore.db").exists() and not (root / "explore.journal").exists():
+        print(
+            "WARNING: found an older SQLite exploration study. The distributed "
+            "runner uses JournalStorage and intentionally starts a separate journal study."
+        )
 
     base_seed_params = params_for_enqueue(
         base_config,
@@ -883,11 +1450,10 @@ def main() -> None:
     )
     initial_enqueue = [base_seed_params] if base_seed_params is not None else []
 
-    # ------------------------------------------------------------------
-    # Stage 1: broad exploration
-    # ------------------------------------------------------------------
-    explore_objective = trial_objective(
-        module=module,
+    # Stage 1: broad distributed exploration.
+    explore_study = run_parallel_study(
+        name=f"{study_tag}__explore",
+        journal_path=root / "explore.journal",
         base_config=base_config,
         family=family,
         space=space,
@@ -895,16 +1461,16 @@ def main() -> None:
         device=args.device,
         study_tag=study_tag,
         keep_artifacts=args.keep_trial_artifacts,
-    )
-
-    explore_study = run_study(
-        name=f"{study_tag}__explore",
-        db_path=root / "explore.db",
-        objective=explore_objective,
-        n_trials=args.explore_trials,
-        seed=42,
+        model_table_root=args.hpo_model_table_root,
+        target_complete_trials=args.explore_trials,
+        sampler_seed=42,
         enqueued=initial_enqueue,
-        family=family,
+        gpus=gpus,
+        worker_count=explore_workers,
+        threads_per_worker=args.threads_per_worker,
+        module_name=module_name,
+        monitor_seconds=args.monitor_seconds,
+        max_consecutive_failures=args.max_consecutive_failures,
     )
 
     explore_complete = complete_trials(explore_study)
@@ -922,12 +1488,10 @@ def main() -> None:
         f"{json.dumps(normalized_params_from_trial(explore_study.best_trial.params, family=family), indent=2, sort_keys=True)}"
     )
 
-    # ------------------------------------------------------------------
-    # Stage 2: refine with full training data.
-    # Seed it with top Stage-1 configs, then let TPE continue exploring.
-    # ------------------------------------------------------------------
-    refine_objective = trial_objective(
-        module=module,
+    # Stage 2: distributed refinement. Seed with Stage-1 winners.
+    refine_study = run_parallel_study(
+        name=f"{study_tag}__refine",
+        journal_path=root / "refine.journal",
         base_config=base_config,
         family=family,
         space=space,
@@ -935,16 +1499,16 @@ def main() -> None:
         device=args.device,
         study_tag=study_tag,
         keep_artifacts=args.keep_trial_artifacts,
-    )
-
-    refine_study = run_study(
-        name=f"{study_tag}__refine",
-        db_path=root / "refine.db",
-        objective=refine_objective,
-        n_trials=args.refine_trials,
-        seed=1337,
+        model_table_root=args.hpo_model_table_root,
+        target_complete_trials=args.refine_trials,
+        sampler_seed=1337,
         enqueued=top_explore,
-        family=family,
+        gpus=gpus,
+        worker_count=refine_workers,
+        threads_per_worker=args.threads_per_worker,
+        module_name=module_name,
+        monitor_seconds=args.monitor_seconds,
+        max_consecutive_failures=args.max_consecutive_failures,
     )
 
     refine_complete = complete_trials(refine_study)
@@ -962,12 +1526,8 @@ def main() -> None:
         f"{json.dumps(normalized_params_from_trial(refine_study.best_trial.params, family=family), indent=2, sort_keys=True)}"
     )
 
-    # ------------------------------------------------------------------
-    # Stage 3: full 2014-2023 train + full 2024 validation tournament.
-    # Multiple seeds distinguish real hyperparameter signal from RNG noise.
-    # ------------------------------------------------------------------
-    tournament = run_tournament(
-        module=module,
+    # Stage 3: all finalist/seed fits are dispatched dynamically over the GPUs.
+    tournament = run_parallel_tournament(
         base_config=base_config,
         family=family,
         finalists=finalists,
@@ -976,21 +1536,28 @@ def main() -> None:
         device=args.device,
         study_tag=study_tag,
         keep_artifacts=args.keep_trial_artifacts,
+        model_table_root=args.hpo_model_table_root,
+        gpus=gpus,
+        worker_count=tournament_workers,
+        threads_per_worker=args.threads_per_worker,
+        module_name=module_name,
+        monitor_seconds=args.monitor_seconds,
+        state_path=root / "tournament_state.json",
     )
 
     best = tournament[0]
     best_params = best["params"]
 
-    # Export final official config.
+    # Export the final official config. Crucially, do NOT preserve an HPO-only
+    # local model-table override: the canonical base config path is restored.
     final_cfg = copy.deepcopy(base_config)
     apply_params(final_cfg, best_params, family=family)
     configure_stage(
         final_cfg,
         stage=tournament_stage,
         device=args.device,
-        # Official baseline uses the canonical seed. Tournament ranking itself
-        # used multiple seeds to make hyperparameter selection robust.
         seed=seeds[0],
+        model_table_root=None,
     )
 
     final_cfg["model"]["name"] = final_model_name(
@@ -998,7 +1565,6 @@ def main() -> None:
         args.final_model_name,
     )
 
-    # HPO metadata is additive; model trainers can ignore it.
     final_cfg["hpo"] = {
         "study_name": args.study_name,
         "family": family,
@@ -1007,6 +1573,13 @@ def main() -> None:
         "tournament_std_score": best["std_score"],
         "tournament_seeds": seeds,
         "source_config": str(args.config),
+        "parallel_strategy": "one_trial_per_gpu",
+        "physical_gpus": gpus,
+        "explore_workers": explore_workers,
+        "refine_workers": refine_workers,
+        "tournament_workers": tournament_workers,
+        "optuna_storage": "JournalStorage/JournalFileBackend",
+        "hpo_model_table_root": args.hpo_model_table_root,
         "test_split_used": False,
     }
 
@@ -1023,18 +1596,21 @@ def main() -> None:
         "objective": objective_metric(family),
         "base_config": str(args.config),
         "base_model_name": base_config["model"]["name"],
+        "explore_complete_trials": len(explore_complete),
+        "refine_complete_trials": len(refine_complete),
         "explore_best": float(explore_study.best_value),
         "refine_best": float(refine_study.best_value),
         "tournament_best_mean": float(best["mean_score"]),
         "tournament_best_std": float(best["std_score"]),
         "best_params": best_params,
         "best_config": str(best_yaml),
+        "gpus": gpus,
         "test_split_used": False,
     }
     write_json(summary_json, summary)
 
     print("\n" + "=" * 80)
-    print("HPO COMPLETE")
+    print("DISTRIBUTED HPO COMPLETE")
     print("=" * 80)
     print(f"Best tournament mean: {best['mean_score']:.12f}")
     print(f"Best tournament std:  {best['std_score']:.12f}")
