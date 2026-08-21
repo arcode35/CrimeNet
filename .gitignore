@@ -228,3 +228,5 @@ src/crimenet_data/scripts/observation_monthly_activity.csv
 src/crimenet_data/scripts/observation_ranges_candidates.json
 src/crimenet_data/scripts/observation_suspicious_gaps.csv
 src/crimenet_data/scripts/observation_yearly_activity.csv
+
+artifacts/experiments/

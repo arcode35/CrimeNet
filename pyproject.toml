@@ -15,6 +15,7 @@ dependencies = [
     "polars-h3>=0.6.1",
     "pvlib>=0.15.2",
     "pyarrow>=25.0.0",
+    "torch>=2.13.0",
     "xgboost>=3.2.0",
 ]
 
@@ -43,3 +44,13 @@ root_module = "crimenet_data"
 defs_module = "crimenet_data.defs"
 code_location_target_module = "crimenet_data.definitions"
 code_location_name = "crimenet-data"
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
