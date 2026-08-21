@@ -165,6 +165,37 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--stage-cache-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory for immutable sampled Arrow IPC caches. Default: "
+            "<study-output>/stage_cache. Put this on local NVMe for best throughput."
+        ),
+    )
+    parser.add_argument(
+        "--disable-stage-cache",
+        action="store_true",
+        help=(
+            "Disable the sampled-data cache and use the model trainer's normal "
+            "Delta scan/sampling path for every trial."
+        ),
+    )
+    parser.add_argument(
+        "--rebuild-stage-cache",
+        action="store_true",
+        help="Rebuild sampled Arrow IPC caches even when matching cache files exist.",
+    )
+    parser.add_argument(
+        "--no-prepared-xy-cache",
+        action="store_true",
+        help=(
+            "Keep the shared sampled-frame cache but repeat Polars->Pandas/NumPy "
+            "conversion for each trial. Useful only if host RAM is constrained."
+        ),
+    )
+
     # Aggressive defaults: exploration first, then expensive confirmation.
     parser.add_argument("--explore-trials", type=int, default=120)
     parser.add_argument("--refine-trials", type=int, default=60)
@@ -617,6 +648,446 @@ def configure_stage(
         config["data"]["model_table_root"] = str(model_table_root)
 
 
+
+# ---------------------------------------------------------------------------
+# Stage data cache
+# ---------------------------------------------------------------------------
+# The model trainers were written for standalone runs and therefore scan/filter
+# the Delta table and convert Polars -> Pandas/NumPy inside every train() call.
+# HPO reuses the same deterministic sample for many trials, so doing that work
+# hundreds of times wastes CPU/I/O and leaves fast GPUs idle.
+#
+# The coordinator materializes each distinct sample specification once as Arrow
+# IPC. Workers then intercept the trainer's deterministic sampling helper and
+# return the cached frame. Each long-lived worker keeps that frame in memory and
+# can also memoize _prepare_xy() and a few pure validation/summary helpers.
+# XGBoost QuantileDMatrix is intentionally NOT cached because max_bin is tuned
+# and its quantization belongs to the trial-specific representation.
+
+
+def _fraction_token(value: float) -> str:
+    return f"{float(value):.12g}"
+
+
+def _canonical_sampling_seed(fraction: float, seed: int) -> int:
+    # At fraction=1.0 every hash bucket passes, so seed changes model RNG only;
+    # it does not change the sampled rows. Canonicalize to maximize cache reuse.
+    return 0 if abs(float(fraction) - 1.0) <= 1e-12 else int(seed)
+
+
+def _sample_lookup_key(*, split: str, fraction: float, seed: int) -> str:
+    canonical_seed = _canonical_sampling_seed(fraction, seed)
+    return f"{split}|{_fraction_token(fraction)}|{canonical_seed}"
+
+
+def _hpo_table_root(base_config: dict[str, Any], override: str | None) -> str:
+    if override is not None:
+        return str(override)
+    return str(base_config["data"]["model_table_root"])
+
+
+def _scan_delta_for_cache(model_table_root: str):
+    # Import Polars lazily so the coordinator remains lightweight until a cache
+    # actually has to be built.
+    import polars as pl
+
+    if str(model_table_root).startswith("gs://"):
+        return pl.scan_delta(
+            model_table_root,
+            credential_provider=pl.CredentialProviderGCP(),
+        )
+
+    # Local/NVMe Delta tables must not request GCP ADC.
+    return pl.scan_delta(model_table_root)
+
+
+def _mark_target_column(module, config: dict[str, Any]) -> str:
+    target_cfg = config.get("target", {})
+    default = getattr(module, "DEFAULT_TARGET_COLUMN", "canonical_subtype_code")
+    return str(target_cfg.get("column", default))
+
+
+def _cache_identity(
+    *,
+    module_name: str,
+    base_config: dict[str, Any],
+    family: str,
+    model_table_root: str,
+    split: str,
+    fraction: float,
+    seed: int,
+    feature_columns: list[str],
+    target_column: str | None,
+) -> str:
+    payload = {
+        "version": 2,
+        "module": module_name,
+        "family": family,
+        "model_table_root": str(model_table_root),
+        "split": str(split),
+        "fraction": float(fraction),
+        "sampling_seed": _canonical_sampling_seed(fraction, seed),
+        "feature_columns": list(feature_columns),
+        "target_column": target_column,
+        # Feature config changes can alter resolved feature semantics even if a
+        # future resolver happens to emit columns in the same order.
+        "features_config": base_config.get("features", {}),
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _atomic_write_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(value, encoding="utf-8")
+    temp.replace(path)
+
+
+def _build_sample_cache_entry(
+    *,
+    module,
+    module_name: str,
+    base_config: dict[str, Any],
+    family: str,
+    model_table_root: str,
+    cache_dir: Path,
+    split: str,
+    fraction: float,
+    seed: int,
+    rebuild: bool,
+) -> tuple[str, str]:
+    feature_columns, _ = module._resolve_feature_columns(base_config)
+    target_column = _mark_target_column(module, base_config) if family == "mark" else None
+    canonical_seed = _canonical_sampling_seed(fraction, seed)
+
+    identity = _cache_identity(
+        module_name=module_name,
+        base_config=base_config,
+        family=family,
+        model_table_root=model_table_root,
+        split=split,
+        fraction=fraction,
+        seed=canonical_seed,
+        feature_columns=feature_columns,
+        target_column=target_column,
+    )
+
+    safe_split = sanitize_name(split)
+    stem = f"{family}_{safe_split}_f{_fraction_token(fraction)}_{identity}"
+    ipc_path = (cache_dir / f"{stem}.arrow").resolve()
+    manifest_path = ipc_path.with_suffix(".json")
+    lookup_key = _sample_lookup_key(split=split, fraction=fraction, seed=canonical_seed)
+
+    if not rebuild and ipc_path.exists() and manifest_path.exists():
+        print(
+            f"[cache] reuse {split} fraction={fraction:g}: {ipc_path} "
+            f"({ipc_path.stat().st_size / (1024 ** 3):.2f} GiB)"
+        )
+        return lookup_key, str(ipc_path)
+
+    print(
+        f"[cache] BUILD {family} split={split} fraction={fraction:g} "
+        f"seed={canonical_seed} from {model_table_root}"
+    )
+
+    table = _scan_delta_for_cache(model_table_root)
+    if family == "intensity":
+        sample_fn = getattr(module, "_deterministic_split_sample")
+        frame = sample_fn(
+            table=table,
+            split=split,
+            fraction=float(fraction),
+            seed=int(canonical_seed),
+            feature_columns=feature_columns,
+        )
+    else:
+        sample_fn = getattr(module, "_deterministic_observed_sample")
+        frame = sample_fn(
+            table=table,
+            split=split,
+            fraction=float(fraction),
+            seed=int(canonical_seed),
+            feature_columns=feature_columns,
+            target_column=str(target_column),
+        )
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = ipc_path.with_suffix(ipc_path.suffix + f".{os.getpid()}.tmp")
+    if temp_path.exists():
+        temp_path.unlink()
+
+    # Uncompressed Arrow IPC favors read speed and memory mapping on local NVMe.
+    frame.write_ipc(temp_path, compression="uncompressed")
+    temp_path.replace(ipc_path)
+
+    manifest = {
+        "version": 2,
+        "family": family,
+        "module": module_name,
+        "model_table_root": model_table_root,
+        "split": split,
+        "fraction": float(fraction),
+        "sampling_seed": int(canonical_seed),
+        "rows": int(frame.height),
+        "columns": list(frame.columns),
+        "bytes": int(ipc_path.stat().st_size),
+        "ipc_path": str(ipc_path),
+        "target_column": target_column,
+        "feature_count": len(feature_columns),
+    }
+    _atomic_write_text(
+        manifest_path,
+        json.dumps(manifest, indent=2, sort_keys=True),
+    )
+
+    print(
+        f"[cache] ready {split}: rows={frame.height:,}, "
+        f"size={ipc_path.stat().st_size / (1024 ** 3):.2f} GiB"
+    )
+    del frame
+    gc.collect()
+    return lookup_key, str(ipc_path)
+
+
+def prepare_stage_sample_cache(
+    *,
+    module_name: str,
+    base_config: dict[str, Any],
+    family: str,
+    stage: Stage,
+    model_table_root: str,
+    cache_dir: Path,
+    rebuild: bool,
+) -> dict[str, str]:
+    module = importlib.import_module(module_name)
+    data_cfg = base_config["data"]
+    base_seed = int(data_cfg["seed"])
+
+    specs = [
+        (
+            str(data_cfg["train_split"]),
+            float(stage.train_fraction),
+        ),
+        (
+            str(data_cfg["validation_split"]),
+            float(stage.validation_fraction),
+        ),
+    ]
+
+    entries: dict[str, str] = {}
+    for split, fraction in specs:
+        key, path = _build_sample_cache_entry(
+            module=module,
+            module_name=module_name,
+            base_config=base_config,
+            family=family,
+            model_table_root=model_table_root,
+            cache_dir=cache_dir,
+            split=split,
+            fraction=fraction,
+            seed=base_seed,
+            rebuild=rebuild,
+        )
+        entries[key] = path
+
+    return entries
+
+
+class _NoDeltaScanPolarsProxy:
+    """Forward Polars APIs except source access already replaced by stage cache."""
+
+    def __init__(self, real_polars):
+        self._real = real_polars
+
+    def __getattr__(self, name: str):
+        return getattr(self._real, name)
+
+    def CredentialProviderGCP(self, *args, **kwargs):  # noqa: N802
+        return None
+
+    def scan_delta(self, *args, **kwargs):
+        # The patched deterministic sample helper ignores the table argument.
+        return None
+
+
+def _memo_token(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return value
+    if isinstance(value, (list, tuple)):
+        return tuple(_memo_token(v) for v in value)
+    if isinstance(value, dict):
+        return tuple(sorted((str(k), _memo_token(v)) for k, v in value.items()))
+    # Large DataFrames/arrays should be identified, not serialized.
+    return (type(value).__name__, id(value))
+
+
+def install_worker_stage_cache(
+    *,
+    module,
+    family: str,
+    sample_cache_entries: dict[str, str],
+    cache_prepared_xy: bool,
+    worker_index: int,
+) -> None:
+    if not sample_cache_entries:
+        return
+
+    import polars as real_pl
+
+    sample_fn_name = (
+        "_deterministic_split_sample"
+        if family == "intensity"
+        else "_deterministic_observed_sample"
+    )
+    original_sample_fn = getattr(module, sample_fn_name)
+    loaded_frames: dict[str, Any] = {}
+
+    def cached_sample(*args, **kwargs):
+        split = str(kwargs["split"])
+        fraction = float(kwargs["fraction"])
+        seed = int(kwargs["seed"])
+        key = _sample_lookup_key(split=split, fraction=fraction, seed=seed)
+        path = sample_cache_entries.get(key)
+        if path is None:
+            # Defensive fallback for a future trainer/sample shape not prepared
+            # by the coordinator.
+            return original_sample_fn(*args, **kwargs)
+
+        if path not in loaded_frames:
+            print(f"[worker {worker_index}] loading cached sample: {path}")
+            loaded_frames[path] = real_pl.read_ipc(path, memory_map=True)
+            print(
+                f"[worker {worker_index}] cached sample resident: "
+                f"rows={loaded_frames[path].height:,}"
+            )
+        return loaded_frames[path]
+
+    setattr(module, sample_fn_name, cached_sample)
+
+    # train() still constructs a credential provider and a LazyFrame before it
+    # calls the deterministic sampling helper. Replace only those source APIs in
+    # this worker process: after coordinator cache preparation, train() should
+    # not touch Delta/GCS/local source data at all.
+    if hasattr(module, "pl"):
+        module.pl = _NoDeltaScanPolarsProxy(real_pl)
+
+    if not cache_prepared_xy:
+        return
+
+    # Memoize the expensive Polars -> Pandas/NumPy conversion. XGBoost only
+    # reads these objects while building QuantileDMatrix, so sequential trials
+    # in one GPU worker can safely reuse them.
+    original_prepare_xy = getattr(module, "_prepare_xy", None)
+    if callable(original_prepare_xy):
+        prepared_xy: dict[Any, Any] = {}
+
+        def cached_prepare_xy(frame, *args, **kwargs):
+            key = (
+                id(frame),
+                _memo_token(args),
+                _memo_token(kwargs),
+            )
+            if key not in prepared_xy:
+                print(
+                    f"[worker {worker_index}] preparing Pandas/NumPy tensors once "
+                    f"for cached frame rows={getattr(frame, 'height', 'n/a')}"
+                )
+                prepared_xy[key] = original_prepare_xy(frame, *args, **kwargs)
+            return prepared_xy[key]
+
+        setattr(module, "_prepare_xy", cached_prepare_xy)
+
+    # Cache pure O(N) summaries/vocabulary/validation checks that depend only on
+    # the immutable cached frame/arrays. This removes additional repeated CPU
+    # passes while preserving model-dependent evaluation.
+    original_summary = getattr(module, "_sample_summary", None)
+    if callable(original_summary):
+        summary_cache: dict[Any, Any] = {}
+
+        def cached_summary(frame, *args, **kwargs):
+            key = (id(frame), _memo_token(args), _memo_token(kwargs))
+            if key not in summary_cache:
+                summary_cache[key] = original_summary(frame, *args, **kwargs)
+            return summary_cache[key]
+
+        setattr(module, "_sample_summary", cached_summary)
+
+    if family == "mark":
+        original_mapping = getattr(module, "_build_label_mapping", None)
+        if callable(original_mapping):
+            mapping_cache: dict[Any, Any] = {}
+
+            def cached_mapping(frame, *args, **kwargs):
+                key = (id(frame), _memo_token(args), _memo_token(kwargs))
+                if key not in mapping_cache:
+                    mapping_cache[key] = original_mapping(frame, *args, **kwargs)
+                return mapping_cache[key]
+
+            setattr(module, "_build_label_mapping", cached_mapping)
+
+        original_validate = getattr(module, "_validate_labels", None)
+        if callable(original_validate):
+            validated: set[Any] = set()
+
+            def cached_validate_labels(*args, **kwargs):
+                y = kwargs.get("y", args[1] if len(args) > 1 else None)
+                num_classes = kwargs.get("num_classes")
+                key = (id(y), int(num_classes) if num_classes is not None else None)
+                if key not in validated:
+                    original_validate(*args, **kwargs)
+                    validated.add(key)
+                return None
+
+            setattr(module, "_validate_labels", cached_validate_labels)
+
+        original_priors = getattr(module, "_class_priors", None)
+        if callable(original_priors):
+            priors_cache: dict[Any, Any] = {}
+
+            def cached_class_priors(y, *args, **kwargs):
+                key = (id(y), _memo_token(args), _memo_token(kwargs))
+                if key not in priors_cache:
+                    priors_cache[key] = original_priors(y, *args, **kwargs)
+                return priors_cache[key]
+
+            setattr(module, "_class_priors", cached_class_priors)
+
+        original_prior_loss = getattr(module, "_prior_log_loss", None)
+        if callable(original_prior_loss):
+            loss_cache: dict[Any, Any] = {}
+
+            def cached_prior_loss(y, *args, **kwargs):
+                key = (id(y), _memo_token(args), _memo_token(kwargs))
+                if key not in loss_cache:
+                    loss_cache[key] = original_prior_loss(y, *args, **kwargs)
+                return loss_cache[key]
+
+            setattr(module, "_prior_log_loss", cached_prior_loss)
+
+    else:
+        original_validate = getattr(module, "_validate_point_process_rows", None)
+        if callable(original_validate):
+            validated: set[Any] = set()
+
+            def cached_validate_pp(*args, **kwargs):
+                y = kwargs.get("y")
+                exposure = kwargs.get("exposure")
+                tolerance = kwargs.get("event_exposure_tolerance")
+                key = (id(y), id(exposure), float(tolerance))
+                if key not in validated:
+                    original_validate(*args, **kwargs)
+                    validated.add(key)
+                return None
+
+            setattr(module, "_validate_point_process_rows", cached_validate_pp)
+
+    print(
+        f"[worker {worker_index}] stage cache installed: "
+        f"samples={len(sample_cache_entries)}, prepared_xy={cache_prepared_xy}"
+    )
+
+
 def cleanup_result_artifacts(result: dict[str, Any]) -> None:
     artifacts = result.get("artifacts", [])
     if not artifacts:
@@ -874,6 +1345,26 @@ def _complete_count(study: optuna.Study) -> int:
     )
 
 
+def _fail_stale_running_trials(study: optuna.Study) -> int:
+    # This runner intentionally supports one coordinator per study. Therefore,
+    # RUNNING trials that exist before new workers are launched are leftovers
+    # from an interrupted VM/process and should not remain permanent
+    # constant-liar observations. Mark them FAIL before resuming.
+    stale = [
+        trial
+        for trial in study.get_trials(deepcopy=False)
+        if trial.state == optuna.trial.TrialState.RUNNING
+    ]
+    for trial in stale:
+        study.tell(trial.number, state=optuna.trial.TrialState.FAIL)
+    if stale:
+        print(
+            f"[coordinator] recovered {len(stale)} stale RUNNING trial(s) "
+            "from a previous interrupted run -> FAIL."
+        )
+    return len(stale)
+
+
 def _optuna_worker(
     *,
     worker_index: int,
@@ -894,6 +1385,8 @@ def _optuna_worker(
     target_complete_trials: int,
     sampler_seed: int,
     max_consecutive_failures: int,
+    sample_cache_entries: dict[str, str] | None,
+    cache_prepared_xy: bool,
 ) -> None:
     configure_worker_environment(
         gpu_id=gpu_id,
@@ -904,6 +1397,14 @@ def _optuna_worker(
 
     # Import only after CUDA_VISIBLE_DEVICES/thread limits are configured.
     module = importlib.import_module(module_name)
+    if sample_cache_entries:
+        install_worker_stage_cache(
+            module=module,
+            family=family,
+            sample_cache_entries=sample_cache_entries,
+            cache_prepared_xy=cache_prepared_xy,
+            worker_index=worker_index,
+        )
 
     study = load_journal_study(
         name=study_name,
@@ -977,12 +1478,16 @@ def run_parallel_study(
     module_name: str,
     monitor_seconds: float,
     max_consecutive_failures: int,
+    sample_cache_entries: dict[str, str] | None,
+    cache_prepared_xy: bool,
 ) -> optuna.Study:
     study = load_journal_study(
         name=name,
         journal_path=journal_path,
         sampler_seed=sampler_seed,
     )
+
+    _fail_stale_running_trials(study)
 
     # Only seed an entirely new stage. A resumed study keeps its original queue.
     if len(study.trials) == 0:
@@ -1028,6 +1533,8 @@ def run_parallel_study(
                 "target_complete_trials": target_complete_trials,
                 "sampler_seed": sampler_seed,
                 "max_consecutive_failures": max_consecutive_failures,
+                "sample_cache_entries": sample_cache_entries,
+                "cache_prepared_xy": cache_prepared_xy,
             },
             name=f"{stage.name}-gpu-{gpu_id}",
         )
@@ -1110,6 +1617,8 @@ def _tournament_worker(
     study_tag: str,
     keep_artifacts: bool,
     model_table_root: str | None,
+    sample_cache_entries: dict[str, str] | None,
+    cache_prepared_xy: bool,
     task_queue,
     result_queue,
 ) -> None:
@@ -1120,6 +1629,14 @@ def _tournament_worker(
         threads_per_worker=threads_per_worker,
     )
     module = importlib.import_module(module_name)
+    if sample_cache_entries:
+        install_worker_stage_cache(
+            module=module,
+            family=family,
+            sample_cache_entries=sample_cache_entries,
+            cache_prepared_xy=cache_prepared_xy,
+            worker_index=worker_index,
+        )
 
     while True:
         task = task_queue.get()
@@ -1192,6 +1709,8 @@ def run_parallel_tournament(
     module_name: str,
     monitor_seconds: float,
     state_path: Path,
+    sample_cache_entries: dict[str, str] | None,
+    cache_prepared_xy: bool,
 ) -> list[dict[str, Any]]:
     tasks: list[dict[str, Any]] = []
     for finalist_index, params in enumerate(finalists, start=1):
@@ -1257,6 +1776,8 @@ def run_parallel_tournament(
                     "study_tag": study_tag,
                     "keep_artifacts": keep_artifacts,
                     "model_table_root": model_table_root,
+                    "sample_cache_entries": sample_cache_entries,
+                    "cache_prepared_xy": cache_prepared_xy,
                     "task_queue": task_queue,
                     "result_queue": result_queue,
                 },
@@ -1394,6 +1915,15 @@ def main() -> None:
     root = args.output_dir / study_tag
     root.mkdir(parents=True, exist_ok=True)
 
+    stage_cache_dir = (
+        args.stage_cache_dir
+        if args.stage_cache_dir is not None
+        else root / "stage_cache"
+    )
+    stage_cache_dir = stage_cache_dir.resolve()
+    hpo_table_root = _hpo_table_root(base_config, args.hpo_model_table_root)
+    cache_prepared_xy = not args.no_prepared_xy_cache
+
     explore_stage = Stage(
         name="explore",
         train_fraction=args.explore_train_fraction,
@@ -1429,6 +1959,9 @@ def main() -> None:
     print(f"Threads/worker:      {'auto' if args.threads_per_worker <= 0 else args.threads_per_worker}")
     print(f"Study output:        {root.resolve()}")
     print(f"HPO table override:  {args.hpo_model_table_root or 'none (base config)'}")
+    print(f"HPO source table:    {hpo_table_root}")
+    print(f"Stage cache:         {'disabled' if args.disable_stage_cache else stage_cache_dir}")
+    print(f"Prepared XY cache:   {cache_prepared_xy and not args.disable_stage_cache}")
     print(f"Search depth:        {space['depth_low']}..{space['depth_high']}")
     print(f"Explore target:      {args.explore_trials} successful trials")
     print(f"Refine target:       {args.refine_trials} successful trials")
@@ -1450,7 +1983,22 @@ def main() -> None:
     )
     initial_enqueue = [base_seed_params] if base_seed_params is not None else []
 
-    # Stage 1: broad distributed exploration.
+    # Stage 1: broad distributed exploration. Build each deterministic sample
+    # once; resumed studies reuse the immutable Arrow cache.
+    explore_cache = (
+        None
+        if args.disable_stage_cache
+        else prepare_stage_sample_cache(
+            module_name=module_name,
+            base_config=base_config,
+            family=family,
+            stage=explore_stage,
+            model_table_root=hpo_table_root,
+            cache_dir=stage_cache_dir,
+            rebuild=args.rebuild_stage_cache,
+        )
+    )
+
     explore_study = run_parallel_study(
         name=f"{study_tag}__explore",
         journal_path=root / "explore.journal",
@@ -1471,6 +2019,8 @@ def main() -> None:
         module_name=module_name,
         monitor_seconds=args.monitor_seconds,
         max_consecutive_failures=args.max_consecutive_failures,
+        sample_cache_entries=explore_cache,
+        cache_prepared_xy=cache_prepared_xy,
     )
 
     explore_complete = complete_trials(explore_study)
@@ -1488,7 +2038,22 @@ def main() -> None:
         f"{json.dumps(normalized_params_from_trial(explore_study.best_trial.params, family=family), indent=2, sort_keys=True)}"
     )
 
-    # Stage 2: distributed refinement. Seed with Stage-1 winners.
+    # Stage 2: distributed refinement. Full-train cache is built once; the
+    # 25% validation cache is automatically reused from exploration.
+    refine_cache = (
+        None
+        if args.disable_stage_cache
+        else prepare_stage_sample_cache(
+            module_name=module_name,
+            base_config=base_config,
+            family=family,
+            stage=refine_stage,
+            model_table_root=hpo_table_root,
+            cache_dir=stage_cache_dir,
+            rebuild=args.rebuild_stage_cache,
+        )
+    )
+
     refine_study = run_parallel_study(
         name=f"{study_tag}__refine",
         journal_path=root / "refine.journal",
@@ -1509,6 +2074,8 @@ def main() -> None:
         module_name=module_name,
         monitor_seconds=args.monitor_seconds,
         max_consecutive_failures=args.max_consecutive_failures,
+        sample_cache_entries=refine_cache,
+        cache_prepared_xy=cache_prepared_xy,
     )
 
     refine_complete = complete_trials(refine_study)
@@ -1526,7 +2093,22 @@ def main() -> None:
         f"{json.dumps(normalized_params_from_trial(refine_study.best_trial.params, family=family), indent=2, sort_keys=True)}"
     )
 
-    # Stage 3: all finalist/seed fits are dispatched dynamically over the GPUs.
+    # Stage 3: 100% fractions make sampled rows seed-invariant, so tournament
+    # reuses refinement's full-train cache and builds full validation once.
+    tournament_cache = (
+        None
+        if args.disable_stage_cache
+        else prepare_stage_sample_cache(
+            module_name=module_name,
+            base_config=base_config,
+            family=family,
+            stage=tournament_stage,
+            model_table_root=hpo_table_root,
+            cache_dir=stage_cache_dir,
+            rebuild=args.rebuild_stage_cache,
+        )
+    )
+
     tournament = run_parallel_tournament(
         base_config=base_config,
         family=family,
@@ -1543,6 +2125,8 @@ def main() -> None:
         module_name=module_name,
         monitor_seconds=args.monitor_seconds,
         state_path=root / "tournament_state.json",
+        sample_cache_entries=tournament_cache,
+        cache_prepared_xy=cache_prepared_xy,
     )
 
     best = tournament[0]
@@ -1580,6 +2164,9 @@ def main() -> None:
         "tournament_workers": tournament_workers,
         "optuna_storage": "JournalStorage/JournalFileBackend",
         "hpo_model_table_root": args.hpo_model_table_root,
+        "stage_cache_enabled": not args.disable_stage_cache,
+        "stage_cache_dir": str(stage_cache_dir) if not args.disable_stage_cache else None,
+        "prepared_xy_cache": cache_prepared_xy and not args.disable_stage_cache,
         "test_split_used": False,
     }
 
@@ -1605,6 +2192,9 @@ def main() -> None:
         "best_params": best_params,
         "best_config": str(best_yaml),
         "gpus": gpus,
+        "stage_cache_enabled": not args.disable_stage_cache,
+        "stage_cache_dir": str(stage_cache_dir) if not args.disable_stage_cache else None,
+        "prepared_xy_cache": cache_prepared_xy and not args.disable_stage_cache,
         "test_split_used": False,
     }
     write_json(summary_json, summary)
