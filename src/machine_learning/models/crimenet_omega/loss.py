@@ -190,22 +190,41 @@ class MarkedPointProcessNLL(nn.Module):
         metrics = {
             "total_nll": total_nll.detach(),
             "num_events": num_events.detach(),
+
             "intensity_event_nll":
                 intensity_event_nll.detach(),
-            "mark_nll": mark_nll.detach(),
-            "integral": integral.detach(),
-            "nll_per_event":
-                (total_nll / denominator).detach(),
-            "intensity_event_nll_per_event": (
-                intensity_event_nll / denominator
-            ).detach(),
-            "mark_nll_per_event": (
-                mark_nll / denominator
-            ).detach(),
-            "integral_per_event": (
-                integral / denominator
-            ).detach(),
-            "mean_intensity": intensity.mean().detach(),
-        }
 
+            "mark_nll":
+                mark_nll.detach(),
+
+            "integral":
+                integral.detach(),
+
+            "nll_per_event":
+                (
+                    total_nll
+                    / num_events.clamp_min(1.0)
+                ).detach(),
+
+            "intensity_event_nll_per_event":
+                (
+                    intensity_event_nll
+                    / num_events.clamp_min(1.0)
+                ).detach(),
+
+            "mark_nll_per_event":
+                (
+                    mark_nll
+                    / num_events.clamp_min(1.0)
+                ).detach(),
+
+            "integral_per_event":
+                (
+                    integral
+                    / num_events.clamp_min(1.0)
+                ).detach(),
+
+            "mean_intensity":
+                intensity.mean().detach(),
+        }
         return loss, metrics
