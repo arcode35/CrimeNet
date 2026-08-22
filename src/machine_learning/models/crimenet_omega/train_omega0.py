@@ -188,11 +188,16 @@ def evaluate(
                 lighting=batch["lighting"],
             )
 
-        loss, metrics = objective(output, batch)
+        # Validation must use raw batch NLL. Some ordered validation
+        # batches legitimately contain only integration rows.
+        _, metrics = objective(
+            output,
+            batch,
+            normalize=False,
+        )
 
-        n = float(metrics["num_events"])
-        total_nll += float(loss) * n
-        total_events += n
+        total_nll += metrics["total_nll"].item()
+        total_events += metrics["num_events"].item()
 
     if total_events <= 0:
         raise RuntimeError(
@@ -524,7 +529,11 @@ def main() -> None:
                 )
 
             # Likelihood executes in explicit FP32 outside autocast.
-            loss, metrics = objective(output, batch)
+            loss, metrics = objective(
+                output,
+                batch,
+                normalize=True,
+            )
 
             if not torch.isfinite(loss):
                 raise RuntimeError(
@@ -548,7 +557,7 @@ def main() -> None:
             optimizer.step()
 
             n = metrics["num_events"].item()
-            running_nll += loss.detach().item() * n
+            running_nll += metrics["total_nll"].item()
             running_events += n
 
             if step % 100 == 0:
@@ -560,7 +569,7 @@ def main() -> None:
                     f"intensity="
                     f"{metrics['mean_intensity'].item():.8f}"
                     f"mark_nll="
-                    f"{float(metrics['mark_nll_per_event']):.6f} "
+                    f"{metrics['mark_nll_per_event'].item():.6f} "
                     f"grad_norm={float(grad_norm):.4f}"
                 )
 

@@ -1,0 +1,185 @@
+experiment:
+  name: crimenet_omega0
+  seed: 42
+
+data:
+  model_table_root: "gs://crimenet/gold_staging_/model_table_nyc_timestamp_fix"
+  event_spine_root: "gs://crimenet/gold/event_spine"
+
+  splits:
+    train: "train"
+    validation: "validation"
+    test: "test"
+
+  # Development sampling. Increase only after the implementation is stable.
+  train_fraction: 0.01
+  validation_fraction: 0.01
+
+  # Training code must never read the test split.
+  allow_test_access: false
+
+  # Physical model-table column names.
+  columns:
+    row_id: "model_row_id"
+    row_type: "row_type"
+    observed: "is_observed_event"
+    event_count: "event_count"
+    integration_weight: "integration_weight_cell_seconds"
+    city: "source_city"
+    timestamp: "row_timestamp_utc"
+    cell: "osm_h3_cell_id"
+    subtype: "canonical_subtype_code"
+    family: "canonical_family_code"
+    lighting_condition: "lighting_condition"
+
+features:
+  numeric:
+    # existing context features
+    - local_hour_sin
+    - local_hour_cos
+    - local_day_of_week_sin
+    - local_day_of_week_cos
+    - weather_temperature_2m_c
+    - weather_relative_humidity_2m_pct
+    - socio_population
+    - socio_median_age
+    - socio_median_household_income
+    - socio_poverty_rate
+    - socio_unemployment_rate
+    - socio_vacancy_rate
+    - socio_renter_occupied_rate
+    - socio_no_vehicle_rate
+    - osm_poi_density_per_km2
+    - osm_nightlife_poi_density_per_km2
+    - osm_food_poi_density_per_km2
+    - osm_retail_poi_density_per_km2
+    - osm_transit_poi_density_per_km2
+    - osm_road_length_density_m_per_km2
+    - osm_major_road_density_m_per_km2
+    - osm_intersection_density_per_km2
+    - osm_dead_end_density_per_km2
+    - osm_building_density_per_km2
+    - osm_major_road_length_ratio
+    - osm_residential_road_length_ratio
+    - osm_service_road_length_ratio
+    - osm_one_way_road_length_ratio
+    - osm_tracked_poi_category_entropy
+    - osm_land_use_category_entropy
+    - osm_commercial_residential_mix_ratio
+    - solar_elevation_deg
+    - is_daylight
+
+    # leakage-safe aggregate event history
+    - cell_crime_count_6h
+    - cell_crime_count_24h
+    - cell_crime_count_7d
+    - cell_crime_count_28d
+
+    - cell_violent_count_6h
+    - cell_violent_count_24h
+    - cell_violent_count_7d
+    - cell_violent_count_28d
+
+    - cell_property_count_6h
+    - cell_property_count_24h
+    - cell_property_count_7d
+    - cell_property_count_28d
+
+    - city_crime_count_6h
+    - city_crime_count_24h
+    - city_crime_count_7d
+    - city_crime_count_28d
+
+    - k1_crime_count_6h
+    - k1_crime_count_24h
+    - k1_crime_count_7d
+    - k1_crime_count_28d
+
+    - has_crime_cell_28d
+    - hours_since_last_crime_cell_capped_28d
+    - has_crime_city_28d
+    - hours_since_last_crime_city_capped_28d
+
+    - cell_crime_24h_vs_28d_ratio
+    - cell_share_of_k1_crime_24h
+  categorical:
+    - source_city
+    - lighting_condition
+
+  # Deliberately disabled for Omega-0. These become Omega-1.
+  aggregate_history: []
+
+model:
+  name: omega0
+  architecture: context_only_marked_point_process
+
+  hidden_dim: 128
+  residual_blocks: 2
+  residual_expansion: 4
+  dropout: 0.10
+
+  embeddings:
+    city_dim: 16
+    lighting_dim: 8
+
+  intensity:
+    activation: softplus
+    epsilon: 1.0e-8
+    unit: events_per_cell_hour
+
+  mark:
+    target: canonical_subtype_code
+    hierarchical: false
+
+  components:
+    aggregate_history: false
+    raw_event_history: false
+    hawkes: false
+    multiscale_memory: false
+    spatial_graph: false
+    dynamic_graph: false
+    latent_state: false
+    higher_order_residual: false
+
+training:
+  device: cuda
+  dtype: bfloat16
+
+  batch_size: 4096
+  validation_batch_size: 8192
+  epochs: 10
+
+  optimizer:
+    name: adamw
+    learning_rate: 3.0e-4
+    weight_decay: 1.0e-4
+
+  gradient_clip_norm: 1.0
+
+  dataloader:
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+
+  early_stopping:
+    enabled: true
+    patience: 3
+    metric: validation_nll_per_event
+    mode: min
+
+likelihood:
+  type: marked_spatiotemporal_point_process
+
+  # integration_weight_cell_seconds / 3600 => cell-hours.
+  # Must agree with model.intensity.unit.
+  exposure_unit_seconds: 3600.0
+
+  intensity_event_term: true
+  compensator_term: true
+  mark_term: true
+
+output:
+  root: "artifacts/crimenet_omega/omega0"
+  checkpoint_name: "best.pt"
+  save_preprocessor: true
+  save_config: true
