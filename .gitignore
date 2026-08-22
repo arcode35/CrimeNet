@@ -230,3 +230,7 @@ src/crimenet_data/scripts/observation_suspicious_gaps.csv
 src/crimenet_data/scripts/observation_yearly_activity.csv
 
 artifacts/experiments/
+# Generated imagery / raster smoke-test artifacts
+tests/images/*.tif
+tests/images/*.png
+tests/images/*.aux.xml
