@@ -157,7 +157,6 @@ def _validate_cross_config(
                 "Omega-0 validation NLL must use early-stopping mode=min."
             )
 
-
 @torch.no_grad()
 def evaluate(
     model: CrimeNetOmega0,
@@ -165,11 +164,21 @@ def evaluate(
     loader: DataLoader,
     device: torch.device,
     autocast_dtype: torch.dtype | None,
-) -> float:
+) -> dict[str, float]:
     model.eval()
 
     total_nll = 0.0
+    total_intensity_event_nll = 0.0
+    total_mark_nll = 0.0
+    total_integral = 0.0
     total_events = 0.0
+
+    # For diagnostic mean intensities.
+    event_intensity_sum = 0.0
+    event_intensity_weight = 0.0
+
+    integration_intensity_sum = 0.0
+    integration_row_count = 0
 
     for batch in loader:
         batch = move_batch(batch, device)
@@ -188,23 +197,145 @@ def evaluate(
                 lighting=batch["lighting"],
             )
 
-        # Validation must use raw batch NLL. Some ordered validation
-        # batches legitimately contain only integration rows.
+        # Raw batch NLL. This allows batches containing zero events.
         _, metrics = objective(
             output,
             batch,
             normalize=False,
         )
 
+        # ---------------------------------------------------------
+        # Likelihood totals
+        # ---------------------------------------------------------
+
         total_nll += metrics["total_nll"].item()
+
+        total_intensity_event_nll += (
+            metrics["intensity_event_nll"].item()
+        )
+
+        total_mark_nll += (
+            metrics["mark_nll"].item()
+        )
+
+        total_integral += metrics["integral"].item()
+
         total_events += metrics["num_events"].item()
+
+        # ---------------------------------------------------------
+        # Intensity diagnostics
+        # ---------------------------------------------------------
+
+        intensity = output["intensity"].float()
+
+        observed = batch["is_observed"].bool()
+        event_count = batch["event_count"].float()
+
+        event_mask = observed & (event_count > 0)
+        integration_mask = ~observed
+
+        # Event-count-weighted mean intensity.
+        #
+        # If one row represents multiple observed events, it should
+        # contribute proportionally to the event-level diagnostic.
+        if event_mask.any():
+            counts = event_count[event_mask]
+
+            event_intensity_sum += (
+                intensity[event_mask] * counts
+            ).sum().item()
+
+            event_intensity_weight += counts.sum().item()
+
+        # Ordinary row-wise mean intensity over integration points.
+        if integration_mask.any():
+            integration_intensity_sum += (
+                intensity[integration_mask].sum().item()
+            )
+
+            integration_row_count += int(
+                integration_mask.sum().item()
+            )
 
     if total_events <= 0:
         raise RuntimeError(
             "Validation loader produced no observed events."
         )
 
-    return total_nll / total_events
+    if integration_row_count <= 0:
+        raise RuntimeError(
+            "Validation loader produced no integration rows."
+        )
+
+    # -------------------------------------------------------------
+    # Split-level diagnostics
+    # -------------------------------------------------------------
+
+    nll_per_event = total_nll / total_events
+
+    intensity_event_nll_per_event = (
+        total_intensity_event_nll
+        / total_events
+    )
+
+    mark_nll_per_event = (
+        total_mark_nll
+        / total_events
+    )
+
+    integral_per_event = (
+        total_integral
+        / total_events
+    )
+
+    mean_event_intensity = (
+        event_intensity_sum
+        / event_intensity_weight
+    )
+
+    mean_integration_intensity = (
+        integration_intensity_sum
+        / integration_row_count
+    )
+
+    # In a point-process likelihood, the compensator is the
+    # expected integrated event count over the domain.
+    predicted_events = total_integral
+    observed_events = total_events
+
+    calibration_ratio = (
+        predicted_events
+        / observed_events
+    )
+
+    return {
+        "nll_per_event":
+            nll_per_event,
+
+        "intensity_event_nll_per_event":
+            intensity_event_nll_per_event,
+
+        "mark_nll_per_event":
+            mark_nll_per_event,
+
+        "integral_per_event":
+            integral_per_event,
+
+        "mean_event_intensity":
+            mean_event_intensity,
+
+        "mean_integration_intensity":
+            mean_integration_intensity,
+
+        "observed_events":
+            observed_events,
+
+        "predicted_events":
+            predicted_events,
+
+        "calibration_ratio":
+            calibration_ratio,
+    }
 
 
 def main() -> None:
@@ -580,7 +711,7 @@ def main() -> None:
 
         train_nll = running_nll / running_events
 
-        val_nll = evaluate(
+        val_metrics = evaluate(
             model,
             objective,
             val_loader,
@@ -588,11 +719,67 @@ def main() -> None:
             autocast_dtype,
         )
 
+        val_nll = val_metrics["nll_per_event"]
+
         print(
             f"\nEpoch {epoch}: "
             f"train NLL/event={train_nll:.6f} "
-            f"validation NLL/event={val_nll:.6f}\n"
+            f"validation NLL/event={val_nll:.6f}"
         )
+
+        print(
+            "Validation decomposition:"
+        )
+
+        print(
+            f"  intensity event NLL/event: "
+            f"{val_metrics['intensity_event_nll_per_event']:.6f}"
+        )
+
+        print(
+            f"  mark NLL/event:            "
+            f"{val_metrics['mark_nll_per_event']:.6f}"
+        )
+
+        print(
+            f"  integral/event:            "
+            f"{val_metrics['integral_per_event']:.6f}"
+        )
+
+        print(
+            "Validation intensity:"
+        )
+
+        print(
+            f"  mean event intensity:       "
+            f"{val_metrics['mean_event_intensity']:.8f}"
+        )
+
+        print(
+            f"  mean integration intensity: "
+            f"{val_metrics['mean_integration_intensity']:.8f}"
+        )
+
+        print(
+            "Validation calibration:"
+        )
+
+        print(
+            f"  observed events:            "
+            f"{val_metrics['observed_events']:,.0f}"
+        )
+
+        print(
+            f"  predicted integrated events:"
+            f" {val_metrics['predicted_events']:,.2f}"
+        )
+
+        print(
+            f"  predicted / observed:       "
+            f"{val_metrics['calibration_ratio']:.6f}"
+        )
+
+        print()
 
         if val_nll < best_val:
             best_val = val_nll
