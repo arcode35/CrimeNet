@@ -5,6 +5,11 @@ from crimenet_data.assets.crime.bronze import crime_bronze_assets
 from crimenet_data.assets.crime.silver import crime_silver_assets
 from crimenet_data.assets.weather.bronze import weather_bronze_assets
 from crimenet_data.assets.weather.silver import weather_silver_assets
+from crimenet_data.assets.images.gold import gold_imagery_embeddings
+from crimenet_data.assets.images.silver import (
+    silver_imagery_h3_temporal_index,
+    silver_imagery_h3_candidates
+)
 from crimenet_data.assets.socioeconomic.bronze import (
     socioeconomic_bronze_assets,
 )
@@ -109,6 +114,13 @@ osm_h3_silver_job = dg.define_asset_job(
     ),
 )
 
+silver_imagery_preprocessing_job = dg.define_asset_job(
+    name="silver_imagery_preprocessing_job",
+    selection=dg.AssetSelection.assets(
+        silver_imagery_h3_candidates,
+        silver_imagery_h3_temporal_index,
+    ),
+)
 
 tract_resources_job = dg.define_asset_job(
     name="tract_resources_job",
@@ -116,7 +128,13 @@ tract_resources_job = dg.define_asset_job(
         "tract_resources"
     ),
 )
-
+silver_imagery_preprocessing_job = dg.define_asset_job(
+    name="silver_imagery_preprocessing_job",
+    selection=dg.AssetSelection.assets(
+        silver_imagery_h3_candidates,
+        silver_imagery_h3_temporal_index,
+    ),
+)
 
 event_spine_job = dg.define_asset_job(
     name="event_spine_job",
@@ -179,12 +197,14 @@ defs = dg.Definitions(
 
         *osm_h3_silver_assets,
         *tract_resource_silver_assets,
-
+        silver_imagery_h3_candidates,
+        silver_imagery_h3_temporal_index,
         event_spine,
         integration_samples,
         integration_context,
         lighting_required_keys,
         solar_lighting_conditions,
+        gold_imagery_embeddings,
         final_model_table,
     ],
     jobs=[
@@ -200,6 +220,7 @@ defs = dg.Definitions(
         tract_resources_job,
         osm_h3_silver_job,
         lighting_job,
+        silver_imagery_preprocessing_job,
 
         event_spine_job,
         integration_job,
