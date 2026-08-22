@@ -235,10 +235,21 @@ def _ensure_gdal_gcs_credentials() -> None:
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(adc)
         return
 
+    # On GCE, GDAL /vsigs/ can obtain OAuth credentials directly from
+    # the instance metadata service using the VM's attached service account.
+    if os.path.exists("/sys/class/dmi/id/product_name"):
+        try:
+            product_name = Path("/sys/class/dmi/id/product_name").read_text().strip()
+            if "Google" in product_name:
+                os.environ["CPL_MACHINE_IS_GCE"] = "YES"
+                return
+        except OSError:
+            pass
+
     raise RuntimeError(
-        "GDAL /vsigs/ cannot find GCS credentials. Run "
-        "`gcloud auth application-default login` or set "
-        "GOOGLE_APPLICATION_CREDENTIALS."
+        "GDAL /vsigs/ cannot find GCS credentials. "
+        "Use GCE metadata credentials, run `gcloud auth application-default login`, "
+        "or set GOOGLE_APPLICATION_CREDENTIALS."
     )
 
 
@@ -282,6 +293,7 @@ def _autocast_context(device: torch.device, precision: str):
 
 def _raster_env() -> rasterio.Env:
     return rasterio.Env(
+        CPL_MACHINE_IS_GCE="YES",
         GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
         GDAL_HTTP_MULTIRANGE="YES",
         GDAL_HTTP_MERGE_CONSECUTIVE_RANGES="YES",
@@ -292,7 +304,6 @@ def _raster_env() -> rasterio.Env:
         VSI_CACHE="TRUE",
         VSI_CACHE_SIZE="134217728",
     )
-
 
 def _window_from_row(row: dict) -> Window:
     return Window(
