@@ -21,6 +21,11 @@ class MarkedPointProcessNLL(nn.Module):
           ]
 
     The model intensity and integration_weight must use reciprocal units.
+
+    Training uses ``normalize=True`` and minimizes NLL per observed event.
+    Validation uses ``normalize=False`` so integration-only batches can
+    contribute their compensator term without requiring an observed event
+    in every individual batch.
     """
 
     SUPPORTED_TYPE = "marked_spatiotemporal_point_process"
@@ -47,7 +52,7 @@ class MarkedPointProcessNLL(nn.Module):
         likelihood_type = str(likelihood_cfg["type"])
         if likelihood_type != self.SUPPORTED_TYPE:
             raise ValueError(
-                f"Omega-0 requires likelihood.type="
+                "Omega-0 requires likelihood.type="
                 f"{self.SUPPORTED_TYPE!r}; got {likelihood_type!r}."
             )
 
@@ -60,7 +65,6 @@ class MarkedPointProcessNLL(nn.Module):
             )
         self.exposure_unit_seconds = exposure_unit_seconds
 
-        # All three terms are mathematically required for this Omega-0 model.
         for key in (
             "intensity_event_term",
             "compensator_term",
@@ -75,8 +79,10 @@ class MarkedPointProcessNLL(nn.Module):
         self,
         outputs: dict[str, torch.Tensor],
         batch: dict[str, torch.Tensor],
+        *,
+        normalize: bool = True,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        # Explicit FP32 likelihood arithmetic even when the neural forward
+        # Keep likelihood arithmetic in FP32 even when the neural forward
         # pass uses BF16 autocast.
         intensity = outputs["intensity"].float()
         mark_logits = outputs["mark_logits"].float()
@@ -102,37 +108,59 @@ class MarkedPointProcessNLL(nn.Module):
             raise RuntimeError(
                 "Intensity must be strictly positive."
             )
+        if (count < 0).any():
+            raise RuntimeError(
+                "event_count must be non-negative."
+            )
+        if (integration_weight < 0).any():
+            raise RuntimeError(
+                "integration_weight must be non-negative."
+            )
 
         event_mask = observed & (count > 0)
         integration_mask = ~observed
-
         num_events = count[event_mask].sum()
-        if num_events <= 0:
-            raise RuntimeError(
-                "Batch contains no observed events. "
-                "Use a sufficiently large batch or a stratified sampler."
-            )
 
-        intensity_event_nll = -(
-            count[event_mask]
-            * torch.log(intensity[event_mask])
-        ).sum()
+        # Event and mark terms are zero for a legitimate integration-only
+        # validation batch.
+        if event_mask.any():
+            intensity_event_nll = -(
+                count[event_mask]
+                * torch.log(intensity[event_mask])
+            ).sum()
 
-        log_mark_probs = F.log_softmax(
-            mark_logits[event_mask],
-            dim=-1,
-        )
-        selected_log_mark_prob = (
-            log_mark_probs.gather(
-                dim=1,
-                index=subtype[event_mask].unsqueeze(1),
+            event_subtype = subtype[event_mask]
+            if (event_subtype < 0).any():
+                raise RuntimeError(
+                    "Observed event rows contain invalid subtype ids."
+                )
+            if (
+                event_subtype >= mark_logits.shape[-1]
+            ).any():
+                raise RuntimeError(
+                    "Observed event rows contain subtype ids outside "
+                    "the mark-head vocabulary."
+                )
+
+            log_mark_probs = F.log_softmax(
+                mark_logits[event_mask],
+                dim=-1,
             )
-            .squeeze(1)
-        )
-        mark_nll = -(
-            count[event_mask]
-            * selected_log_mark_prob
-        ).sum()
+            selected_log_mark_prob = (
+                log_mark_probs.gather(
+                    dim=1,
+                    index=event_subtype.unsqueeze(1),
+                )
+                .squeeze(1)
+            )
+            mark_nll = -(
+                count[event_mask]
+                * selected_log_mark_prob
+            ).sum()
+        else:
+            # Zero-valued tensors on the correct device/dtype.
+            intensity_event_nll = intensity.sum() * 0.0
+            mark_nll = mark_logits.sum() * 0.0
 
         integral = (
             integration_weight[integration_mask]
@@ -144,21 +172,40 @@ class MarkedPointProcessNLL(nn.Module):
             + mark_nll
             + integral
         )
-        nll_per_event = total_nll / num_events
+
+        if normalize:
+            if num_events <= 0:
+                raise RuntimeError(
+                    "Training batch contains no observed events."
+                )
+            loss = total_nll / num_events
+        else:
+            # Validation aggregates raw NLL across all batches and divides
+            # by the total number of observed events only after the full
+            # validation loader has been consumed.
+            loss = total_nll
+
+        denominator = num_events.clamp_min(1.0)
 
         metrics = {
-            "nll_per_event": nll_per_event.detach(),
+            "total_nll": total_nll.detach(),
+            "num_events": num_events.detach(),
+            "intensity_event_nll":
+                intensity_event_nll.detach(),
+            "mark_nll": mark_nll.detach(),
+            "integral": integral.detach(),
+            "nll_per_event":
+                (total_nll / denominator).detach(),
             "intensity_event_nll_per_event": (
-                intensity_event_nll / num_events
+                intensity_event_nll / denominator
             ).detach(),
             "mark_nll_per_event": (
-                mark_nll / num_events
+                mark_nll / denominator
             ).detach(),
             "integral_per_event": (
-                integral / num_events
+                integral / denominator
             ).detach(),
             "mean_intensity": intensity.mean().detach(),
-            "num_events": num_events.detach(),
         }
 
-        return nll_per_event, metrics
+        return loss, metrics
