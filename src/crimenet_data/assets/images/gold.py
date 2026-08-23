@@ -615,12 +615,49 @@ def _load_olmoearth(device: torch.device):
         ) from exc
 
     full_model = load_model_from_id(ModelID.OLMOEARTH_V1_2_BASE, load_weights=True)
-    # Only the encoder is used for durable features. Drop the MAE decoder / target
-    # encoder wrapper so they do not occupy precious GPU memory on the 5090.
+    # Only the encoder is used for durable features.
     encoder = full_model.encoder.eval().to(device)
     del full_model
+
+    # OlmoEarth Normalizer is an elementwise per-band affine transform:
+    #   (x - (mean - 2*std)) / ((mean + 2*std) - (mean - 2*std))
+    #
+    # Precompute the exact float64 constants once.  Reader threads apply this
+    # to each unique H3/time frame ONCE and cast back to float32, rather than
+    # normalizing the same historical frame again in every trailing sequence.
     normalizer = Normalizer(std_multiplier=2.0)
-    return encoder, normalizer, Modality, MaskedOlmoEarthSample
+    modality = Modality.SENTINEL2_L2A
+    norm_values = normalizer.norm_config[modality.name]
+    mean_vals = np.asarray(
+        [norm_values[band]["mean"] for band in modality.band_order],
+        dtype=np.float64,
+    )
+    std_vals = np.asarray(
+        [norm_values[band]["std"] for band in modality.band_order],
+        dtype=np.float64,
+    )
+    norm_min = mean_vals - normalizer.std_multiplier * std_vals
+    norm_max = mean_vals + normalizer.std_multiplier * std_vals
+    norm_range = norm_max - norm_min
+
+    return (
+        encoder,
+        Modality,
+        MaskedOlmoEarthSample,
+        norm_min,
+        norm_range,
+    )
+
+
+def _normalize_olmo_s2_frame(
+    frame_hwc: np.ndarray,
+    norm_min: np.ndarray,
+    norm_range: np.ndarray,
+) -> np.ndarray:
+    """Exact per-frame equivalent of OlmoEarth Normalizer.normalize(...)."""
+    # Keep the same arithmetic path as the official NumPy normalizer:
+    # float32 input + float64 constants -> float64 result -> float32.
+    return ((frame_hwc - norm_min) / norm_range).astype(np.float32, copy=False)
 
 
 def _olmo_timestamps(rows: list[dict]) -> np.ndarray:
@@ -634,37 +671,39 @@ def _olmo_timestamps(rows: list[dict]) -> np.ndarray:
 
 def _encode_olmo_batch(
     model,
-    normalizer,
-    Modality,
     MaskedOlmoEarthSample,
-    sequences: list[np.ndarray],  # each [T,H,W,C]
-    timestamp_sequences: list[np.ndarray],  # each [T,3]
+    sequences: list[tuple[np.ndarray, ...]],  # normalized frames, each tuple length T
+    timestamp_sequences: list[np.ndarray],   # each [T,3]
     device: torch.device,
     precision: str,
 ) -> np.ndarray:
     if not sequences:
         return np.empty((0, 0), dtype=np.float32)
 
-    t = sequences[0].shape[0]
-    if any(x.shape[0] != t for x in sequences):
+    t = len(sequences[0])
+    if t < 1 or any(len(x) != t for x in sequences):
         raise ValueError("OlmoEarth batch must have a single common sequence length")
 
-    # [B,T,H,W,C] -> [B,H,W,T,C]
-    batch = np.stack(sequences, axis=0)
-    batch = np.transpose(batch, (0, 2, 3, 1, 4)).astype(np.float32, copy=False)
-    normalized = normalizer.normalize(Modality.SENTINEL2_L2A, batch)
+    first = sequences[0][0]
+    h, w, c = first.shape
+    bsz = len(sequences)
 
-    x = torch.from_numpy(np.asarray(normalized, dtype=np.float32)).to(
-        device,
-        non_blocking=True,
-    )
+    # Build the model's native [B,H,W,T,C] layout DIRECTLY.  v4/v5 first copied
+    # every trailing sequence with np.stack(), then copied all sequences again
+    # into the batch.  This path copies each normalized frame only once.
+    batch = np.empty((bsz, h, w, t, c), dtype=np.float32)
+    for b, sequence in enumerate(sequences):
+        for ti, frame in enumerate(sequence):
+            batch[b, :, :, ti, :] = frame
+
+    x = torch.from_numpy(batch).to(device, non_blocking=True)
     ts = torch.from_numpy(np.stack(timestamp_sequences, axis=0)).long().to(
         device,
         non_blocking=True,
     )
 
-    # We fill SCL-rejected pixels before normalization, so there are no missing
-    # tokens from the encoder's perspective and fast_pass=True remains valid.
+    # SCL rejection + median fill + official normalization have already been
+    # applied once per unique frame by the reader workers.
     mask = torch.zeros(
         x.shape[0], x.shape[1], x.shape[2], x.shape[3],
         dtype=torch.long,
@@ -681,7 +720,6 @@ def _encode_olmo_batch(
         out = model(sample, patch_size=8, input_res=10, fast_pass=True)
         tokens_and_masks = out["tokens_and_masks"]
         tokens = tokens_and_masks.sentinel2_l2a.float()
-        # Shape is B x patchH x patchW x T x bandsets x D.
         dims = tuple(range(1, tokens.ndim - 1))
         z = tokens.mean(dim=dims)
         z = F.normalize(z, p=2, dim=1)
@@ -1038,7 +1076,13 @@ def _encode_sentinel(
             "application/json",
         )
 
-    model, normalizer, Modality, MaskedOlmoEarthSample = _load_olmoearth(device)
+    (
+        model,
+        Modality,
+        MaskedOlmoEarthSample,
+        sentinel_norm_min,
+        sentinel_norm_range,
+    ) = _load_olmoearth(device)
 
     reader_workers = config.sentinel_reader_workers
     max_pending = max(reader_workers, config.sentinel_prefetch_groups)
@@ -1055,7 +1099,7 @@ def _encode_sentinel(
         f"prefetch_groups={max_pending}, "
         f"scene_cache_per_reader={per_worker_cache_size}, "
         f"planetary_computer_reads=0, "
-        f"bounded_out_of_order=true, "
+        f"bounded_out_of_order=true, frame_normalize_once=true, direct_batch_layout=true, "
         f"gpu_batch_start={config.sentinel_batch_size}"
     )
 
@@ -1082,7 +1126,7 @@ def _encode_sentinel(
     # inside each GPU batch. H3 groups may now finish out of order; absolute_idx
     # reorders completed embeddings back to exact dataframe order before writing
     # deterministic shards.
-    buckets: dict[int, list[tuple[int, dict, np.ndarray, np.ndarray, str]]] = {
+    buckets: dict[int, list[tuple[int, dict, tuple[np.ndarray, ...], np.ndarray, str]]] = {
         t: [] for t in range(1, config.sentinel_max_timesteps + 1)
     }
     ready_rows: dict[int, dict] = {}
@@ -1148,8 +1192,6 @@ def _encode_sentinel(
             try:
                 embeddings = _encode_olmo_batch(
                     model,
-                    normalizer,
-                    Modality,
                     MaskedOlmoEarthSample,
                     seqs,
                     timestamps,
@@ -1228,6 +1270,15 @@ def _encode_sentinel(
             for row in rows:
                 bundle = cache.get(row)
                 frame, mode = bundle.read_olmo_frame(row, config.sentinel_image_size)
+                # Official OlmoEarth normalization is elementwise and independent
+                # of time/batch position. Normalize this unique H3/time frame once
+                # in the reader thread, then reuse it across up to 12 target
+                # sequences. This removes the dominant serial CPU preprocessing.
+                frame = _normalize_olmo_s2_frame(
+                    frame,
+                    sentinel_norm_min,
+                    sentinel_norm_range,
+                )
                 frames.append((row, frame, mode))
         return h3_number, h3_cell, group_start, frames
 
@@ -1256,7 +1307,9 @@ def _encode_sentinel(
                 continue
 
             seq_rows = [x[0] for x in history]
-            seq = np.stack([x[1] for x in history], axis=0)
+            # Keep references to already-normalized frames. Materialize the
+            # [B,H,W,T,C] tensor only once when a GPU batch is actually launched.
+            seq = tuple(x[1] for x in history)
             timestamps = _olmo_timestamps(seq_rows)
             t = len(history)
 
@@ -1584,7 +1637,7 @@ def gold_imagery_embeddings(
             "patch_size": 8,
             "max_timesteps": config.sentinel_max_timesteps,
             "lookback_days": config.sentinel_lookback_days,
-            "cloud_handling": "SCL BAD_CLASSES -> per-band median fill before OlmoEarth normalization",
+            "cloud_handling": "SCL BAD_CLASSES -> per-band median fill; official OlmoEarth affine normalization once per unique frame",
             "hybrid_input": {
                 "patched13_indexes": SENTINEL_PATCHED_OLMO_INDEXES,
                 "lazy7_missing_assets": SENTINEL_MISSING_ASSET_KEYS,
