@@ -2,10 +2,19 @@ import polars as pl
 
 GCP = pl.CredentialProviderGCP()
 
-pl.Config.set_tbl_rows(-1)
-pl.Config.set_tbl_cols(-1)
-df = pl.scan_delta(
-    "gs://crimenet/gold/event_spine",
+df = pl.read_parquet(
+    "gs://crimenet/gold/imagery/embeddings/foundation_v1/"
+    "sentinel2/part-00000.parquet",
     credential_provider=GCP,
 )
-print(df.collect_schema())
+
+print(
+    df.group_by(
+        "sentinel_input_mode",
+        "temporal_sequence_length",
+    )
+    .len()
+    .sort(
+        ["sentinel_input_mode", "temporal_sequence_length"]
+    )
+)

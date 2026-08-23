@@ -108,11 +108,18 @@ class ImageryEmbeddingConfig(dg.Config):
 
     # Sentinel / OlmoEarth
     sentinel_image_size: int = 128
-    sentinel_batch_size: int = 4
+    sentinel_batch_size: int = 8
     sentinel_max_timesteps: int = 12
     sentinel_lookback_days: int = 400
-    sentinel_scene_cache_size: int = 128
-    sentinel_remote_band_workers: int = 6
+
+    # Parallel Sentinel producer pipeline. H3 groups are prepared concurrently,
+    # while results are consumed in deterministic dataframe order. Each reader
+    # owns a private scene cache and a six-band remote executor, so 4 readers x
+    # 6 band workers can sustain up to ~24 lazy7 Planetary Computer range reads.
+    sentinel_reader_workers: int = 4
+    sentinel_prefetch_groups: int = 8
+    sentinel_scene_cache_size: int = 128  # total cache budget, divided across readers
+    sentinel_remote_band_workers: int = 6  # per Sentinel reader
 
     # Output / control
     rows_per_shard: int = 5000
@@ -1078,171 +1085,373 @@ def _encode_sentinel(
     resume_rows: int = 0,
     start_shard_idx: int = 0,
 ) -> tuple[int, int, dict[str, int]]:
+    """Encode Sentinel with a parallel producer / ordered-consumer pipeline.
+
+    The expensive lazy7 path needs six Planetary Computer bands plus the local
+    GCS stack for every frame. The old implementation prepared exactly one frame
+    at a time, so the GPU and network spent substantial time waiting on each
+    other. Here multiple H3 groups are prepared concurrently by independent
+    reader threads. Each reader owns its own Rasterio/GDAL handles and its own
+    six-band executor, while the main thread keeps OlmoEarth GPU inference
+    batched and deterministic.
+
+    Output rows are reordered back to exact dataframe order before shard writes.
+    That makes `N completed shards -> N * rows_per_shard source rows` a real
+    invariant, so row-count resume is safe after this v2 format marker exists.
+    """
     if df.is_empty():
         return 0, 0, {"patched13": 0, "lazy7": 0}
     if resume_rows == df.height:
         context.log.info("All Sentinel rows already exist in completed shards; skipping OlmoEarth.")
         return resume_rows, start_shard_idx, {"patched13": 0, "lazy7": 0}
 
-    model, normalizer, Modality, MaskedOlmoEarthSample = _load_olmoearth(device)
-    cache = _SentinelSceneCache(
-        max_size=config.sentinel_scene_cache_size,
-        timeout_seconds=config.stac_timeout_seconds,
-        remote_band_workers=config.sentinel_remote_band_workers,
-    )
-
-    # Bucket samples by T because OlmoEarth batches require a common sequence length.
-    buckets: dict[int, list[tuple[dict, np.ndarray, np.ndarray, str]]] = {
-        t: [] for t in range(1, config.sentinel_max_timesteps + 1)
-    }
-
     if resume_rows < 0 or resume_rows > df.height:
         raise ValueError(f"Invalid Sentinel resume_rows={resume_rows} for {df.height} rows")
+    if config.sentinel_reader_workers < 1:
+        raise ValueError("sentinel_reader_workers must be >= 1")
+    if config.sentinel_prefetch_groups < 1:
+        raise ValueError("sentinel_prefetch_groups must be >= 1")
+    if config.sentinel_remote_band_workers < 1:
+        raise ValueError("sentinel_remote_band_workers must be >= 1")
+    if config.sentinel_scene_cache_size < 1:
+        raise ValueError("sentinel_scene_cache_size must be >= 1")
+    if config.sentinel_batch_size < 1:
+        raise ValueError("sentinel_batch_size must be >= 1")
+
+    # The previous serial implementation bucketed by temporal length and wrote
+    # buckets as they became ready. Those first-generation shards were therefore
+    # not guaranteed to match dataframe row order, which makes row-count resume
+    # unsafe. Refuse to mix them with the ordered-v2 format. Delete only the old
+    # Sentinel shards once; NAIP shards remain untouched.
+    format_marker_uri = _join_gs(
+        config.output_prefix,
+        "sentinel2/_ORDERED_PARALLEL_V2.json",
+    )
+    marker_exists = _gcs_exists(format_marker_uri)
+    if start_shard_idx > 0 and not marker_exists:
+        raise dg.Failure(
+            "Existing Sentinel shards predate the ordered parallel v2 writer. "
+            "Delete only gs://.../sentinel2/part-*.parquet and restart Sentinel; "
+            "do not delete the completed NAIP shards."
+        )
+    if start_shard_idx == 0 and not marker_exists:
+        _upload_bytes(
+            format_marker_uri,
+            json.dumps(
+                {
+                    "format": "ordered_parallel_v2",
+                    "created_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "ordering": "exact sentinel dataframe order",
+                    "resume_invariant": "completed_shards * rows_per_shard",
+                },
+                indent=2,
+            ).encode("utf-8"),
+            "application/json",
+        )
+
+    model, normalizer, Modality, MaskedOlmoEarthSample = _load_olmoearth(device)
+
+    reader_workers = config.sentinel_reader_workers
+    max_pending = max(reader_workers, config.sentinel_prefetch_groups)
+    # Preserve approximately the configured total scene-cache budget across all
+    # reader threads instead of multiplying it by reader count.
+    per_worker_cache_size = max(
+        8,
+        (config.sentinel_scene_cache_size + reader_workers - 1) // reader_workers,
+    )
+
+    context.log.info(
+        "Sentinel parallel pipeline: "
+        f"readers={reader_workers}, "
+        f"prefetch_groups={max_pending}, "
+        f"scene_cache_per_reader={per_worker_cache_size}, "
+        f"remote_band_workers_per_reader={config.sentinel_remote_band_workers}, "
+        f"max_lazy7_band_reads~={reader_workers * config.sentinel_remote_band_workers}, "
+        f"gpu_batch={config.sentinel_batch_size}"
+    )
+
+    # One cache per reader thread. This is intentionally not shared: Rasterio /
+    # GDAL DatasetReader handles are not safely shared for concurrent reads.
+    worker_local = threading.local()
+    worker_caches: list[_SentinelSceneCache] = []
+    worker_caches_lock = threading.Lock()
+
+    def get_worker_cache() -> _SentinelSceneCache:
+        cache = getattr(worker_local, "sentinel_cache", None)
+        if cache is None:
+            cache = _SentinelSceneCache(
+                max_size=per_worker_cache_size,
+                timeout_seconds=config.stac_timeout_seconds,
+                remote_band_workers=config.sentinel_remote_band_workers,
+            )
+            worker_local.sentinel_cache = cache
+            with worker_caches_lock:
+                worker_caches.append(cache)
+        return cache
+
+    # Bucket by temporal sequence length because OlmoEarth requires a common T
+    # inside each GPU batch. absolute_idx lets us reorder completed embeddings
+    # back to exact dataframe order before writing deterministic shards.
+    buckets: dict[int, list[tuple[int, dict, np.ndarray, np.ndarray, str]]] = {
+        t: [] for t in range(1, config.sentinel_max_timesteps + 1)
+    }
+    ready_rows: dict[int, dict] = {}
 
     shard_rows: list[dict] = []
     shard_idx = start_shard_idx
     encoded = resume_rows
+    next_emit_idx = resume_rows
     input_mode_counts = {"patched13": 0, "lazy7": 0}
+    effective_batch_size = config.sentinel_batch_size
+    run_started = time.monotonic()
 
     if resume_rows:
         context.log.info(
             f"Resuming Sentinel after {resume_rows:,} completed rows / "
-            f"{start_shard_idx:,} shards. Entire completed H3 groups are skipped; "
-            "only a boundary H3 is replayed to rebuild temporal history."
+            f"{start_shard_idx:,} ordered-v2 shards. Entire completed H3 groups are "
+            "skipped; only a boundary H3 is replayed to rebuild temporal history."
         )
 
-    def flush_bucket(t: int, force: bool = False) -> None:
-        nonlocal shard_rows, encoded, shard_idx
-        bucket = buckets[t]
-        if not bucket:
-            return
-        if not force and len(bucket) < config.sentinel_batch_size:
-            return
+    def drain_ready_rows() -> None:
+        nonlocal shard_rows, shard_idx, next_emit_idx
+        while next_emit_idx in ready_rows:
+            shard_rows.append(ready_rows.pop(next_emit_idx))
+            next_emit_idx += 1
 
-        while len(bucket) >= config.sentinel_batch_size or (force and bucket):
-            take = min(config.sentinel_batch_size, len(bucket))
-            chunk = bucket[:take]
-            del bucket[:take]
-
-            rows = [x[0] for x in chunk]
-            seqs = [x[1] for x in chunk]
-            timestamps = [x[2] for x in chunk]
-            modes = [x[3] for x in chunk]
-
-            embeddings = _encode_olmo_batch(
-                model,
-                normalizer,
-                Modality,
-                MaskedOlmoEarthSample,
-                seqs,
-                timestamps,
-                device,
-                config.precision,
-            )
-
-            for row, z, mode in zip(rows, embeddings, modes, strict=True):
-                shard_rows.append(
-                    _embedding_output_row(
-                        row,
-                        z,
-                        encoder_name="olmoearth-v1.2-base",
-                        encoder_version=OLMOEARTH_MODEL_ID,
-                        sequence_length=t,
-                        sentinel_input_mode=mode,
-                    )
-                )
-                input_mode_counts[mode] += 1
-
-            encoded += len(chunk)
-
-            if len(shard_rows) >= config.rows_per_shard:
-                shard_rows, shard_idx, _ = _flush_rows_to_shards(
-                    output_prefix=config.output_prefix,
-                    source="sentinel2",
-                    shard_rows=shard_rows,
-                    next_shard_idx=shard_idx,
-                    rows_per_shard=config.rows_per_shard,
-                    force=False,
-                    context=context,
-                )
-
-    try:
-        with _raster_env():
-            h3_count = 0
-            global_row_idx = 0
-            for h3_cell, rows in _iter_h3_groups(df):
-                h3_count += 1
-                group_start = global_row_idx
-                group_end = group_start + len(rows)
-                global_row_idx = group_end
-
-                # Sentinel temporal history never crosses H3 boundaries. Therefore a
-                # fully completed H3 group can be skipped without any I/O on resume.
-                if group_end <= resume_rows:
-                    continue
-
-                history: deque[tuple[dict, np.ndarray, str]] = deque()
-
-                for local_idx, row in enumerate(rows):
-                    absolute_idx = group_start + local_idx
-                    bundle = cache.get(row)
-                    frame, mode = bundle.read_olmo_frame(row, config.sentinel_image_size)
-
-                    cutoff = row["capture_timestamp_utc"] - timedelta(
-                        days=config.sentinel_lookback_days
-                    )
-                    while history and history[0][0]["capture_timestamp_utc"] < cutoff:
-                        history.popleft()
-
-                    history.append((row, frame, mode))
-                    while len(history) > config.sentinel_max_timesteps:
-                        history.popleft()
-
-                    # If resume lands inside this H3, replay preceding frames solely
-                    # to reconstruct the exact trailing temporal context; don't encode
-                    # outputs that already exist in completed Parquet shards.
-                    if absolute_idx < resume_rows:
-                        continue
-
-                    seq_rows = [x[0] for x in history]
-                    seq = np.stack([x[1] for x in history], axis=0)
-                    timestamps = _olmo_timestamps(seq_rows)
-                    t = len(history)
-
-                    # The target row's source mode is useful for auditing. A temporal
-                    # sequence can mix patched and lazy source scenes; mark that case.
-                    sequence_modes = {x[2] for x in history}
-                    sequence_mode = (
-                        next(iter(sequence_modes))
-                        if len(sequence_modes) == 1
-                        else "mixed"
-                    )
-                    if sequence_mode == "mixed":
-                        input_mode_counts.setdefault("mixed", 0)
-
-                    buckets[t].append((row, seq, timestamps, sequence_mode))
-                    flush_bucket(t, force=False)
-
-                if h3_count % 250 == 0:
-                    context.log.info(
-                        f"OlmoEarth progress: H3={h3_count:,}, encoded={encoded:,}/{df.height:,}, "
-                        f"scene_cache={len(cache._cache)}"
-                    )
-
-            for t in range(1, config.sentinel_max_timesteps + 1):
-                flush_bucket(t, force=True)
-
+        if len(shard_rows) >= config.rows_per_shard:
             shard_rows, shard_idx, _ = _flush_rows_to_shards(
                 output_prefix=config.output_prefix,
                 source="sentinel2",
                 shard_rows=shard_rows,
                 next_shard_idx=shard_idx,
                 rows_per_shard=config.rows_per_shard,
-                force=True,
+                force=False,
                 context=context,
             )
+
+    def flush_bucket(t: int, force: bool = False) -> None:
+        nonlocal encoded, effective_batch_size
+        bucket = buckets[t]
+        if not bucket:
+            return
+        if not force and len(bucket) < effective_batch_size:
+            return
+
+        while len(bucket) >= effective_batch_size or (force and bucket):
+            take = min(effective_batch_size, len(bucket))
+            chunk = bucket[:take]
+
+            absolute_indexes = [x[0] for x in chunk]
+            rows = [x[1] for x in chunk]
+            seqs = [x[2] for x in chunk]
+            timestamps = [x[3] for x in chunk]
+            modes = [x[4] for x in chunk]
+
+            try:
+                embeddings = _encode_olmo_batch(
+                    model,
+                    normalizer,
+                    Modality,
+                    MaskedOlmoEarthSample,
+                    seqs,
+                    timestamps,
+                    device,
+                    config.precision,
+                )
+            except torch.cuda.OutOfMemoryError:
+                if device.type != "cuda" or effective_batch_size <= 1:
+                    raise
+                old_batch = effective_batch_size
+                effective_batch_size = max(1, effective_batch_size // 2)
+                torch.cuda.empty_cache()
+                context.log.warning(
+                    f"CUDA OOM in OlmoEarth; automatically reducing Sentinel batch "
+                    f"{old_batch} -> {effective_batch_size}"
+                )
+                continue
+
+            # Remove only after successful inference so OOM fallback can retry.
+            del bucket[:take]
+
+            previous_encoded = encoded
+            for absolute_idx, row, z, mode in zip(
+                absolute_indexes, rows, embeddings, modes, strict=True
+            ):
+                ready_rows[absolute_idx] = _embedding_output_row(
+                    row,
+                    z,
+                    encoder_name="olmoearth-v1.2-base",
+                    encoder_version=OLMOEARTH_MODEL_ID,
+                    sequence_length=t,
+                    sentinel_input_mode=mode,
+                )
+                input_mode_counts.setdefault(mode, 0)
+                input_mode_counts[mode] += 1
+
+            encoded += len(chunk)
+            drain_ready_rows()
+
+            if encoded // 5000 > previous_encoded // 5000:
+                elapsed = max(time.monotonic() - run_started, 1e-9)
+                processed = encoded - resume_rows
+                rate = processed / elapsed
+                context.log.info(
+                    f"OlmoEarth Sentinel encoded: {encoded:,}/{df.height:,} "
+                    f"({rate:.2f} rows/s, gpu_batch={effective_batch_size}, "
+                    f"ready_reorder={len(ready_rows):,})"
+                )
+
+    def iter_h3_work():
+        global_row_idx = 0
+        h3_number = 0
+        for h3_cell, rows in _iter_h3_groups(df):
+            h3_number += 1
+            group_start = global_row_idx
+            group_end = group_start + len(rows)
+            global_row_idx = group_end
+
+            # Temporal history never crosses H3 boundaries. Fully completed H3
+            # groups require no replay I/O. The one boundary group is submitted
+            # in full so its pre-resume frames reconstruct history exactly.
+            if group_end <= resume_rows:
+                continue
+            yield h3_number, h3_cell, group_start, rows
+
+    def read_h3_group(
+        h3_number: int,
+        h3_cell: str,
+        group_start: int,
+        rows: list[dict],
+    ) -> tuple[int, str, int, list[tuple[dict, np.ndarray, str]]]:
+        cache = get_worker_cache()
+        frames: list[tuple[dict, np.ndarray, str]] = []
+        with _raster_env():
+            for row in rows:
+                bundle = cache.get(row)
+                frame, mode = bundle.read_olmo_frame(row, config.sentinel_image_size)
+                frames.append((row, frame, mode))
+        return h3_number, h3_cell, group_start, frames
+
+    def consume_h3_group(
+        h3_number: int,
+        h3_cell: str,
+        group_start: int,
+        frames: list[tuple[dict, np.ndarray, str]],
+    ) -> None:
+        history: deque[tuple[dict, np.ndarray, str]] = deque()
+
+        for local_idx, (row, frame, mode) in enumerate(frames):
+            absolute_idx = group_start + local_idx
+
+            cutoff = row["capture_timestamp_utc"] - timedelta(
+                days=config.sentinel_lookback_days
+            )
+            while history and history[0][0]["capture_timestamp_utc"] < cutoff:
+                history.popleft()
+
+            history.append((row, frame, mode))
+            while len(history) > config.sentinel_max_timesteps:
+                history.popleft()
+
+            if absolute_idx < resume_rows:
+                continue
+
+            seq_rows = [x[0] for x in history]
+            seq = np.stack([x[1] for x in history], axis=0)
+            timestamps = _olmo_timestamps(seq_rows)
+            t = len(history)
+
+            sequence_modes = {x[2] for x in history}
+            sequence_mode = (
+                next(iter(sequence_modes))
+                if len(sequence_modes) == 1
+                else "mixed"
+            )
+
+            buckets[t].append(
+                (absolute_idx, row, seq, timestamps, sequence_mode)
+            )
+            flush_bucket(t, force=False)
+
+        if h3_number % 250 == 0:
+            with worker_caches_lock:
+                cached_scenes = sum(len(c._cache) for c in worker_caches)
+            context.log.info(
+                f"OlmoEarth producer progress: H3={h3_number:,}, "
+                f"encoded={encoded:,}/{df.height:,}, "
+                f"cached_scenes={cached_scenes:,}, "
+                f"reader_threads={len(worker_caches):,}"
+            )
+
+    groups = iter(iter_h3_work())
+    pending = deque()
+    group_pool = ThreadPoolExecutor(
+        max_workers=reader_workers,
+        thread_name_prefix="sentinel-h3",
+    )
+
+    try:
+        def submit_next_group() -> bool:
+            try:
+                h3_number, h3_cell, group_start, rows = next(groups)
+            except StopIteration:
+                return False
+            future = group_pool.submit(
+                read_h3_group,
+                h3_number,
+                h3_cell,
+                group_start,
+                rows,
+            )
+            pending.append((h3_number, h3_cell, group_start, future))
+            return True
+
+        for _ in range(max_pending):
+            if not submit_next_group():
+                break
+
+        while pending:
+            # Consume in submission order to preserve deterministic temporal and
+            # resume semantics. Other reader threads keep fetching future groups
+            # while this group is assembled and/or the GPU performs inference.
+            h3_number, h3_cell, group_start, future = pending.popleft()
+            result = future.result()
+            submit_next_group()  # refill before GPU work to maximize overlap
+            consume_h3_group(*result)
+
+        for t in range(1, config.sentinel_max_timesteps + 1):
+            flush_bucket(t, force=True)
+
+        drain_ready_rows()
+        if ready_rows:
+            missing = next_emit_idx
+            earliest_ready = min(ready_rows)
+            raise RuntimeError(
+                "Sentinel ordered-output invariant failed: "
+                f"next expected absolute row {missing:,}, earliest ready row {earliest_ready:,}"
+            )
+        if next_emit_idx != df.height:
+            raise RuntimeError(
+                "Sentinel ordered-output row-count invariant failed: "
+                f"next_emit_idx={next_emit_idx:,}, expected={df.height:,}"
+            )
+
+        shard_rows, shard_idx, _ = _flush_rows_to_shards(
+            output_prefix=config.output_prefix,
+            source="sentinel2",
+            shard_rows=shard_rows,
+            next_shard_idx=shard_idx,
+            rows_per_shard=config.rows_per_shard,
+            force=True,
+            context=context,
+        )
     finally:
-        cache.close()
+        group_pool.shutdown(wait=True, cancel_futures=True)
+        with worker_caches_lock:
+            caches_to_close = list(worker_caches)
+            worker_caches.clear()
+        for cache in caches_to_close:
+            cache.close()
         del model
         if device.type == "cuda":
             torch.cuda.empty_cache()
