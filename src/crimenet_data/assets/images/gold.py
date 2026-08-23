@@ -2,7 +2,7 @@ import json
 import os
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from collections import OrderedDict, deque
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
@@ -107,10 +107,11 @@ class ImageryEmbeddingConfig(dg.Config):
     sentinel_lookback_days: int = 400
 
     # Parallel patched13 Sentinel producer pipeline. H3 groups are prepared
-    # concurrently and consumed in deterministic dataframe order. Every reader
-    # owns a private regional-GCS scene cache; there are no PC/STAC reads here.
-    sentinel_reader_workers: int = 16
-    sentinel_prefetch_groups: int = 64
+    # concurrently and consumed as soon as they finish inside a bounded reorder
+    # window. Output is still emitted in exact dataframe order. Every reader owns
+    # a private regional-GCS scene cache; there are no PC/STAC reads here.
+    sentinel_reader_workers: int = 32
+    sentinel_prefetch_groups: int = 128
     sentinel_scene_cache_size: int = 256  # total cache budget, divided across readers
     sentinel_remote_band_workers: int = 0  # compatibility only; patched13 Gold performs no PC reads
 
@@ -972,16 +973,20 @@ def _encode_sentinel(
     resume_rows: int = 0,
     start_shard_idx: int = 0,
 ) -> tuple[int, int, dict[str, int]]:
-    """Encode Sentinel with a parallel producer / ordered-consumer pipeline.
+    """Encode Sentinel with parallel producers and a bounded out-of-order consumer.
 
     All Sentinel source scenes must already be patched to 13 bands in regional
-    GCS. Multiple H3 groups are prepared concurrently by independent reader
-    threads while the main thread keeps OlmoEarth GPU inference batched and
-    deterministic. There are no Planetary Computer requests in this hot path.
+    GCS. Independent reader threads prepare H3 groups concurrently. Completed
+    groups are consumed immediately instead of waiting for the oldest submitted
+    GCS/raster future, eliminating producer head-of-line blocking.
 
-    Output rows are reordered back to exact dataframe order before shard writes.
-    That makes `N completed shards -> N * rows_per_shard source rows` a real
-    invariant, so row-count resume is safe after the patched13-v4 format marker exists.
+    The scheduler permits out-of-order consumption only inside a bounded group
+    window, so a single slow early COG cannot cause unbounded ready-row memory.
+    Every embedding still carries its absolute dataframe row index and ready_rows
+    emits only the next contiguous indexes. Therefore shard contents/order and the
+    `N completed shards -> N * rows_per_shard source rows` resume invariant remain
+    identical to ordered patched13-v4. There are no Planetary Computer requests in
+    this hot path.
     """
     if df.is_empty():
         return 0, 0, {"patched13": 0, "lazy7": 0}
@@ -1050,6 +1055,7 @@ def _encode_sentinel(
         f"prefetch_groups={max_pending}, "
         f"scene_cache_per_reader={per_worker_cache_size}, "
         f"planetary_computer_reads=0, "
+        f"bounded_out_of_order=true, "
         f"gpu_batch_start={config.sentinel_batch_size}"
     )
 
@@ -1073,8 +1079,9 @@ def _encode_sentinel(
         return cache
 
     # Bucket by temporal sequence length because OlmoEarth requires a common T
-    # inside each GPU batch. absolute_idx lets us reorder completed embeddings
-    # back to exact dataframe order before writing deterministic shards.
+    # inside each GPU batch. H3 groups may now finish out of order; absolute_idx
+    # reorders completed embeddings back to exact dataframe order before writing
+    # deterministic shards.
     buckets: dict[int, list[tuple[int, dict, np.ndarray, np.ndarray, str]]] = {
         t: [] for t in range(1, config.sentinel_max_timesteps + 1)
     }
@@ -1276,18 +1283,36 @@ def _encode_sentinel(
             )
 
     groups = iter(iter_h3_work())
-    pending = deque()
     group_pool = ThreadPoolExecutor(
         max_workers=reader_workers,
         thread_name_prefix="sentinel-h3",
     )
 
+    # Future -> (scheduler sequence, h3_number, h3_cell, group_start).  The
+    # scheduler sequence is consecutive only for groups that actually need work
+    # after resume; unlike h3_number it therefore gives us a compact bounded
+    # reorder window.
+    pending: dict[Any, tuple[int, int, str, int]] = {}
+    completed_scheduler_seqs: set[int] = set()
+    window_base_seq = 0
+    next_submit_seq = 0
+    groups_exhausted = False
+    out_of_order_consumed = 0
+    scheduler_started = time.monotonic()
+
     try:
         def submit_next_group() -> bool:
+            nonlocal next_submit_seq, groups_exhausted
+            if groups_exhausted:
+                return False
             try:
                 h3_number, h3_cell, group_start, rows = next(groups)
             except StopIteration:
+                groups_exhausted = True
                 return False
+
+            scheduler_seq = next_submit_seq
+            next_submit_seq += 1
             future = group_pool.submit(
                 read_h3_group,
                 h3_number,
@@ -1295,21 +1320,67 @@ def _encode_sentinel(
                 group_start,
                 rows,
             )
-            pending.append((h3_number, h3_cell, group_start, future))
+            pending[future] = (
+                scheduler_seq,
+                h3_number,
+                h3_cell,
+                group_start,
+            )
             return True
 
-        for _ in range(max_pending):
-            if not submit_next_group():
-                break
+        def refill_bounded_window() -> None:
+            # Critical bound: do not let submission run arbitrarily far past one
+            # slow early group.  Completed out-of-order groups remain part of the
+            # window until all earlier scheduler sequences have completed.
+            while (
+                not groups_exhausted
+                and next_submit_seq - window_base_seq < max_pending
+            ):
+                if not submit_next_group():
+                    break
+
+        refill_bounded_window()
 
         while pending:
-            # Consume in submission order to preserve deterministic temporal and
-            # resume semantics. Other reader threads keep fetching future groups
-            # while this group is assembled and/or the GPU performs inference.
-            h3_number, h3_cell, group_start, future = pending.popleft()
-            result = future.result()
-            submit_next_group()  # refill before GPU work to maximize overlap
-            consume_h3_group(*result)
+            done, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
+
+            # Several futures are often already complete by the time GPU work
+            # returns. Consume all currently-ready groups, oldest source position
+            # first, without waiting for an earlier unfinished future.
+            finished = []
+            for future in done:
+                scheduler_seq, h3_number, h3_cell, group_start = pending.pop(future)
+                finished.append(
+                    (group_start, scheduler_seq, h3_number, h3_cell, future)
+                )
+            finished.sort(key=lambda x: x[0])
+
+            for _, scheduler_seq, h3_number, h3_cell, future in finished:
+                if scheduler_seq != window_base_seq:
+                    out_of_order_consumed += 1
+                result = future.result()
+                consume_h3_group(*result)
+                completed_scheduler_seqs.add(scheduler_seq)
+
+            # Advance the left edge only through a contiguous run of completed
+            # groups.  This is what keeps the out-of-order memory window bounded.
+            while window_base_seq in completed_scheduler_seqs:
+                completed_scheduler_seqs.remove(window_base_seq)
+                window_base_seq += 1
+
+            refill_bounded_window()
+
+            if window_base_seq and window_base_seq % 1000 == 0:
+                elapsed = max(time.monotonic() - scheduler_started, 1e-9)
+                context.log.info(
+                    "Sentinel async scheduler: "
+                    f"contiguous_groups={window_base_seq:,}, "
+                    f"submitted={next_submit_seq:,}, "
+                    f"pending_io={len(pending):,}, "
+                    f"completed_ahead={len(completed_scheduler_seqs):,}, "
+                    f"out_of_order_consumed={out_of_order_consumed:,}, "
+                    f"groups/s={window_base_seq / elapsed:.2f}"
+                )
 
         for t in range(1, config.sentinel_max_timesteps + 1):
             flush_bucket(t, force=True)
