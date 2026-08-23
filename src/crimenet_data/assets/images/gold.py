@@ -14,18 +14,12 @@ from typing import Any
 import dagster as dg
 from google.cloud import storage
 import numpy as np
-import planetary_computer as pc
 import polars as pl
-import pystac
 import rasterio
 from rasterio.enums import Resampling
-from rasterio.vrt import WarpedVRT
-from rasterio.windows import Window, transform as window_transform
-import requests
-from requests.adapters import HTTPAdapter
+from rasterio.windows import Window
 import torch
 import torch.nn.functional as F
-from urllib3.util.retry import Retry
 
 from .silver import (
     SILVER_H3_TEMPORAL_INDEX_URI,
@@ -108,18 +102,17 @@ class ImageryEmbeddingConfig(dg.Config):
 
     # Sentinel / OlmoEarth
     sentinel_image_size: int = 128
-    sentinel_batch_size: int = 16
+    sentinel_batch_size: int = 32
     sentinel_max_timesteps: int = 12
     sentinel_lookback_days: int = 400
 
-    # Parallel Sentinel producer pipeline. H3 groups are prepared concurrently,
-    # while results are consumed in deterministic dataframe order. Each reader
-    # owns a private scene cache and a six-band remote executor, so 4 readers x
-    # 6 band workers can sustain up to ~24 lazy7 Planetary Computer range reads.
-    sentinel_reader_workers: int = 8
-    sentinel_prefetch_groups: int = 32
-    sentinel_scene_cache_size: int = 128  # total cache budget, divided across readers
-    sentinel_remote_band_workers: int = 6  # per Sentinel reader
+    # Parallel patched13 Sentinel producer pipeline. H3 groups are prepared
+    # concurrently and consumed in deterministic dataframe order. Every reader
+    # owns a private regional-GCS scene cache; there are no PC/STAC reads here.
+    sentinel_reader_workers: int = 16
+    sentinel_prefetch_groups: int = 64
+    sentinel_scene_cache_size: int = 256  # total cache budget, divided across readers
+    sentinel_remote_band_workers: int = 0  # compatibility only; patched13 Gold performs no PC reads
 
     # Output / control
     rows_per_shard: int = 5000
@@ -435,186 +428,49 @@ def _encode_dino_batch(
 
 
 # -----------------------------------------------------------------------------
-# Sentinel hybrid reader
+# Sentinel patched13 local-GCS reader
 # -----------------------------------------------------------------------------
 
 
-_thread_local = threading.local()
-
-
-def _http_session() -> requests.Session:
-    session = getattr(_thread_local, "http_session", None)
-    if session is not None:
-        return session
-
-    retry = Retry(
-        total=6,
-        connect=6,
-        read=6,
-        status=6,
-        backoff_factor=1.0,
-        status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=frozenset({"GET", "HEAD"}),
-        respect_retry_after_header=True,
-    )
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=32, pool_maxsize=32)
-    session = requests.Session()
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    _thread_local.http_session = session
-    return session
-
-
-def _fetch_signed_missing_assets(item_id: str, timeout_seconds: int) -> dict[str, str]:
-    url = f"{STAC_API}/collections/{SENTINEL_COLLECTION}/items/{item_id}"
-    response = _http_session().get(url, timeout=timeout_seconds)
-    response.raise_for_status()
-    item = pc.sign(pystac.Item.from_dict(response.json()))
-
-    missing = [key for key in SENTINEL_MISSING_ASSET_KEYS if key not in item.assets]
-    if missing:
-        raise KeyError(f"Sentinel item {item_id} missing STAC assets {missing}")
-
-    return {key: item.assets[key].href for key in SENTINEL_MISSING_ASSET_KEYS}
-
-
-def _parse_processing_baseline(value: Any) -> float | None:
-    if value is None:
-        return None
-    match = re.search(r"\d+(?:\.\d+)?", str(value))
-    if match is None:
-        return None
-    try:
-        return float(match.group(0))
-    except ValueError:
-        return None
-
-
-def _sentinel_dn_to_reflectance(arr: np.ndarray, processing_baseline: Any) -> np.ndarray:
-    """
-    Convert Sentinel-2 L2A integer DN to BOA reflectance.
-
-    PB >= 04.00 introduced BOA_ADD_OFFSET=-1000 with QUANTIFICATION_VALUE=10000.
-    DN=0 remains nodata and is kept at zero.
-    """
-    x = arr.astype(np.float32, copy=False)
-    nodata = x == 0
-    baseline = _parse_processing_baseline(processing_baseline)
-
-    if baseline is not None and baseline >= 4.0:
-        x = (x - 1000.0) / 10000.0
-    else:
-        x = x / 10000.0
-
-    x[nodata] = 0.0
-    x = np.nan_to_num(x, nan=0.0, posinf=1.5, neginf=-0.2)
-    return np.clip(x, -0.2, 1.5)
-
-
-def _fill_bad_pixels_with_band_median(
-    spectral_hwc: np.ndarray,
-    bad_mask: np.ndarray,
-) -> np.ndarray:
-    out = spectral_hwc.copy()
-    good = ~bad_mask
-    if not np.any(good):
-        raise ValueError("Sentinel crop contains no SCL-valid pixels")
-
-    for c in range(out.shape[-1]):
-        values = out[..., c][good]
-        values = values[np.isfinite(values)]
-        fill = float(np.median(values)) if values.size else 0.0
-        out[..., c][bad_mask] = fill
-    return out
-
-
 class _SentinelSceneBundle:
+    """One open patched 13-band CrimeNet Sentinel COG.
+
+    The one-time patcher appends the six missing OlmoEarth bands to the exact
+    existing raster grid. Gold therefore performs zero Planetary Computer/STAC
+    requests in the embedding hot loop.
+    """
+
     def __init__(
         self,
         row: dict,
-        timeout_seconds: int,
-        remote_executor: ThreadPoolExecutor,
+        timeout_seconds: int | None = None,
+        remote_executor=None,
     ):
+        del timeout_seconds, remote_executor
         self.created_monotonic = time.monotonic()
         self.item_id = row["item_id"]
         self.gcs_uri = row["gcs_uri"]
         self.stack = rasterio.open(gcs_uri_to_vsigs(self.gcs_uri), sharing=False)
-        self.remote_sources: dict[str, rasterio.io.DatasetReader] = {}
-        self.remote_executor = remote_executor
-        self.mode = "patched13" if self.stack.count >= 13 else "lazy7"
-
-        # Copy immutable grid metadata used by remote workers. The six remote
-        # assets are distinct DatasetReaders, so each concurrent read owns its
-        # own GDAL dataset handle.
-        self.stack_crs = self.stack.crs
-        self.stack_transform = self.stack.transform
-        self.stack_dtype = self.stack.dtypes[0]
-
-        if self.mode == "lazy7":
-            if self.stack.count < 7:
-                self.close()
-                raise ValueError(
-                    f"Sentinel stack {self.item_id} has {self.stack.count} bands; expected 7 or 13"
-                )
-            assets = _fetch_signed_missing_assets(self.item_id, timeout_seconds)
-            for key, href in assets.items():
-                self.remote_sources[key] = rasterio.open(href, sharing=False)
+        if self.stack.count < 13:
+            count = self.stack.count
+            self.close()
+            raise RuntimeError(
+                f"Sentinel source {self.item_id} is still {count}-band lazy7: {self.gcs_uri}. "
+                "Run patch_sentinel13_inplace_max.py to completion before patched13 Gold."
+            )
+        self.mode = "patched13"
 
     def close(self) -> None:
-        for src in self.remote_sources.values():
-            try:
-                src.close()
-            except Exception:
-                pass
-        self.remote_sources.clear()
         try:
             self.stack.close()
         except Exception:
             pass
 
-    def _read_remote_band(
-        self,
-        asset_key: str,
-        target_window: Window,
-        out_size: int,
-    ) -> np.ndarray:
-        src = self.remote_sources[asset_key]
-        dst_transform = window_transform(target_window, self.stack_transform)
-        src_nodata = src.nodata if src.nodata is not None else 0
-
-        with WarpedVRT(
-            src,
-            crs=self.stack_crs,
-            transform=dst_transform,
-            width=int(target_window.width),
-            height=int(target_window.height),
-            resampling=Resampling.bilinear,
-            src_nodata=src_nodata,
-            nodata=0,
-            dtype=self.stack_dtype,
-        ) as vrt:
-            return vrt.read(
-                1,
-                out_shape=(out_size, out_size),
-                resampling=Resampling.bilinear,
-                out_dtype=self.stack_dtype,
-            )
-
     def read_olmo_frame(self, row: dict, out_size: int) -> tuple[np.ndarray, str]:
         base_window = _window_from_row(row)
         target_window = _center_window(base_window, out_size)
 
-        # Fire all six missing-band range reads before doing local work, so PC
-        # latency overlaps both across bands and with the local GCS reads.
-        remote_futures = {}
-        if self.mode == "lazy7":
-            remote_futures = {
-                name: self.remote_executor.submit(
-                    self._read_remote_band, name, target_window, out_size
-                )
-                for name in SENTINEL_MISSING_ASSET_KEYS
-            }
-
+        # SCL is categorical and must use nearest-neighbor resampling.
         scl = self.stack.read(
             SENTINEL_SCL_BAND,
             window=target_window,
@@ -626,37 +482,18 @@ class _SentinelSceneBundle:
         )
         bad_mask = np.isin(scl, tuple(BAD_CLASSES))
 
-        if self.mode == "patched13":
-            chw = self.stack.read(
-                SENTINEL_PATCHED_OLMO_INDEXES,
-                window=target_window,
-                out_shape=(12, out_size, out_size),
-                resampling=Resampling.bilinear,
-                boundless=True,
-                fill_value=0,
-            )
-            spectral = np.moveaxis(chw, 0, -1)
-        else:
-            local_names = list(SENTINEL_EXISTING_LOCAL_INDEXES)
-            local_indexes = [SENTINEL_EXISTING_LOCAL_INDEXES[n] for n in local_names]
-
-            # One Rasterio/GCS call for the six bands already in the local stack.
-            local_chw = self.stack.read(
-                local_indexes,
-                window=target_window,
-                out_shape=(len(local_indexes), out_size, out_size),
-                resampling=Resampling.bilinear,
-                boundless=True,
-                fill_value=0,
-            )
-            bands = {name: local_chw[i] for i, name in enumerate(local_names)}
-            for name, future in remote_futures.items():
-                bands[name] = future.result()
-
-            spectral = np.stack(
-                [bands[name] for name in SENTINEL_OLMO_BAND_ORDER], axis=-1
-            )
-
+        # All 12 OlmoEarth spectral bands now live in the same regional GCS COG.
+        # This is one multiband range-read path instead of six Planetary Computer
+        # requests for every H3/time frame.
+        chw = self.stack.read(
+            SENTINEL_PATCHED_OLMO_INDEXES,
+            window=target_window,
+            out_shape=(12, out_size, out_size),
+            resampling=Resampling.bilinear,
+            boundless=True,
+            fill_value=0,
+        )
+        spectral = np.moveaxis(chw, 0, -1)
         spectral = _sentinel_dn_to_reflectance(
             spectral,
             row.get("s2_processing_baseline"),
@@ -669,18 +506,14 @@ class _SentinelSceneCache:
     def __init__(
         self,
         max_size: int,
-        timeout_seconds: int,
-        remote_band_workers: int = 6,
+        timeout_seconds: int | None = None,
+        remote_band_workers: int = 0,
         ttl_seconds: int = 2700,
     ):
+        del timeout_seconds, remote_band_workers
         self.max_size = max(1, max_size)
-        self.timeout_seconds = timeout_seconds
         self.ttl_seconds = ttl_seconds
         self._cache: OrderedDict[str, _SentinelSceneBundle] = OrderedDict()
-        self._remote_executor = ThreadPoolExecutor(
-            max_workers=max(1, remote_band_workers),
-            thread_name_prefix="sentinel-band",
-        )
 
     def get(self, row: dict) -> _SentinelSceneBundle:
         key = row["item_id"]
@@ -691,11 +524,7 @@ class _SentinelSceneCache:
                 return bundle
             bundle.close()
 
-        bundle = _SentinelSceneBundle(
-            row,
-            self.timeout_seconds,
-            self._remote_executor,
-        )
+        bundle = _SentinelSceneBundle(row)
         self._cache[key] = bundle
         while len(self._cache) > self.max_size:
             _, evicted = self._cache.popitem(last=False)
@@ -706,7 +535,6 @@ class _SentinelSceneCache:
         for bundle in self._cache.values():
             bundle.close()
         self._cache.clear()
-        self._remote_executor.shutdown(wait=True, cancel_futures=True)
 
 # -----------------------------------------------------------------------------
 # OlmoEarth model
@@ -1087,17 +915,14 @@ def _encode_sentinel(
 ) -> tuple[int, int, dict[str, int]]:
     """Encode Sentinel with a parallel producer / ordered-consumer pipeline.
 
-    The expensive lazy7 path needs six Planetary Computer bands plus the local
-    GCS stack for every frame. The old implementation prepared exactly one frame
-    at a time, so the GPU and network spent substantial time waiting on each
-    other. Here multiple H3 groups are prepared concurrently by independent
-    reader threads. Each reader owns its own Rasterio/GDAL handles and its own
-    six-band executor, while the main thread keeps OlmoEarth GPU inference
-    batched and deterministic.
+    All Sentinel source scenes must already be patched to 13 bands in regional
+    GCS. Multiple H3 groups are prepared concurrently by independent reader
+    threads while the main thread keeps OlmoEarth GPU inference batched and
+    deterministic. There are no Planetary Computer requests in this hot path.
 
     Output rows are reordered back to exact dataframe order before shard writes.
     That makes `N completed shards -> N * rows_per_shard source rows` a real
-    invariant, so row-count resume is safe after this v3 format marker exists.
+    invariant, so row-count resume is safe after the patched13-v4 format marker exists.
     """
     if df.is_empty():
         return 0, 0, {"patched13": 0, "lazy7": 0}
@@ -1111,8 +936,8 @@ def _encode_sentinel(
         raise ValueError("sentinel_reader_workers must be >= 1")
     if config.sentinel_prefetch_groups < 1:
         raise ValueError("sentinel_prefetch_groups must be >= 1")
-    if config.sentinel_remote_band_workers < 1:
-        raise ValueError("sentinel_remote_band_workers must be >= 1")
+    if config.sentinel_remote_band_workers < 0:
+        raise ValueError("sentinel_remote_band_workers must be >= 0")
     if config.sentinel_scene_cache_size < 1:
         raise ValueError("sentinel_scene_cache_size must be >= 1")
     if config.sentinel_batch_size < 1:
@@ -1121,16 +946,16 @@ def _encode_sentinel(
     # The previous serial implementation bucketed by temporal length and wrote
     # buckets as they became ready. Those first-generation shards were therefore
     # not guaranteed to match dataframe row order, which makes row-count resume
-    # unsafe. Refuse to mix them with the ordered-v3 format. Delete only the old
+    # unsafe. Refuse to mix them with the ordered patched13-v4 format. Delete only the old
     # Sentinel shards once; NAIP shards remain untouched.
     format_marker_uri = _join_gs(
         config.output_prefix,
-        "sentinel2/_ORDERED_PARALLEL_V3.json",
+        "sentinel2/_ORDERED_PATCHED13_V4.json",
     )
     marker_exists = _gcs_exists(format_marker_uri)
     if start_shard_idx > 0 and not marker_exists:
         raise dg.Failure(
-            "Existing Sentinel shards predate the ordered parallel v3 writer. "
+            "Existing Sentinel shards predate the ordered patched13 v4 writer. "
             "Delete only gs://.../sentinel2/part-*.parquet and restart Sentinel; "
             "do not delete the completed NAIP shards."
         )
@@ -1139,7 +964,7 @@ def _encode_sentinel(
             format_marker_uri,
             json.dumps(
                 {
-                    "format": "ordered_parallel_v3",
+                    "format": "ordered_patched13_v4",
                     "created_at_utc": datetime.now(timezone.utc).isoformat(),
                     "ordering": "exact sentinel dataframe order",
                     "resume_invariant": "completed_shards * rows_per_shard",
@@ -1161,17 +986,16 @@ def _encode_sentinel(
     )
 
     context.log.info(
-        "Sentinel parallel pipeline: "
+        "Sentinel patched13 max-throughput pipeline: "
         f"readers={reader_workers}, "
         f"prefetch_groups={max_pending}, "
         f"scene_cache_per_reader={per_worker_cache_size}, "
-        f"remote_band_workers_per_reader={config.sentinel_remote_band_workers}, "
-        f"max_lazy7_band_reads~={reader_workers * config.sentinel_remote_band_workers}, "
-        f"gpu_batch={config.sentinel_batch_size}"
+        f"planetary_computer_reads=0, "
+        f"gpu_batch_start={config.sentinel_batch_size}"
     )
 
-    # One cache per reader thread. This is intentionally not shared: Rasterio /
-    # GDAL DatasetReader handles are not safely shared for concurrent reads.
+    # One local-GCS scene cache per reader thread. This is intentionally not shared:
+    # Rasterio/GDAL DatasetReader handles are not safely shared for concurrent reads.
     worker_local = threading.local()
     worker_caches: list[_SentinelSceneCache] = []
     worker_caches_lock = threading.Lock()
@@ -1214,7 +1038,7 @@ def _encode_sentinel(
     if resume_rows:
         context.log.info(
             f"Resuming Sentinel after {resume_rows:,} completed rows / "
-            f"{start_shard_idx:,} ordered-v3 shards. Entire completed H3 groups are "
+            f"{start_shard_idx:,} ordered-patched13-v4 shards. Entire completed H3 groups are "
             "skipped; only a boundary H3 is replayed to rebuild temporal history."
         )
 
@@ -1480,9 +1304,9 @@ def _encode_sentinel(
     description=(
         "Produce durable H3/time foundation-model imagery embeddings. NAIP uses "
         "DINOv3 ViT-L/16 SAT-493M. Sentinel uses OlmoEarth v1.2 Base over trailing "
-        "leakage-safe monthly sequences. Sentinel input is hybrid: already-patched "
-        "13-band CrimeNet COGs are used directly; original 7-band COGs lazily range-read "
-        "only the six missing Planetary Computer bands for each selected H3 crop."
+        "leakage-safe monthly sequences. Sentinel requires prepatched 13-band "
+        "CrimeNet COGs in regional GCS, eliminating Planetary Computer reads from "
+        "the embedding hot loop."
     ),
 )
 def gold_imagery_embeddings(

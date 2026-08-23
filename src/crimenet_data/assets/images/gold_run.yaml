@@ -6,23 +6,25 @@ ops:
       device: cuda
       precision: bf16
 
+      # NAIP is already complete; these remain compatible with the existing recipe.
       naip_image_size: 512
       naip_batch_size: 8
       naip_prefetch_batches: 16
       naip_reader_workers: 8
       naip_read_chunk_size: 128
 
+      # Patched13 Sentinel -> OlmoEarth. Start aggressively; per-T CUDA OOM
+      # fallback halves only the temporal bucket that is too large.
       sentinel_image_size: 128
-      sentinel_batch_size: 16
+      sentinel_batch_size: 32
       sentinel_max_timesteps: 12
       sentinel_lookback_days: 400
-      sentinel_reader_workers: 8
-      sentinel_prefetch_groups: 32
-      sentinel_scene_cache_size: 128
-      sentinel_remote_band_workers: 6
+      sentinel_reader_workers: 16
+      sentinel_prefetch_groups: 64
+      sentinel_scene_cache_size: 256
+      sentinel_remote_band_workers: 0
 
       rows_per_shard: 5000
-
       resume: true
       overwrite: false
 
