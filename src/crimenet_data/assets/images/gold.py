@@ -428,6 +428,65 @@ def _encode_dino_batch(
 
 
 # -----------------------------------------------------------------------------
+# Sentinel radiometry / masking helpers
+# -----------------------------------------------------------------------------
+
+
+def _parse_processing_baseline(value: Any) -> float | None:
+    if value is None:
+        return None
+    match = re.search(r"\d+(?:\.\d+)?", str(value))
+    if match is None:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def _sentinel_dn_to_reflectance(
+    arr: np.ndarray,
+    processing_baseline: Any,
+) -> np.ndarray:
+    """
+    Convert Sentinel-2 L2A integer DN to BOA reflectance.
+
+    PB >= 04.00 introduced BOA_ADD_OFFSET=-1000 with
+    QUANTIFICATION_VALUE=10000. DN=0 remains nodata and is kept at zero.
+    """
+    x = arr.astype(np.float32, copy=False)
+    nodata = x == 0
+    baseline = _parse_processing_baseline(processing_baseline)
+
+    if baseline is not None and baseline >= 4.0:
+        x = (x - 1000.0) / 10000.0
+    else:
+        x = x / 10000.0
+
+    x[nodata] = 0.0
+    x = np.nan_to_num(x, nan=0.0, posinf=1.5, neginf=-0.2)
+    return np.clip(x, -0.2, 1.5)
+
+
+def _fill_bad_pixels_with_band_median(
+    spectral_hwc: np.ndarray,
+    bad_mask: np.ndarray,
+) -> np.ndarray:
+    out = spectral_hwc.copy()
+    good = ~bad_mask
+    if not np.any(good):
+        raise ValueError("Sentinel crop contains no SCL-valid pixels")
+
+    for c in range(out.shape[-1]):
+        values = out[..., c][good]
+        values = values[np.isfinite(values)]
+        fill = float(np.median(values)) if values.size else 0.0
+        out[..., c][bad_mask] = fill
+
+    return out
+
+
+# -----------------------------------------------------------------------------
 # Sentinel patched13 local-GCS reader
 # -----------------------------------------------------------------------------
 
