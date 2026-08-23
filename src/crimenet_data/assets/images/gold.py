@@ -160,7 +160,7 @@ def _write_parquet_shard(uri: str, rows: list[dict]) -> None:
     if not rows:
         return
 
-    df = pl.DataFrame(rows).with_columns(
+    df =  pl.DataFrame(rows,infer_schema_length=None).with_columns(
         pl.col("embedding").cast(pl.List(pl.Float32)),
         pl.col("embedding_dim").cast(pl.Int32),
         pl.col("h3_resolution").cast(pl.Int8),
