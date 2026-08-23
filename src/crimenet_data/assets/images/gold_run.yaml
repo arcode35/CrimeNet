@@ -13,7 +13,7 @@ ops:
       naip_read_chunk_size: 128
 
       sentinel_image_size: 128
-      sentinel_batch_size: 64
+      sentinel_batch_size: 32
       sentinel_max_timesteps: 12
       sentinel_lookback_days: 400
 
