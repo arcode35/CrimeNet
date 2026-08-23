@@ -7,9 +7,9 @@ ops:
       precision: bf16
 
       naip_image_size: 512
-      naip_batch_size: 8
+      naip_batch_size: 12
       naip_prefetch_batches: 16
-      naip_reader_workers: 8
+      naip_reader_workers: 24
       naip_read_chunk_size: 128
 
       sentinel_image_size: 128
