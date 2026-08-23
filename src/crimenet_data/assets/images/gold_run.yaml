@@ -8,14 +8,16 @@ ops:
 
       naip_image_size: 512
       naip_batch_size: 8
+      naip_prefetch_batches: 16
+      naip_reader_workers: 8
+      naip_read_chunk_size: 128
 
       sentinel_image_size: 128
-      sentinel_batch_size: 8
+      sentinel_batch_size: 16
       sentinel_max_timesteps: 12
       sentinel_lookback_days: 400
-
-      sentinel_reader_workers: 4
-      sentinel_prefetch_groups: 8
+      sentinel_reader_workers: 8
+      sentinel_prefetch_groups: 32
       sentinel_scene_cache_size: 128
       sentinel_remote_band_workers: 6
 
