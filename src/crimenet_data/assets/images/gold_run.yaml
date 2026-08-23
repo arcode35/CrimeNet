@@ -6,23 +6,21 @@ ops:
       device: cuda
       precision: bf16
 
-      # NAIP is already complete; resume will skip existing deterministic shards.
       naip_image_size: 512
       naip_batch_size: 8
       naip_prefetch_batches: 16
       naip_reader_workers: 8
       naip_read_chunk_size: 128
 
-      # Patched13 Sentinel -> OlmoEarth.
       sentinel_image_size: 128
       sentinel_batch_size: 32
       sentinel_max_timesteps: 12
       sentinel_lookback_days: 400
 
-      # v5: larger bounded async producer window. Completed H3 reads are consumed
-      # as soon as they finish, while output remains exact dataframe order.
-      sentinel_reader_workers: 32
-      sentinel_prefetch_groups: 128
+      # v6: normalization is now done once per unique frame in these reader
+      # threads. 16 preserves scene-cache locality while using all 16 vCPUs.
+      sentinel_reader_workers: 16
+      sentinel_prefetch_groups: 64
       sentinel_scene_cache_size: 256
       sentinel_remote_band_workers: 0
 

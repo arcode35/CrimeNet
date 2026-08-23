@@ -2,9 +2,8 @@ import polars as pl
 
 GCP = pl.CredentialProviderGCP()
 
-df = pl.scan_delta(
-    "gs://crimenet/gold_staging_/model_table_nyc_timestamp_fix",
-    credential_provider=GCP,
-)
+import polars as pl 
+df = pl.read_parquet("gs://crimenet/silver/imagery/h3_temporal_index/part-00000.parquet", credential_provider=GCP)
 
-print(df.collect_schema())
+
+print(df.estimated_size("gb"))
