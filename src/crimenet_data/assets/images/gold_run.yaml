@@ -17,12 +17,18 @@ ops:
       sentinel_max_timesteps: 12
       sentinel_lookback_days: 400
 
-      # v6: normalization is now done once per unique frame in these reader
-      # threads. 16 preserves scene-cache locality while using all 16 vCPUs.
       sentinel_reader_workers: 16
       sentinel_prefetch_groups: 64
       sentinel_scene_cache_size: 256
       sentinel_remote_band_workers: 0
+
+      # Stage every referenced patched Sentinel COG exactly once, then all
+      # Rasterio H3/window reads are local. Change this path to an attached SSD
+      # mount if the VM's root disk is too small.
+      sentinel_local_stage: true
+      sentinel_local_stage_dir: /home/aldrin/crimenet_sentinel_stage
+      sentinel_stage_workers: 8
+      sentinel_stage_free_space_reserve_gb: 10.0
 
       rows_per_shard: 5000
       resume: true

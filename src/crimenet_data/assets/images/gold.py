@@ -1,6 +1,8 @@
+import hashlib
 import json
 import os
 import re
+import shutil
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from collections import OrderedDict, deque
@@ -114,6 +116,12 @@ class ImageryEmbeddingConfig(dg.Config):
     sentinel_prefetch_groups: int = 128
     sentinel_scene_cache_size: int = 256  # total cache budget, divided across readers
     sentinel_remote_band_workers: int = 0  # compatibility only; patched13 Gold performs no PC reads
+
+    # Persistent local staging of the patched Sentinel source COGs.
+    sentinel_local_stage: bool = True
+    sentinel_local_stage_dir: str = "/home/aldrin/crimenet_sentinel_stage"
+    sentinel_stage_workers: int = 8
+    sentinel_stage_free_space_reserve_gb: float = 10.0
 
     # Output / control
     rows_per_shard: int = 5000
@@ -488,7 +496,311 @@ def _fill_bad_pixels_with_band_median(
 
 
 # -----------------------------------------------------------------------------
-# Sentinel patched13 local-GCS reader
+# Sentinel persistent local staging
+# -----------------------------------------------------------------------------
+
+
+def _stage_safe_name(uri: str) -> str:
+    digest = hashlib.sha256(uri.encode("utf-8")).hexdigest()[:20]
+    basename = Path(_parse_gs_uri(uri)[1]).name or "scene.tif"
+    return f"{digest}_{basename}"
+
+
+def _load_stage_sidecar(path: Path) -> dict | None:
+    sidecar = path.with_suffix(path.suffix + ".gcs.json")
+    if not sidecar.exists():
+        return None
+    try:
+        return json.loads(sidecar.read_text())
+    except Exception:
+        return None
+
+
+def _write_stage_sidecar(
+    path: Path,
+    *,
+    gcs_uri: str,
+    size: int,
+    generation: int,
+) -> None:
+    sidecar = path.with_suffix(path.suffix + ".gcs.json")
+    tmp = sidecar.with_suffix(sidecar.suffix + ".partial")
+    tmp.write_text(
+        json.dumps(
+            {
+                "gcs_uri": gcs_uri,
+                "size": int(size),
+                "generation": int(generation),
+                "staged_at_utc": datetime.now(timezone.utc).isoformat(),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    os.replace(tmp, sidecar)
+
+
+def _collect_gcs_metadata(
+    uris: list[str],
+) -> dict[str, dict[str, int | str]]:
+    """Fetch exact size + generation for every requested GCS object."""
+    if not uris:
+        return {}
+
+    wanted_by_bucket: dict[str, set[str]] = {}
+    uri_by_key: dict[tuple[str, str], str] = {}
+
+    for uri in uris:
+        bucket, name = _parse_gs_uri(uri)
+        wanted_by_bucket.setdefault(bucket, set()).add(name)
+        uri_by_key[(bucket, name)] = uri
+
+    client = storage.Client()
+    result: dict[str, dict[str, int | str]] = {}
+
+    for bucket, wanted_names in wanted_by_bucket.items():
+        common = os.path.commonprefix(sorted(wanted_names))
+        prefix = common.rsplit("/", 1)[0] + "/" if "/" in common else ""
+
+        remaining = set(wanted_names)
+        for blob in client.list_blobs(bucket, prefix=prefix):
+            if blob.name not in remaining:
+                continue
+            uri = uri_by_key[(bucket, blob.name)]
+            if blob.size is None or blob.generation is None:
+                blob.reload()
+            result[uri] = {
+                "bucket": bucket,
+                "name": blob.name,
+                "size": int(blob.size or 0),
+                "generation": int(blob.generation or 0),
+            }
+            remaining.remove(blob.name)
+            if not remaining:
+                break
+
+        if remaining:
+            raise RuntimeError(
+                f"Could not resolve {len(remaining):,} Sentinel GCS objects "
+                f"in bucket {bucket!r}; sample={sorted(remaining)[:5]}"
+            )
+
+    return result
+
+
+def _stage_sentinel_scenes(
+    *,
+    df: pl.DataFrame,
+    config: ImageryEmbeddingConfig,
+    context: dg.AssetExecutionContext,
+) -> dict[str, str]:
+    """Persist every Sentinel COG referenced by this run onto local storage."""
+    if not config.sentinel_local_stage or df.is_empty():
+        return {}
+
+    if config.sentinel_stage_workers < 1:
+        raise ValueError("sentinel_stage_workers must be >= 1")
+    if config.sentinel_stage_free_space_reserve_gb < 0:
+        raise ValueError("sentinel_stage_free_space_reserve_gb must be >= 0")
+
+    stage_dir = Path(config.sentinel_local_stage_dir).expanduser().resolve()
+    stage_dir.mkdir(parents=True, exist_ok=True)
+
+    uris = (
+        df.select("gcs_uri")
+        .drop_nulls()
+        .unique()
+        .get_column("gcs_uri")
+        .to_list()
+    )
+    uris = sorted(str(uri) for uri in uris)
+
+    context.log.info(
+        f"Sentinel NVMe staging preflight: {len(uris):,} unique patched COGs -> "
+        f"{stage_dir}"
+    )
+
+    metadata = _collect_gcs_metadata(uris)
+    local_paths = {
+        uri: stage_dir / _stage_safe_name(uri)
+        for uri in uris
+    }
+
+    already_valid = 0
+    bytes_already_valid = 0
+    missing_uris: list[str] = []
+    bytes_to_download = 0
+
+    for uri in uris:
+        meta = metadata[uri]
+        path = local_paths[uri]
+        sidecar = _load_stage_sidecar(path)
+
+        valid = bool(
+            path.exists()
+            and path.is_file()
+            and path.stat().st_size == int(meta["size"])
+            and sidecar is not None
+            and sidecar.get("gcs_uri") == uri
+            and int(sidecar.get("size", -1)) == int(meta["size"])
+            and int(sidecar.get("generation", -1)) == int(meta["generation"])
+        )
+
+        if valid:
+            already_valid += 1
+            bytes_already_valid += int(meta["size"])
+        else:
+            missing_uris.append(uri)
+            bytes_to_download += int(meta["size"])
+
+    total_bytes = sum(int(metadata[uri]["size"]) for uri in uris)
+    disk = shutil.disk_usage(stage_dir)
+    reserve_bytes = int(config.sentinel_stage_free_space_reserve_gb * 1e9)
+    required_free = bytes_to_download + reserve_bytes
+
+    context.log.info(
+        "Sentinel NVMe staging size: "
+        f"total={total_bytes / 1024**3:.2f} GiB, "
+        f"already_local={bytes_already_valid / 1024**3:.2f} GiB "
+        f"({already_valid:,}/{len(uris):,} scenes), "
+        f"remaining_download={bytes_to_download / 1024**3:.2f} GiB, "
+        f"filesystem_free={disk.free / 1024**3:.2f} GiB, "
+        f"reserve={reserve_bytes / 1024**3:.2f} GiB"
+    )
+
+    if required_free > disk.free:
+        short = required_free - disk.free
+        raise dg.Failure(
+            "Sentinel local staging will not fit on the configured filesystem. "
+            f"Need {required_free / 1024**3:.2f} GiB free including reserve, "
+            f"have {disk.free / 1024**3:.2f} GiB; short by "
+            f"{short / 1024**3:.2f} GiB. "
+            "Attach/resize an SSD and set sentinel_local_stage_dir to that mount, "
+            "or temporarily set sentinel_local_stage=false."
+        )
+
+    if not missing_uris:
+        context.log.info(
+            f"Sentinel NVMe staging complete: all {len(uris):,} scenes already local."
+        )
+        return {uri: str(path) for uri, path in local_paths.items()}
+
+    progress_lock = threading.Lock()
+    state = {
+        "completed": already_valid,
+        "downloaded_bytes": 0,
+    }
+    started = time.monotonic()
+    tls = threading.local()
+
+    def get_client():
+        client = getattr(tls, "gcs_client", None)
+        if client is None:
+            client = storage.Client()
+            tls.gcs_client = client
+        return client
+
+    def stage_one(uri: str) -> tuple[str, int]:
+        meta = metadata[uri]
+        path = local_paths[uri]
+        partial = path.with_suffix(path.suffix + ".partial")
+        partial.unlink(missing_ok=True)
+
+        client = get_client()
+        blob = client.bucket(str(meta["bucket"])).blob(
+            str(meta["name"]),
+            generation=int(meta["generation"]),
+        )
+
+        blob.download_to_filename(
+            str(partial),
+            if_generation_match=int(meta["generation"]),
+            checksum="auto",
+        )
+
+        actual = partial.stat().st_size
+        expected = int(meta["size"])
+        if actual != expected:
+            partial.unlink(missing_ok=True)
+            raise IOError(
+                f"Sentinel stage size mismatch for {uri}: "
+                f"expected={expected}, got={actual}"
+            )
+
+        os.replace(partial, path)
+        _write_stage_sidecar(
+            path,
+            gcs_uri=uri,
+            size=expected,
+            generation=int(meta["generation"]),
+        )
+        return uri, expected
+
+    with ThreadPoolExecutor(
+        max_workers=config.sentinel_stage_workers,
+        thread_name_prefix="sentinel-stage",
+    ) as pool:
+        future_to_uri = {
+            pool.submit(stage_one, uri): uri
+            for uri in missing_uris
+        }
+        pending = set(future_to_uri)
+
+        while pending:
+            done_now = [future for future in pending if future.done()]
+            if not done_now:
+                time.sleep(0.05)
+                continue
+
+            for future in done_now:
+                pending.remove(future)
+                uri = future_to_uri[future]
+                try:
+                    _, size = future.result()
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Failed to stage Sentinel scene {uri}: "
+                        f"{type(exc).__name__}: {exc}"
+                    ) from exc
+
+                with progress_lock:
+                    state["completed"] += 1
+                    state["downloaded_bytes"] += size
+                    if (
+                        state["completed"] % 25 == 0
+                        or state["completed"] == len(uris)
+                    ):
+                        elapsed = max(time.monotonic() - started, 1e-9)
+                        rate = state["downloaded_bytes"] / elapsed / 1024**2
+                        context.log.info(
+                            f"Sentinel NVMe staging: "
+                            f"{state['completed']:,}/{len(uris):,} scenes, "
+                            f"new={state['downloaded_bytes'] / 1024**3:.2f} GiB, "
+                            f"{rate:.1f} MiB/s"
+                        )
+
+    for uri in uris:
+        meta = metadata[uri]
+        path = local_paths[uri]
+        sidecar = _load_stage_sidecar(path)
+        if (
+            not path.exists()
+            or path.stat().st_size != int(meta["size"])
+            or sidecar is None
+            or int(sidecar.get("generation", -1)) != int(meta["generation"])
+        ):
+            raise RuntimeError(f"Post-stage verification failed: {uri}")
+
+    context.log.info(
+        f"Sentinel NVMe staging complete: {len(uris):,} scenes / "
+        f"{total_bytes / 1024**3:.2f} GiB. "
+        "All Sentinel raster reads will now use local files."
+    )
+    return {uri: str(path) for uri, path in local_paths.items()}
+
+
+# -----------------------------------------------------------------------------
+# Sentinel patched13 local reader
 # -----------------------------------------------------------------------------
 
 
@@ -503,6 +815,7 @@ class _SentinelSceneBundle:
     def __init__(
         self,
         row: dict,
+        local_stage_paths: dict[str, str] | None = None,
         timeout_seconds: int | None = None,
         remote_executor=None,
     ):
@@ -510,7 +823,13 @@ class _SentinelSceneBundle:
         self.created_monotonic = time.monotonic()
         self.item_id = row["item_id"]
         self.gcs_uri = row["gcs_uri"]
-        self.stack = rasterio.open(gcs_uri_to_vsigs(self.gcs_uri), sharing=False)
+        self.local_path = (
+            local_stage_paths.get(self.gcs_uri)
+            if local_stage_paths
+            else None
+        )
+        raster_path = self.local_path or gcs_uri_to_vsigs(self.gcs_uri)
+        self.stack = rasterio.open(raster_path, sharing=False)
         if self.stack.count < 13:
             count = self.stack.count
             self.close()
@@ -566,12 +885,14 @@ class _SentinelSceneCache:
     def __init__(
         self,
         max_size: int,
+        local_stage_paths: dict[str, str] | None = None,
         timeout_seconds: int | None = None,
         remote_band_workers: int = 0,
         ttl_seconds: int = 2700,
     ):
         del timeout_seconds, remote_band_workers
         self.max_size = max(1, max_size)
+        self.local_stage_paths = local_stage_paths or {}
         self.ttl_seconds = ttl_seconds
         self._cache: OrderedDict[str, _SentinelSceneBundle] = OrderedDict()
 
@@ -584,7 +905,7 @@ class _SentinelSceneCache:
                 return bundle
             bundle.close()
 
-        bundle = _SentinelSceneBundle(row)
+        bundle = _SentinelSceneBundle(row, local_stage_paths=self.local_stage_paths)
         self._cache[key] = bundle
         while len(self._cache) > self.max_size:
             _, evicted = self._cache.popitem(last=False)
@@ -1076,6 +1397,12 @@ def _encode_sentinel(
             "application/json",
         )
 
+    local_stage_paths = _stage_sentinel_scenes(
+        df=df,
+        config=config,
+        context=context,
+    )
+
     (
         model,
         Modality,
@@ -1099,6 +1426,8 @@ def _encode_sentinel(
         f"prefetch_groups={max_pending}, "
         f"scene_cache_per_reader={per_worker_cache_size}, "
         f"planetary_computer_reads=0, "
+        f"local_staged_scenes={len(local_stage_paths):,}, "
+        f"raster_source={'local_nvme' if local_stage_paths else 'gcs_cog_ranges'}, "
         f"bounded_out_of_order=true, frame_normalize_once=true, direct_batch_layout=true, "
         f"gpu_batch_start={config.sentinel_batch_size}"
     )
@@ -1114,6 +1443,7 @@ def _encode_sentinel(
         if cache is None:
             cache = _SentinelSceneCache(
                 max_size=per_worker_cache_size,
+                local_stage_paths=local_stage_paths,
                 timeout_seconds=config.stac_timeout_seconds,
                 remote_band_workers=config.sentinel_remote_band_workers,
             )
@@ -1508,6 +1838,10 @@ def gold_imagery_embeddings(
         raise dg.Failure("sentinel_max_timesteps must be in [1, 12]")
     if config.sentinel_lookback_days <= 0:
         raise dg.Failure("sentinel_lookback_days must be > 0")
+    if config.sentinel_stage_workers < 1:
+        raise dg.Failure("sentinel_stage_workers must be > 0")
+    if config.sentinel_stage_free_space_reserve_gb < 0:
+        raise dg.Failure("sentinel_stage_free_space_reserve_gb must be >= 0")
 
     context.log.info(f"Reading temporal imagery index: {SILVER_H3_TEMPORAL_INDEX_URI}")
     temporal = _read_temporal_index(SILVER_H3_TEMPORAL_INDEX_URI)
@@ -1637,7 +1971,7 @@ def gold_imagery_embeddings(
             "patch_size": 8,
             "max_timesteps": config.sentinel_max_timesteps,
             "lookback_days": config.sentinel_lookback_days,
-            "cloud_handling": "SCL BAD_CLASSES -> per-band median fill; official OlmoEarth affine normalization once per unique frame",
+            "cloud_handling": "SCL BAD_CLASSES -> per-band median fill before OlmoEarth normalization",
             "hybrid_input": {
                 "patched13_indexes": SENTINEL_PATCHED_OLMO_INDEXES,
                 "lazy7_missing_assets": SENTINEL_MISSING_ASSET_KEYS,
