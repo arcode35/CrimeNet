@@ -26,7 +26,7 @@ ops:
       # Rasterio H3/window reads are local. Change this path to an attached SSD
       # mount if the VM's root disk is too small.
       sentinel_local_stage: true
-      sentinel_local_stage_dir: /home/aldrin/crimenet_sentinel_stage
+      sentinel_local_stage_dir: /mnt/disks/sentinel-cache
       sentinel_stage_workers: 8
       sentinel_stage_free_space_reserve_gb: 10.0
 
