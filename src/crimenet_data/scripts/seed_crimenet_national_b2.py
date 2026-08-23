@@ -268,6 +268,9 @@ def request_with_retry(
             return resp
         except (requests.RequestException, OSError) as exc:
             last_exc = exc
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status is not None and 400 <= status < 500 and status != 429:
+                raise
             if attempt == attempts:
                 break
             delay = min(60.0, 2.0 ** (attempt - 1))
@@ -281,7 +284,7 @@ def download_resumable(url: str, dest: Path, *, session: requests.Session | None
     """Download URL to dest with HTTP Range resume and retries."""
     own_session = session is None
     session = session or requests.Session()
-    session.headers.update({"User-Agent": "CrimeNet-national-seed/1.0", "Accept-Encoding": "identity"})
+    session.headers.update({"User-Agent": "CrimeNet-national-seed/1.1", "Accept-Encoding": "identity"})
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -342,6 +345,9 @@ def download_resumable(url: str, dest: Path, *, session: requests.Session | None
                 return dest
 
             except (requests.RequestException, OSError, IOError) as exc:
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                if status is not None and 400 <= status < 500 and status != 429:
+                    raise
                 if outer_attempt == 8:
                     raise
                 delay = min(60.0, 2.0 ** (outer_attempt - 1))
@@ -429,7 +435,7 @@ def fetch_acs_state(year: int, state_fips: str, census_key: str, session: reques
 def build_acs_year(year: int, state_fipses: Iterable[str], census_key: str, workers: int) -> pl.DataFrame:
     log(f"ACS5 {year}: fetching tract data")
     session = requests.Session()
-    session.headers.update({"User-Agent": "CrimeNet-national-seed/1.0"})
+    session.headers.update({"User-Agent": "CrimeNet-national-seed/1.1"})
 
     # Census API is not a bulk-download CDN. Keep concurrency conservative.
     acs_workers = max(1, min(workers, 6))
@@ -437,7 +443,7 @@ def build_acs_year(year: int, state_fipses: Iterable[str], census_key: str, work
     def one(state: str) -> tuple[str, pl.DataFrame]:
         # Per-thread Session avoids sharing connection state.
         s = requests.Session()
-        s.headers.update({"User-Agent": "CrimeNet-national-seed/1.0"})
+        s.headers.update({"User-Agent": "CrimeNet-national-seed/1.1"})
         try:
             return state, fetch_acs_state(year, state, census_key, s)
         finally:
@@ -535,14 +541,26 @@ def upload_acs_year(
         local.unlink(missing_ok=True)
 
 
-def osm_url_for_year(year: int) -> str:
-    yy = year % 100
-    return f"https://download.geofabrik.de/north-america/us-{yy:02d}0101.osm.pbf"
+def osm_source_for_year(year: int) -> tuple[str, str]:
+    """Return (source URL, B2 key) for the annual OSM snapshot.
 
-
-def osm_key_for_year(year: int) -> str:
+    Geofabrik only exposes whole-US annual aggregate snapshots from 2021 onward.
+    For 2014-2020, use the corresponding North America aggregate snapshot; downstream
+    national-US processing should clip/filter to the US H3 domain.
+    """
     yy = year % 100
-    return f"bronze/osm/us/snapshot_year={year}/us-{yy:02d}0101.osm.pbf"
+    if year <= 2020:
+        filename = f"north-america-{yy:02d}0101.osm.pbf"
+        return (
+            f"https://download.geofabrik.de/{filename}",
+            f"bronze/osm/north-america/snapshot_year={year}/{filename}",
+        )
+
+    filename = f"us-{yy:02d}0101.osm.pbf"
+    return (
+        f"https://download.geofabrik.de/north-america/{filename}",
+        f"bronze/osm/us/snapshot_year={year}/{filename}",
+    )
 
 
 def tiger_url(year: int, state_fips: str) -> str:
@@ -651,15 +669,21 @@ def main() -> int:
             # we only need enough local disk for one national PBF at a time.
             osm_results = {}
             for year in parse_year_range(args.osm_years):
+                osm_url, osm_key = osm_source_for_year(year)
                 result = source_to_b2(
                     s3,
                     bucket,
-                    osm_url_for_year(year),
-                    osm_key_for_year(year),
+                    osm_url,
+                    osm_key,
                     work_dir,
                     force=False,
                 )
-                osm_results[str(year)] = result
+                osm_results[str(year)] = {
+                    "result": result,
+                    "source_url": osm_url,
+                    "b2_key": osm_key,
+                    "source_region": "north-america" if year <= 2020 else "us",
+                }
 
             if not args.skip_latest_osm:
                 latest_url = "https://download.geofabrik.de/north-america/us-latest.osm.pbf"
