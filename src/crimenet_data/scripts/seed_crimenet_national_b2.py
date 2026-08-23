@@ -200,19 +200,22 @@ def make_s3_client():
         aws_secret_access_key=required_env("B2_APPLICATION_KEY"),
         config=Config(
             signature_version="s3v4",
-            retries={"max_attempts": 12, "mode": "adaptive"},
+            retries={"max_attempts": 20, "mode": "adaptive"},
             connect_timeout=30,
-            read_timeout=180,
-            max_pool_connections=64,
+            read_timeout=300,
+            max_pool_connections=16,
+            tcp_keepalive=True,
             s3={"addressing_style": "path"},
         ),
     )
 
 
 TRANSFER_CONFIG = TransferConfig(
+    # Large B2 uploads from rental/cloud hosts are more reliable with fewer,
+    # larger multipart requests than with many simultaneous 64 MiB parts.
     multipart_threshold=64 * 1024**2,
-    multipart_chunksize=64 * 1024**2,
-    max_concurrency=8,
+    multipart_chunksize=256 * 1024**2,
+    max_concurrency=2,
     use_threads=True,
 )
 
@@ -230,15 +233,53 @@ def b2_object_exists(s3, bucket: str, key: str) -> bool:
 
 
 def upload_file(s3, bucket: str, path: Path, key: str, *, metadata: dict[str, str] | None = None) -> None:
-    log(f"B2 upload -> b2://{bucket}/{key} ({path.stat().st_size / 1024**3:.2f} GiB)")
+    """Upload and verify, retrying the *whole multipart upload* on transport failure.
+
+    boto3 retries individual S3 requests, but a long multipart transfer can still
+    fail after its internal retry budget is exhausted.  Keeping the staged file
+    around and retrying upload_file() is much cheaper than redownloading a 6-12 GiB
+    Geofabrik snapshot.
+    """
+    size = path.stat().st_size
+    size_gib = size / 1024**3
     extra = {"Metadata": metadata or {}}
-    s3.upload_file(
-        str(path),
-        bucket,
-        key,
-        ExtraArgs=extra,
-        Config=TRANSFER_CONFIG,
-    )
+
+    for attempt in range(1, 9):
+        try:
+            log(
+                f"B2 upload attempt {attempt}/8 -> "
+                f"b2://{bucket}/{key} ({size_gib:.2f} GiB)"
+            )
+            s3.upload_file(
+                str(path),
+                bucket,
+                key,
+                ExtraArgs=extra,
+                Config=TRANSFER_CONFIG,
+            )
+
+            head = s3.head_object(Bucket=bucket, Key=key)
+            remote_size = int(head["ContentLength"])
+            if remote_size != size:
+                raise IOError(
+                    f"B2 verification failed for {key}: "
+                    f"local={size}, remote={remote_size}"
+                )
+
+            log(f"B2 upload verified -> b2://{bucket}/{key} ({size_gib:.2f} GiB)")
+            return
+        except Exception as exc:
+            if attempt == 8:
+                log(
+                    f"B2 upload FAILED after 8 attempts; staged file retained at {path}"
+                )
+                raise
+            delay = min(60.0, 2.0 ** (attempt - 1))
+            log(
+                f"B2 upload retry {attempt}/8 for {key}: "
+                f"{type(exc).__name__}: {exc}; sleeping {delay:.0f}s"
+            )
+            time.sleep(delay)
 
 
 def put_json(s3, bucket: str, key: str, obj: object) -> None:
@@ -376,8 +417,8 @@ def source_to_b2(
     # Avoid collisions when many TIGER files are processed concurrently.
     token = hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
     local = work_dir / f"{token}-{filename}"
+    download_resumable(url, local)
     try:
-        download_resumable(url, local)
         upload_file(
             s3,
             bucket,
@@ -385,10 +426,15 @@ def source_to_b2(
             key,
             metadata={"source-url": url[:1900]},
         )
+    except Exception:
+        # Deliberately retain a complete multi-GB source file so a rerun can
+        # retry the B2 upload without paying the Geofabrik download again.
+        log(f"KEEP staged file after upload failure: {local}")
+        raise
+    else:
+        local.unlink(missing_ok=True)
         log(f"DONE b2://{bucket}/{key}")
         return "uploaded"
-    finally:
-        local.unlink(missing_ok=True)
 
 
 def sanitize_numeric_expr(raw_col: str, out_col: str, dtype: pl.DataType) -> pl.Expr:
@@ -575,7 +621,15 @@ def main() -> int:
     current_year = datetime.now(timezone.utc).year
     parser = argparse.ArgumentParser(description="Seed national CrimeNet datasets into Backblaze B2")
     parser.add_argument("--bucket", default=os.environ.get("B2_BUCKET", "crimenet-data"))
-    parser.add_argument("--work-dir", default=None, help="Temporary working directory; default uses system temp")
+    parser.add_argument(
+        "--work-dir",
+        default=os.environ.get("CRIMENET_SEED_WORK_DIR", ".crimenet-national-work"),
+        help=(
+            "Persistent staging directory. Default: .crimenet-national-work "
+            "(or CRIMENET_SEED_WORK_DIR). Keeping this persistent allows a rerun "
+            "to retry a failed B2 upload without redownloading multi-GB OSM files."
+        ),
+    )
     parser.add_argument("--workers", type=int, default=8, help="Concurrent TIGER / ACS state workers")
     parser.add_argument("--acs-years", default="2014:2024")
     parser.add_argument("--tiger-years", default="2014:2024")
@@ -607,9 +661,10 @@ def main() -> int:
     except Exception as exc:
         raise SystemExit(f"Cannot access B2 bucket {bucket!r}: {exc}") from exc
 
-    root_context = tempfile.TemporaryDirectory(prefix="crimenet-national-") if args.work_dir is None else None
-    work_dir = Path(root_context.name if root_context else args.work_dir).expanduser().resolve()
+    root_context = None
+    work_dir = Path(args.work_dir).expanduser().resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
+    log(f"persistent staging dir: {work_dir}")
 
     manifest: dict[str, object] = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
