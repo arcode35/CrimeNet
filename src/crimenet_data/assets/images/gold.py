@@ -108,7 +108,7 @@ class ImageryEmbeddingConfig(dg.Config):
 
     # Sentinel / OlmoEarth
     sentinel_image_size: int = 128
-    sentinel_batch_size: int = 8
+    sentinel_batch_size: int = 16
     sentinel_max_timesteps: int = 12
     sentinel_lookback_days: int = 400
 
@@ -116,8 +116,8 @@ class ImageryEmbeddingConfig(dg.Config):
     # while results are consumed in deterministic dataframe order. Each reader
     # owns a private scene cache and a six-band remote executor, so 4 readers x
     # 6 band workers can sustain up to ~24 lazy7 Planetary Computer range reads.
-    sentinel_reader_workers: int = 4
-    sentinel_prefetch_groups: int = 8
+    sentinel_reader_workers: int = 8
+    sentinel_prefetch_groups: int = 32
     sentinel_scene_cache_size: int = 128  # total cache budget, divided across readers
     sentinel_remote_band_workers: int = 6  # per Sentinel reader
 
@@ -1097,7 +1097,7 @@ def _encode_sentinel(
 
     Output rows are reordered back to exact dataframe order before shard writes.
     That makes `N completed shards -> N * rows_per_shard source rows` a real
-    invariant, so row-count resume is safe after this v2 format marker exists.
+    invariant, so row-count resume is safe after this v3 format marker exists.
     """
     if df.is_empty():
         return 0, 0, {"patched13": 0, "lazy7": 0}
@@ -1121,16 +1121,16 @@ def _encode_sentinel(
     # The previous serial implementation bucketed by temporal length and wrote
     # buckets as they became ready. Those first-generation shards were therefore
     # not guaranteed to match dataframe row order, which makes row-count resume
-    # unsafe. Refuse to mix them with the ordered-v2 format. Delete only the old
+    # unsafe. Refuse to mix them with the ordered-v3 format. Delete only the old
     # Sentinel shards once; NAIP shards remain untouched.
     format_marker_uri = _join_gs(
         config.output_prefix,
-        "sentinel2/_ORDERED_PARALLEL_V2.json",
+        "sentinel2/_ORDERED_PARALLEL_V3.json",
     )
     marker_exists = _gcs_exists(format_marker_uri)
     if start_shard_idx > 0 and not marker_exists:
         raise dg.Failure(
-            "Existing Sentinel shards predate the ordered parallel v2 writer. "
+            "Existing Sentinel shards predate the ordered parallel v3 writer. "
             "Delete only gs://.../sentinel2/part-*.parquet and restart Sentinel; "
             "do not delete the completed NAIP shards."
         )
@@ -1139,7 +1139,7 @@ def _encode_sentinel(
             format_marker_uri,
             json.dumps(
                 {
-                    "format": "ordered_parallel_v2",
+                    "format": "ordered_parallel_v3",
                     "created_at_utc": datetime.now(timezone.utc).isoformat(),
                     "ordering": "exact sentinel dataframe order",
                     "resume_invariant": "completed_shards * rows_per_shard",
@@ -1202,13 +1202,19 @@ def _encode_sentinel(
     encoded = resume_rows
     next_emit_idx = resume_rows
     input_mode_counts = {"patched13": 0, "lazy7": 0}
-    effective_batch_size = config.sentinel_batch_size
+    # Keep an independent effective GPU batch size for each temporal length.
+    # Long T sequences may OOM at a size that short T sequences handle easily;
+    # one difficult T should not permanently throttle every other bucket.
+    effective_batch_sizes = {
+        t: config.sentinel_batch_size
+        for t in range(1, config.sentinel_max_timesteps + 1)
+    }
     run_started = time.monotonic()
 
     if resume_rows:
         context.log.info(
             f"Resuming Sentinel after {resume_rows:,} completed rows / "
-            f"{start_shard_idx:,} ordered-v2 shards. Entire completed H3 groups are "
+            f"{start_shard_idx:,} ordered-v3 shards. Entire completed H3 groups are "
             "skipped; only a boundary H3 is replayed to rebuild temporal history."
         )
 
@@ -1230,14 +1236,16 @@ def _encode_sentinel(
             )
 
     def flush_bucket(t: int, force: bool = False) -> None:
-        nonlocal encoded, effective_batch_size
+        nonlocal encoded
         bucket = buckets[t]
         if not bucket:
             return
+        effective_batch_size = effective_batch_sizes[t]
         if not force and len(bucket) < effective_batch_size:
             return
 
         while len(bucket) >= effective_batch_size or (force and bucket):
+            effective_batch_size = effective_batch_sizes[t]
             take = min(effective_batch_size, len(bucket))
             chunk = bucket[:take]
 
@@ -1263,10 +1271,11 @@ def _encode_sentinel(
                     raise
                 old_batch = effective_batch_size
                 effective_batch_size = max(1, effective_batch_size // 2)
+                effective_batch_sizes[t] = effective_batch_size
                 torch.cuda.empty_cache()
                 context.log.warning(
-                    f"CUDA OOM in OlmoEarth; automatically reducing Sentinel batch "
-                    f"{old_batch} -> {effective_batch_size}"
+                    f"CUDA OOM in OlmoEarth at T={t}; automatically reducing that "
+                    f"bucket batch {old_batch} -> {effective_batch_size}"
                 )
                 continue
 
@@ -1297,7 +1306,7 @@ def _encode_sentinel(
                 rate = processed / elapsed
                 context.log.info(
                     f"OlmoEarth Sentinel encoded: {encoded:,}/{df.height:,} "
-                    f"({rate:.2f} rows/s, gpu_batch={effective_batch_size}, "
+                    f"({rate:.2f} rows/s, gpu_batch_T{t}={effective_batch_sizes[t]}, "
                     f"ready_reorder={len(ready_rows):,})"
                 )
 
