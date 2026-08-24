@@ -1,18 +1,22 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from typing import Any, Literal
 
 import polars as pl
 
 Severity = Literal["error", "warn"]
 ExpressionFactory = Callable[[], pl.Expr]
 
-class ContractRule(frozen=True):
-    name: str 
+
+@dataclass(frozen=True)
+class ContractRule:
+    name: str
     rule: ExpressionFactory
     severity: Severity = "error"
     description: str = ""
+
 
 @dataclass(frozen=True)
 class DataContract:

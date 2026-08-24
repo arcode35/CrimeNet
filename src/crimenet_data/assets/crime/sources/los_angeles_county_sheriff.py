@@ -1,0 +1,56 @@
+import polars as pl
+
+from crimenet_data.assets.crime.common.expressions import (
+    composite_identifier,
+    datetime_expr,
+    numeric_expr,
+    text_expr,
+)
+from crimenet_data.assets.crime.sources._shared import (
+    CSV,
+    adapt_standard,
+    nullable_string,
+    prepare_snake_case,
+)
+from crimenet_data.assets.crime.sources.base import (
+    AdapterContext,
+    CrimeSourceConfig,
+    SourceDefinition,
+)
+
+
+def occurrence(lf: pl.LazyFrame) -> pl.Expr:
+    return datetime_expr(lf, "incident_date")
+
+
+def adapt(lf: pl.LazyFrame, _context: AdapterContext) -> pl.LazyFrame:
+    return adapt_standard(
+        lf,
+        occurrence(lf),
+        source_record_id=composite_identifier(lf, "incident_id", "lurn_sak", "stat"),
+        report_timestamp=datetime_expr(lf, "incident_reported_date"),
+        source_offense_code=text_expr(lf, "stat"),
+        source_offense_category=text_expr(lf, "category", "part_category"),
+        source_offense_description=text_expr(lf, "stat_desc"),
+        latitude=numeric_expr(lf, "latitude"),
+        longitude=numeric_expr(lf, "longitude"),
+        location_label=text_expr(lf, "address", "street"),
+        location_type=nullable_string(),
+        police_district=text_expr(lf, "reporting_district"),
+        local_area=text_expr(lf, "unit_name"),
+    )
+
+
+SOURCE = SourceDefinition(
+    config=CrimeSourceConfig(
+        key="los_angeles_county_sheriff",
+        source_system="los_angeles_county_sheriff_open_data",
+        patterns=CSV,
+        timezone="America/Los_Angeles",
+        crosswalk_keys=("source_offense_code", "source_offense_description"),
+        coordinate_bounds=None,
+    ),
+    prepare_bronze=prepare_snake_case,
+    occurrence_timestamp=occurrence,
+    adapt_to_silver=adapt,
+)

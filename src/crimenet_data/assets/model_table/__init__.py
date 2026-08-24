@@ -1,7 +1,5 @@
-from .asset import (
-    final_model_table,
-)
+"""Pure downstream model-table transforms retained for ML consumers.
 
-__all__ = [
-    "final_model_table",
-]
+The former Dagster model-table asset was retired. Joining national features to
+canonical crime now belongs to the separate downstream ML/model-table pipeline.
+"""

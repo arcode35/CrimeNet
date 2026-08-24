@@ -1,0 +1,49 @@
+{
+  "boundary": {
+    "boundary": {
+      "centers": 6645,
+      "missing_neighbor_fraction": 0.345071482317532,
+      "pairs": 39870
+    },
+    "interior": {
+      "centers": 10000,
+      "missing_neighbor_fraction": 0.38138333333333335,
+      "pairs": 60000
+    },
+    "warnings": []
+  },
+  "dataset": "s3://crimenet-data/gold/national_feature_store/latest/h3_r9/part-*.parquet",
+  "deep": false,
+  "deep_skipped": true,
+  "finished_at_epoch": 1787521620.5018098,
+  "hard_failures": [],
+  "known_place_warnings": [],
+  "manifest": {
+    "actual_part_count": 26,
+    "actual_total_bytes": 671249246,
+    "failures": [],
+    "manifest_part_count": 26,
+    "manifest_rows": 25563443,
+    "manifest_socio_match_rate": 0.9983314454160185,
+    "manifest_unique_h3_cells": 25563443,
+    "part_set_exact": true,
+    "part_sizes_exact": true
+  },
+  "outlier_warnings": [
+    "osm_poi_density_per_km2:max_is_555.4x_p99"
+  ],
+  "started_at_epoch": 1787521396.295555,
+  "status": "PASS",
+  "structural": {
+    "failures": [],
+    "matched_state_count": 51,
+    "row_count": 25563443,
+    "schema_exact": true,
+    "socio_match_rate": 0.9983314454160185,
+    "socio_matched_rows": 25520789,
+    "unique_h3": 25563443
+  },
+  "warnings": [
+    "osm_poi_density_per_km2:max_is_555.4x_p99"
+  ]
+}
