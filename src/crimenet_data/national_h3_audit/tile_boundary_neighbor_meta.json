@@ -1,0 +1,13 @@
+{
+  "boundary": {
+    "centers": 6645,
+    "missing_neighbor_fraction": 0.345071482317532,
+    "pairs": 39870
+  },
+  "interior": {
+    "centers": 10000,
+    "missing_neighbor_fraction": 0.38138333333333335,
+    "pairs": 60000
+  },
+  "warnings": []
+}

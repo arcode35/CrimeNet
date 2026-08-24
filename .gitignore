@@ -218,19 +218,12 @@ src/machine_learning/experiments/log/
 # Generated data-pipeline diagnostics / temporary files
 src/crimenet_data/artifacts/
 src/crimenet_data/tmp/
-
-# Generated diagnostic outputs produced by scripts
-src/crimenet_data/scripts/integration_cell_deciles.csv
-src/crimenet_data/scripts/integration_city_year_diagnostics.csv
-src/crimenet_data/scripts/integration_time_deciles.csv
-src/crimenet_data/scripts/integration_window_diagnostics.csv
-src/crimenet_data/scripts/observation_monthly_activity.csv
-src/crimenet_data/scripts/observation_ranges_candidates.json
-src/crimenet_data/scripts/observation_suspicious_gaps.csv
-src/crimenet_data/scripts/observation_yearly_activity.csv
-
+# CrimeNet local scripts, downloads, repair data, and generated outputs
+src/crimenet_data/scripts/
 artifacts/experiments/
 # Generated imagery / raster smoke-test artifacts
 tests/images/*.tif
 tests/images/*.png
 tests/images/*.aux.xml
+
+src/crimenet_data/scripts/

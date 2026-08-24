@@ -1,12 +1,5 @@
-import dagster as dg 
+"""Dagster definition entrypoint used by dg tooling."""
 
-from .resources import CrimeLakeResources
+from crimenet_data.definitions import defs
 
-from .bronze import bronze_assets
-
-defs = dg.Definitions(
-    assets=[*bronze_assets],
-    resources={
-        "crimenet_data": CrimeLakeResources()
-    }
-)
+__all__ = ["defs"]

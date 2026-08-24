@@ -1,112 +1,66 @@
 from datetime import UTC, datetime
 
 import dagster as dg
-import deltalake
-import polars as pl
 
+from crimenet_data.assets.crime.ingestion import prepare_bronze_source
+from crimenet_data.assets.crime.sources import SOURCE_KEYS, get_source
 from crimenet_data.observability.context import log_context
 from crimenet_data.observability.logger import get_logger
-from crimenet_data.resources.crime_lake import (
-    CITIES,
-    CrimeLakeResources,
-)
-
+from crimenet_data.resources.crime_lake import CrimeLakeResources
 
 log = get_logger(__name__)
 
 
-def build_bronze(
-    raw_df: pl.LazyFrame,
-    *,
-    run_id: str,
-    source_city: str,
-) -> pl.LazyFrame:
-    ingested_at = datetime.now(UTC)
+def build_bronze_source_asset(source_key: str) -> dg.AssetsDefinition:
+    source = get_source(source_key)
 
-    log.info(
-        "bronze_transformation_started",
-        source_city=source_city,
-    )
-
-    result = raw_df.with_columns(
-        pl.lit(source_city).alias("source_city"),
-        pl.lit(run_id).alias("_ingestion_run_id"),
-        pl.lit(ingested_at).alias("_ingested_at_utc"),
-    )
-
-    log.info(
-        "bronze_transformation_completed",
-        source_city=source_city,
-    )
-
-    return result
-
-
-def build_bronze_city_asset(city: str) -> dg.AssetsDefinition:
     @dg.asset(
-        name=f"bronze_{city}",
+        name=f"bronze_{source_key}",
         group_name="bronze_crime",
+        pool=f"crime_bronze_{source_key}_writer",
     )
     def _bronze_asset(
         context: dg.AssetExecutionContext,
         crime_lake: CrimeLakeResources,
     ) -> dg.MaterializeResult:
-
+        source_uris = crime_lake.source_uris(source_key)
+        target_uri = crime_lake.resolve_source_path(source_key, "bronze")
         with log_context(
             run_id=context.run_id,
             asset_key=context.asset_key.to_user_string(),
-            source_city=city,
+            source_city=source_key,
         ):
-            bronze_root = crime_lake.bronze_root
-
-            source_uri = crime_lake.source_uri(city)
-
-            target_uri = (
-                f"{bronze_root}/"
-                f"crime/"
-                f"{city}"
-            )
-
             log.info(
                 "bronze_ingestion_started",
-                source_uri=source_uri,
+                source_uris=source_uris,
                 target_uri=target_uri,
             )
-
-            raw_df = pl.scan_parquet(
-                source_uri,
-                hive_partitioning=True,
-                credential_provider=pl.CredentialProviderGCP(),
-            )
-
-            bronze_lf = build_bronze(
-                raw_df=raw_df,
+            bronze_lf = prepare_bronze_source(
+                crime_lake.scan_source(source_key),
+                source,
                 run_id=context.run_id,
-                source_city=city,
+                ingested_at=datetime.now(UTC),
             )
-
-            log.info(
-                "bronze_write_started",
-                target_uri=target_uri,
-            )
-
+            if "occurrence_year" not in bronze_lf.collect_schema():
+                raise KeyError(
+                    f"Source {source_key!r} did not derive the Bronze partition year"
+                )
             crime_lake.write_crimenet_table(
                 lf=bronze_lf,
                 target_uri=target_uri,
-                partitioning_columns=["occurrence_year"]
+                partitioning_columns=["occurrence_year"],
             )
-
-            log.info(
-                "bronze_ingestion_completed",
-                target_uri=target_uri,
-            )
-
+            log.info("bronze_ingestion_completed", target_uri=target_uri)
             return dg.MaterializeResult(
                 metadata={
-                    "source_city": city,
-                    "ingestion_run_id": context.run_id,
-                    "source_uri": source_uri,
+                    "source_key": source_key,
+                    "source_format": sorted(
+                        {pattern.format for pattern in source.config.patterns}
+                    ),
+                    "source_uris": list(source_uris),
                     "target_uri": target_uri,
+                    "ingestion_run_id": context.run_id,
+                    "source_layer": "landing",
                 }
             )
 
@@ -114,6 +68,5 @@ def build_bronze_city_asset(city: str) -> dg.AssetsDefinition:
 
 
 crime_bronze_assets = [
-    build_bronze_city_asset(city)
-    for city in CITIES
+    build_bronze_source_asset(source_key) for source_key in SOURCE_KEYS
 ]

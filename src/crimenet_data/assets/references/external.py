@@ -7,14 +7,14 @@ canonical_crime_crosswalk = dg.AssetSpec(
     group_name="reference",
     description=(
         "Manually curated city-to-canonical crime mapping "
-        "stored in GCS."
+        "stored in the CrimeNet B2 lake."
     ),
     metadata={
         "path": (
-            "gs://crimenet/raw_files/landing/reference/"
+            "s3://crimenet-data/raw_files/landing/reference/"
             "canonical_crime_crosswalk_v1_3.csv"
         ),
         "mapping_version": "crime_canonical_v1_3",
     },
-    kinds={"gcs", "csv"},
+    kinds={"s3", "csv"},
 )
