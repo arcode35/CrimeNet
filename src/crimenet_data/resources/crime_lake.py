@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,17 +11,20 @@ from urllib.parse import urlparse
 
 import boto3
 import dagster as dg
-import deltalake
 import polars as pl
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+from crimenet_data.assets.crime.canonical.schema import CANONICAL_CRIME_SCHEMA
 from crimenet_data.assets.crime.ingestion.readers import read_source_pattern
 from crimenet_data.assets.crime.sources import SOURCE_KEYS, get_source
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BRONZE_SUCCESS_MARKER = "_SUCCESS"
 BRONZE_LATEST_POINTER = "_latest.json"
+SILVER_SUCCESS_MARKER = "_SUCCESS"
+SILVER_LATEST_POINTER = "_latest.json"
+SILVER_MANIFEST = "manifest.json"
 
 
 @dataclass(frozen=True)
@@ -99,11 +103,74 @@ class BronzeSnapshotPointer:
         )
 
 
+@dataclass(frozen=True)
+class SilverSnapshotPointer:
+    """The published pointer to one immutable unified Silver snapshot."""
+
+    snapshot_id: str
+    snapshot_uri: str
+    created_at_utc: datetime
+    mapping_version: str
+
+    def to_json(self) -> bytes:
+        return json.dumps(
+            {
+                "snapshot_id": self.snapshot_id,
+                "snapshot_uri": self.snapshot_uri,
+                "created_at_utc": self.created_at_utc.isoformat(),
+                "mapping_version": self.mapping_version,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    @classmethod
+    def from_json(cls, payload: bytes) -> SilverSnapshotPointer:
+        try:
+            document = json.loads(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("Malformed Silver snapshot pointer") from error
+        if not isinstance(document, dict):
+            raise TypeError("Malformed Silver snapshot pointer: expected an object")
+        required = {
+            "snapshot_id",
+            "snapshot_uri",
+            "created_at_utc",
+            "mapping_version",
+        }
+        missing = required - set(document)
+        if missing:
+            raise ValueError(
+                f"Malformed Silver snapshot pointer: missing {sorted(missing)}"
+            )
+        try:
+            created_at = datetime.fromisoformat(str(document["created_at_utc"]))
+        except ValueError as error:
+            raise ValueError(
+                "Silver snapshot pointer has an invalid created_at_utc"
+            ) from error
+        if created_at.tzinfo is None:
+            raise ValueError(
+                "Silver snapshot pointer created_at_utc must include a timezone"
+            )
+        values = {
+            name: document[name]
+            for name in ("snapshot_id", "snapshot_uri", "mapping_version")
+        }
+        if any(not isinstance(value, str) or not value for value in values.values()):
+            raise ValueError("Silver snapshot pointer contains an invalid string")
+        return cls(
+            snapshot_id=values["snapshot_id"],
+            snapshot_uri=values["snapshot_uri"],
+            created_at_utc=created_at.astimezone(UTC),
+            mapping_version=values["mapping_version"],
+        )
+
+
 class CrimeLakeResources(dg.ConfigurableResource):
     """Crime lake paths and Backblaze B2 storage configuration"""
 
     bucket: str = "s3://crimenet-data"
-    delta_bucket: str = "b2://crimenet-data"
     crosswalk_path: str | None = None
     local_fixture_root: str | None = None
 
@@ -134,28 +201,6 @@ class CrimeLakeResources(dg.ConfigurableResource):
             "max_retries": 5,
         }
 
-    @property
-    def delta_storage_options(self) -> dict[str, str]:
-        """Native B2/OpenDAL options retained for Delta-backed layers."""
-
-        environment = {
-            "B2_KEY_ID": os.environ.get("B2_KEY_ID"),
-            "B2_APPLICATION_KEY": os.environ.get("B2_APPLICATION_KEY"),
-            "B2_BUCKET_ID": os.environ.get("B2_BUCKET_ID"),
-        }
-
-        missing = sorted(name for name, value in environment.items() if not value)
-        if missing:
-            raise RuntimeError(
-                "Missing native Backblaze B2 configuration: " + ", ".join(missing)
-            )
-
-        return {
-            "opendal.application_key_id": environment["B2_KEY_ID"],
-            "opendal.application_key": environment["B2_APPLICATION_KEY"],
-            "opendal.bucket_id": environment["B2_BUCKET_ID"],
-        }
-
     def s3_client(self):
         """Build a boto3 client from the same centralized B2 configuration."""
 
@@ -181,20 +226,16 @@ class CrimeLakeResources(dg.ConfigurableResource):
         return f"{self.bucket.rstrip('/')}/raw_files/landing"
 
     @property
-    def delta_root(self) -> str:
-        return self.delta_bucket.rstrip("/")
-
-    @property
     def bronze_root(self) -> str:
         return f"{self.bucket.rstrip('/')}/bronze"
 
     @property
     def silver_root(self) -> str:
-        return f"{self.delta_root}/silver"
+        return f"{self.bucket.rstrip('/')}/silver"
 
     @property
     def gold_root(self) -> str:
-        return f"{self.delta_root}/gold"
+        return f"{self.bucket.rstrip('/')}/gold"
 
     @property
     def quality_root(self) -> str:
@@ -326,6 +367,35 @@ class CrimeLakeResources(dg.ConfigurableResource):
             for item in response.get("Contents", [])
         )
 
+    def _prefix_has_objects(self, uri: str) -> bool:
+        if not uri.startswith("s3://"):
+            path = Path(uri)
+            return path.exists() and any(path.rglob("*"))
+        bucket, prefix = self._s3_location(f"{uri.rstrip('/')}/placeholder")
+        response = self.s3_client().list_objects_v2(
+            Bucket=bucket,
+            Prefix=prefix.removesuffix("placeholder"),
+            MaxKeys=1,
+        )
+        return bool(response.get("KeyCount", 0))
+
+    def _parquet_file_count(self, snapshot_uri: str) -> int:
+        if not snapshot_uri.startswith("s3://"):
+            return sum(1 for _ in Path(snapshot_uri).rglob("*.parquet"))
+        bucket, prefix = self._s3_location(
+            f"{snapshot_uri.rstrip('/')}/placeholder"
+        )
+        paginator = self.s3_client().get_paginator("list_objects_v2")
+        return sum(
+            1
+            for page in paginator.paginate(
+                Bucket=bucket,
+                Prefix=prefix.removesuffix("placeholder"),
+            )
+            for item in page.get("Contents", [])
+            if str(item.get("Key", "")).endswith(".parquet")
+        )
+
     def write_bronze_snapshot(
         self,
         lf: pl.LazyFrame,
@@ -453,12 +523,26 @@ class CrimeLakeResources(dg.ConfigurableResource):
     @property
     def canonical_crosswalk_uri(self) -> str:
         return self.crosswalk_path or (
-            f"{self.landing_root}/reference/canonical_crime_crosswalk_v1_4.csv"
+            f"{self.landing_root}/reference/canonical_crime_crosswalk_v1_5.csv"
         )
 
     @property
-    def silver_crime_offenses_uri(self) -> str:
+    def silver_crime_offenses_root(self) -> str:
         return f"{self.silver_root.rstrip('/')}/crime_offenses"
+
+    @property
+    def silver_crime_offenses_uri(self) -> str:
+        """Compatibility alias for the one logical unified Silver root."""
+
+        return self.silver_crime_offenses_root
+
+    def silver_snapshot_uri(self, snapshot_id: str) -> str:
+        if not snapshot_id or "/" in snapshot_id or "\\" in snapshot_id:
+            raise ValueError(f"Invalid Silver snapshot ID: {snapshot_id!r}")
+        return f"{self.silver_crime_offenses_root}/snapshot_id={snapshot_id}"
+
+    def _silver_pointer_uri(self) -> str:
+        return f"{self.silver_crime_offenses_root}/{SILVER_LATEST_POINTER}"
 
     def resolve_crosswalk(self) -> pl.LazyFrame:
         storage_options = (
@@ -471,6 +555,11 @@ class CrimeLakeResources(dg.ConfigurableResource):
             storage_options=storage_options,
             credential_provider=None,
         )
+
+    def canonical_crosswalk_sha256(self) -> str:
+        return hashlib.sha256(
+            self._read_object(self.canonical_crosswalk_uri)
+        ).hexdigest()
 
     def scan_source(self, source_key: str) -> pl.LazyFrame:
         config = get_source(source_key).config
@@ -492,46 +581,86 @@ class CrimeLakeResources(dg.ConfigurableResource):
             return frames[0]
         return pl.concat(frames, how="diagonal_relaxed")
 
-    def scan_source_delta(self, source_key: str, schema: str) -> pl.LazyFrame:
-        if schema == "bronze":
-            raise ValueError("Bronze is Parquet-backed; use scan_bronze_snapshot()")
-        delta_uri = self.resolve_source_path(source_key, schema)
-
-        # Resolve the current Delta snapshot through native B2/OpenDAL.
-        table = deltalake.DeltaTable(
-            delta_uri,
-            storage_options=self.delta_storage_options,
+    def resolve_current_silver_snapshot(self) -> str:
+        pointer = SilverSnapshotPointer.from_json(
+            self._read_object(self._silver_pointer_uri())
         )
+        expected_uri = self.silver_snapshot_uri(pointer.snapshot_id)
+        if pointer.snapshot_uri != expected_uri:
+            raise ValueError(
+                "Silver snapshot pointer URI mismatch: "
+                f"expected {expected_uri!r}, found {pointer.snapshot_uri!r}"
+            )
+        if not self._object_exists(
+            f"{pointer.snapshot_uri}/{SILVER_SUCCESS_MARKER}"
+        ):
+            raise RuntimeError(
+                "Silver snapshot pointer references an incomplete snapshot: "
+                f"{pointer.snapshot_uri}"
+            )
+        return pointer.snapshot_uri
 
-        b2_files = table.file_uris()
-
-        if not b2_files:
-            raise RuntimeError(f"Delta table contains no active files: {delta_uri}")
-
-        delta_prefix = self.delta_bucket.rstrip("/") + "/"
-        s3_prefix = self.bucket.rstrip("/") + "/"
-
-        s3_files = []
-
-        for uri in b2_files:
-            if not uri.startswith(delta_prefix):
-                raise ValueError(
-                    f"Unexpected Delta file URI {uri!r}; "
-                    f"expected prefix {delta_prefix!r}"
-                )
-
-            s3_files.append(s3_prefix + uri.removeprefix(delta_prefix))
-
-        # Polars reads the physical Parquet files through B2's
-        # S3-compatible endpoint.
-        lf = pl.scan_parquet(
-            s3_files,
+    def _scan_silver_snapshot(
+        self,
+        snapshot_uri: str,
+        *,
+        require_success: bool,
+    ) -> pl.LazyFrame:
+        root_prefix = f"{self.silver_crime_offenses_root}/snapshot_id="
+        if not snapshot_uri.startswith(root_prefix):
+            raise ValueError(
+                "Silver snapshot URI is outside the unified Silver root: "
+                f"{snapshot_uri!r}"
+            )
+        if require_success and not self._object_exists(
+            f"{snapshot_uri}/{SILVER_SUCCESS_MARKER}"
+        ):
+            raise RuntimeError(f"Cannot scan incomplete Silver snapshot: {snapshot_uri}")
+        scanned = pl.scan_parquet(
+            f"{snapshot_uri}/**/*.parquet",
             storage_options=self.storage_options,
+            credential_provider=None,
             hive_partitioning=True,
+            hive_schema={
+                "snapshot_id": pl.String,
+                "source_city": pl.String,
+                "occurrence_year": pl.Int16,
+            },
         )
-        if schema == "silver":
-            return lf.filter(pl.col("source_city") == source_key)
-        return lf
+        available = set(scanned.collect_schema().names())
+        missing = set(CANONICAL_CRIME_SCHEMA) - available
+        if missing:
+            raise ValueError(
+                f"Silver snapshot is missing canonical columns: {sorted(missing)}"
+            )
+        return scanned.select(
+            pl.col(name).cast(dtype, strict=False).alias(name)
+            for name, dtype in CANONICAL_CRIME_SCHEMA.items()
+        )
+
+    def scan_silver_snapshot(
+        self,
+        snapshot_uri: str | None = None,
+    ) -> pl.LazyFrame:
+        current_uri = snapshot_uri or self.resolve_current_silver_snapshot()
+        return self._scan_silver_snapshot(current_uri, require_success=True)
+
+    def read_silver_manifest(
+        self,
+        snapshot_uri: str | None = None,
+    ) -> dict[str, object]:
+        current_uri = snapshot_uri or self.resolve_current_silver_snapshot()
+        if not self._object_exists(f"{current_uri}/{SILVER_SUCCESS_MARKER}"):
+            raise RuntimeError(f"Cannot read incomplete Silver snapshot: {current_uri}")
+        try:
+            document = json.loads(
+                self._read_object(f"{current_uri}/{SILVER_MANIFEST}")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError(f"Malformed Silver manifest: {current_uri}") from error
+        if not isinstance(document, dict):
+            raise TypeError("Malformed Silver manifest: expected an object")
+        return document
 
     def get_source_fixture(self, source_key: str) -> pl.LazyFrame:
         get_source(source_key)
@@ -550,30 +679,388 @@ class CrimeLakeResources(dg.ConfigurableResource):
             else PROJECT_ROOT
             / "src"
             / "crimenet_data"
-            / "canonical_crime_crosswalk_v1_4.csv"
+            / "artifacts"
+            / "canonical_crime_crosswalk_v1_5.csv"
         )
         return pl.scan_csv(path)
 
-    def write_delta_table(
+    @staticmethod
+    def canonical_schema_document() -> dict[str, str]:
+        return {name: str(dtype) for name, dtype in CANONICAL_CRIME_SCHEMA.items()}
+
+    @classmethod
+    def canonical_schema_sha256(cls) -> str:
+        payload = json.dumps(
+            cls.canonical_schema_document(),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    @staticmethod
+    def _silver_quality_summary(
+        lf: pl.LazyFrame,
+        *,
+        mapping_version: str,
+    ) -> dict[str, object]:
+        actual_schema = lf.collect_schema()
+        if actual_schema != CANONICAL_CRIME_SCHEMA:
+            raise ValueError(
+                "Silver snapshot schema mismatch: "
+                f"expected={CANONICAL_CRIME_SCHEMA}, actual={actual_schema}"
+            )
+        mapped = pl.col("canonical_mapping_found").fill_null(False)
+
+        # A source row is considered to have populated taxonomy only when
+        # one of that source's configured canonical-crosswalk keys is
+        # populated. Do not treat unrelated source taxonomy fields as
+        # evidence that a mapping should exist.
+        #
+        # Example: Atlanta current APD rows can legitimately have
+        # source_offense_code="NOT_APPL" while
+        # source_offense_description is null. Atlanta keys its crosswalk on
+        # source_offense_description, so those rows are intentionally
+        # unmatched rather than populated-key crosswalk failures.
+        source_taxonomy_expressions: list[pl.Expr] = []
+
+        for source_key in SOURCE_KEYS:
+            crosswalk_keys = tuple(
+                get_source(source_key).config.crosswalk_keys
+            )
+            if not crosswalk_keys:
+                continue
+
+            key_populated = pl.any_horizontal(
+                *(
+                    pl.col(column)
+                    .cast(pl.String, strict=False)
+                    .fill_null("")
+                    .str.strip_chars()
+                    .ne("")
+                    for column in crosswalk_keys
+                )
+            )
+
+            source_taxonomy_expressions.append(
+                (pl.col("source_city") == source_key)
+                & key_populated
+            )
+
+        taxonomy_populated = (
+            pl.any_horizontal(*source_taxonomy_expressions)
+            .fill_null(False)
+            if source_taxonomy_expressions
+            else pl.lit(False)
+        )
+        summary = (
+            lf.select(
+                pl.len().alias("row_count"),
+                pl.col("source_city").n_unique().alias("source_count"),
+                pl.col("crime_id").n_unique().alias("unique_crime_ids"),
+                pl.col("crime_id").null_count().alias("null_crime_ids"),
+                pl.col("source_city").null_count().alias("null_source_cities"),
+                pl.col("source_record_id")
+                .null_count()
+                .alias("null_source_record_ids"),
+                pl.col("occurrence_timestamp")
+                .null_count()
+                .alias("null_occurrence_timestamps"),
+                pl.col("occurrence_year")
+                .null_count()
+                .alias("null_occurrence_years"),
+                pl.col("latitude").null_count().alias("null_latitudes"),
+                pl.col("longitude").null_count().alias("null_longitudes"),
+                (~pl.col("latitude").is_finite())
+                .fill_null(False)
+                .sum()
+                .alias("nonfinite_latitudes"),
+                (~pl.col("longitude").is_finite())
+                .fill_null(False)
+                .sum()
+                .alias("nonfinite_longitudes"),
+                (
+                    (~pl.col("latitude").is_between(-90.0, 90.0))
+                    | (~pl.col("longitude").is_between(-180.0, 180.0))
+                )
+                .fill_null(False)
+                .sum()
+                .alias("world_bounds_violations"),
+                (
+                    (pl.col("latitude") == 0.0)
+                    & (pl.col("longitude") == 0.0)
+                )
+                .fill_null(False)
+                .sum()
+                .alias("zero_zero_coordinates"),
+                (~pl.col("occurrence_year").is_between(2014, 2026))
+                .fill_null(False)
+                .sum()
+                .alias("occurrence_year_out_of_range"),
+                (
+                    pl.col("occurrence_timestamp").dt.year()
+                    != pl.col("occurrence_year").cast(pl.Int32)
+                )
+                .fill_null(False)
+                .sum()
+                .alias("occurrence_year_mismatch"),
+                ((~mapped) & taxonomy_populated)
+                .sum()
+                .alias("unexpected_populated_unmapped_rows"),
+                pl.col("review_required")
+                .fill_null(False)
+                .sum()
+                .alias("review_required_rows"),
+                pl.col("include_in_model")
+                .fill_null(False)
+                .sum()
+                .alias("include_in_model_rows"),
+                (
+                    mapped
+                    & (pl.col("mapping_version").fill_null("") != mapping_version)
+                )
+                .sum()
+                .alias("wrong_mapping_version_rows"),
+                (
+                    pl.col("include_in_model").fill_null(False)
+                    & (pl.col("mapping_action").fill_null("") != "map")
+                )
+                .sum()
+                .alias("included_but_not_map_rows"),
+                (
+                    (pl.col("mapping_action").fill_null("") == "map")
+                    & ~pl.col("include_in_model").fill_null(False)
+                )
+                .sum()
+                .alias("map_but_not_included_rows"),
+                (
+                    pl.col("include_in_model").fill_null(False)
+                    & pl.any_horizontal(
+                        pl.col("canonical_family_code").is_null(),
+                        pl.col("canonical_offense_family").is_null(),
+                        pl.col("canonical_subtype_code").is_null(),
+                        pl.col("canonical_offense_subtype").is_null(),
+                    )
+                )
+                .sum()
+                .alias("modeled_rows_missing_taxonomy"),
+                (
+                    pl.col("crime_id")
+                    != pl.concat_str(
+                        [pl.col("source_city"), pl.col("source_record_id")],
+                        separator=":",
+                    )
+                )
+                .fill_null(False)
+                .sum()
+                .alias("crime_id_contract_violations"),
+                (
+                    pl.col("mapping_action").is_not_null()
+                    & ~pl.col("mapping_action").is_in(
+                        ["map", "drop", "exclude_non_criminal"]
+                    )
+                )
+                .sum()
+                .alias("unknown_mapping_action_rows"),
+                pl.col("occurrence_timestamp")
+                .min()
+                .alias("min_occurrence_timestamp"),
+                pl.col("occurrence_timestamp")
+                .max()
+                .alias("max_occurrence_timestamp"),
+            )
+            .collect(engine="streaming")
+            .row(0, named=True)
+        )
+        summary["duplicate_crime_ids"] = int(summary["row_count"]) - int(
+            summary["unique_crime_ids"]
+        )
+        failures = [
+            name
+            for name in (
+                "null_crime_ids",
+                "null_source_cities",
+                "null_source_record_ids",
+                "null_occurrence_timestamps",
+                "null_occurrence_years",
+                "null_latitudes",
+                "null_longitudes",
+                "nonfinite_latitudes",
+                "nonfinite_longitudes",
+                "world_bounds_violations",
+                "zero_zero_coordinates",
+                "occurrence_year_out_of_range",
+                "occurrence_year_mismatch",
+                "unexpected_populated_unmapped_rows",
+                "review_required_rows",
+                "wrong_mapping_version_rows",
+                "included_but_not_map_rows",
+                "map_but_not_included_rows",
+                "modeled_rows_missing_taxonomy",
+                "crime_id_contract_violations",
+                "unknown_mapping_action_rows",
+                "duplicate_crime_ids",
+            )
+            if int(summary[name]) != 0
+        ]
+        if int(summary["row_count"]) == 0:
+            failures.append("row_count")
+        if failures:
+            raise RuntimeError(
+                "Silver snapshot quality gate failed: "
+                f"checks={failures}, summary={summary}"
+            )
+        return summary
+
+    def _encoded_partition_paths(self, snapshot_uri: str) -> list[str]:
+        if not snapshot_uri.startswith("s3://"):
+            return [
+                str(path.relative_to(Path(snapshot_uri)))
+                for path in Path(snapshot_uri).rglob("*")
+                if "%3D" in path.name
+            ]
+        bucket, prefix = self._s3_location(
+            f"{snapshot_uri.rstrip('/')}/placeholder"
+        )
+        paginator = self.s3_client().get_paginator("list_objects_v2")
+        return [
+            str(item.get("Key", ""))
+            for page in paginator.paginate(
+                Bucket=bucket,
+                Prefix=prefix.removesuffix("placeholder"),
+            )
+            for item in page.get("Contents", [])
+            if "%3D" in str(item.get("Key", ""))
+        ][:25]
+
+    def publish_silver_snapshot(
         self,
         lf: pl.LazyFrame,
-        target_uri: str,
-        partitioning_columns: Sequence[str],
-    ) -> None:
-        lf.sink_delta(
-            target_uri,
-            mode="overwrite",
-            storage_options=self.delta_storage_options,
+        *,
+        snapshot_id: str,
+        created_at_utc: datetime,
+        mapping_version: str,
+        schema_version: str,
+        crosswalk_sha256: str,
+        source_snapshots: Mapping[str, str],
+        per_source: Sequence[Mapping[str, object]],
+        git_commit_sha: str | None = None,
+    ) -> dict[str, object]:
+        """Write, validate, and atomically publish one immutable Silver snapshot."""
+
+        if created_at_utc.tzinfo is None:
+            raise ValueError("Silver snapshot created_at_utc must include a timezone")
+        snapshot_uri = self.silver_snapshot_uri(snapshot_id)
+        if self._prefix_has_objects(snapshot_uri):
+            raise RuntimeError(f"Silver snapshot prefix already exists: {snapshot_uri}")
+
+        partition_columns = ["source_city", "occurrence_year"]
+        prewrite = self._silver_quality_summary(lf, mapping_version=mapping_version)
+        if int(prewrite["source_count"]) != len(source_snapshots):
+            raise RuntimeError(
+                "Silver source count does not match recorded Bronze snapshots: "
+                f"rows={prewrite['source_count']}, inputs={len(source_snapshots)}"
+            )
+
+        lf.sink_parquet(
+            pl.PartitionBy(
+                snapshot_uri,
+                key=partition_columns,
+                include_key=False,
+            ),
+            compression="zstd",
+            compression_level=3,
+            storage_options=self.storage_options,
             credential_provider=None,
-            delta_write_options={
-                "schema_mode": "overwrite",
-                "partition_by": list(partitioning_columns),
-                "writer_properties": deltalake.WriterProperties(
-                    compression="zstd",
-                    compression_level=3,
-                ),
-            },
+            mkdir=True,
+            engine="streaming",
         )
+        if not self._snapshot_has_parquet(snapshot_uri):
+            raise RuntimeError(
+                f"Silver snapshot write produced no Parquet files: {snapshot_uri}"
+            )
+        encoded_paths = self._encoded_partition_paths(snapshot_uri)
+        if encoded_paths:
+            raise RuntimeError(
+                "Silver snapshot contains URL-encoded Hive partition paths: "
+                f"{encoded_paths}"
+            )
+
+        readback = self._scan_silver_snapshot(snapshot_uri, require_success=False)
+        postwrite = self._silver_quality_summary(
+            readback,
+            mapping_version=mapping_version,
+        )
+        if int(postwrite["row_count"]) != int(prewrite["row_count"]):
+            raise RuntimeError(
+                "Silver snapshot read-back row count mismatch: "
+                f"expected={prewrite['row_count']}, actual={postwrite['row_count']}"
+            )
+
+        manifest: dict[str, object] = {
+            "snapshot_id": snapshot_id,
+            "snapshot_uri": snapshot_uri,
+            "created_at_utc": created_at_utc.astimezone(UTC).isoformat(),
+            "schema_version": schema_version,
+            "mapping_version": mapping_version,
+            "crosswalk_sha256": crosswalk_sha256,
+            "row_count": int(postwrite["row_count"]),
+            "include_in_model_rows": int(postwrite["include_in_model_rows"]),
+            "source_count": int(postwrite["source_count"]),
+            "partition_columns": partition_columns,
+            "parquet_file_count": self._parquet_file_count(snapshot_uri),
+            "min_occurrence_timestamp": (
+                postwrite["min_occurrence_timestamp"].isoformat()
+                if postwrite["min_occurrence_timestamp"] is not None
+                else None
+            ),
+            "max_occurrence_timestamp": (
+                postwrite["max_occurrence_timestamp"].isoformat()
+                if postwrite["max_occurrence_timestamp"] is not None
+                else None
+            ),
+            "unexpected_populated_unmapped_rows": int(
+                postwrite["unexpected_populated_unmapped_rows"]
+            ),
+            "review_required_rows": int(postwrite["review_required_rows"]),
+            "source_snapshots": dict(source_snapshots),
+            "per_source": [dict(row) for row in per_source],
+            "canonical_schema": self.canonical_schema_document(),
+            "canonical_schema_sha256": self.canonical_schema_sha256(),
+        }
+        if git_commit_sha:
+            manifest["git_commit_sha"] = git_commit_sha
+
+        self._write_object(
+            f"{snapshot_uri}/{SILVER_MANIFEST}",
+            json.dumps(
+                manifest,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8"),
+            content_type="application/json",
+        )
+        self._write_object(
+            f"{snapshot_uri}/{SILVER_SUCCESS_MARKER}",
+            b"",
+            content_type="application/octet-stream",
+        )
+        pointer = SilverSnapshotPointer(
+            snapshot_id=snapshot_id,
+            snapshot_uri=snapshot_uri,
+            created_at_utc=created_at_utc.astimezone(UTC),
+            mapping_version=mapping_version,
+        )
+        self._write_object(
+            self._silver_pointer_uri(),
+            pointer.to_json(),
+            content_type="application/json",
+        )
+        return manifest
 
 
-__all__ = ["SOURCE_KEYS", "BronzeSnapshotPointer", "CrimeLakeResources"]
+__all__ = [
+    "SOURCE_KEYS",
+    "BronzeSnapshotPointer",
+    "CrimeLakeResources",
+    "SilverSnapshotPointer",
+]

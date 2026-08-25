@@ -1,6 +1,6 @@
 import polars as pl
 
-CANONICAL_MAPPING_VERSION = "crime_canonical_v1_4"
+CANONICAL_MAPPING_VERSION = "crime_canonical_v1_5"
 
 CANONICAL_CLASSIFICATION_COLUMNS = (
     "mapping_version",
