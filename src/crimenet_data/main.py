@@ -1,1281 +1,1427 @@
 #!/usr/bin/env python3
+
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
+import sys
+import time
+from datetime import UTC, datetime
 from pathlib import Path
-from time import perf_counter
+from typing import Any
+from urllib.parse import urlparse
 
+import boto3
 import polars as pl
-import polars_h3 as plh3
-
-from crimenet_data.resources.crime_lake import CrimeLakeResources
 
 
-HISTORY_ROOT = (
-    "s3://crimenet-data/gold/national_feature_store/"
-    "temporal/h3_r9/history"
-)
-ANNUAL_ROOT = (
-    "s3://crimenet-data/gold/national_feature_store/"
-    "temporal/h3_r9/annual"
+DEFAULT_EVENT_SPINE_ROOT = "s3://crimenet-data/gold/event_spine"
+DEFAULT_HISTORY_ROOT = (
+    "s3://crimenet-data/gold/national_feature_store/temporal/h3_r9/history"
 )
 
-DEFAULT_OUT = Path("artifacts/audits/exact_temporal_asof")
+# Current known-good production result. These are reference values, not
+# permanently valid invariants for all future snapshots.
+CURRENT_REFERENCE = {
+    "modeled_rows": 15_955_507,
+    "invalid_event_utc_rows": 455,
+    "joinable_rows": 15_955_052,
+    "history_unmatched_rows": 4_430,
+    "event_spine_rows": 15_950_622,
+    "coverage_pct": 99.96938361156434,
+}
 
-pl.Config.set_tbl_rows(100)
-pl.Config.set_tbl_cols(40)
-pl.Config.set_fmt_str_lengths(100)
+REQUIRED_COLUMNS = {
+    "crime_id",
+    "source_city",
+    "occurrence_timestamp_utc",
+    "osm_h3_cell_id",
+    "feature_available_at",
+    "feature_version_id",
+}
+
+HISTORY_KEY = [
+    "osm_h3_cell_id",
+    "feature_available_at",
+]
+
+HISTORY_REQUIRED_COLUMNS = {
+    "osm_h3_cell_id",
+    "feature_available_at",
+    "feature_version_id",
+}
+
+COMPONENT_AVAILABILITY_COLUMNS = [
+    "osm_available_at",
+    "acs_release_date",
+    "tiger_release_date",
+]
 
 
-def pct_expr(numer: str, denom: str, alias: str) -> pl.Expr:
-    return (
-        pl.when(pl.col(denom) > 0)
-        .then(
-            100.0
-            * pl.col(numer).cast(pl.Float64)
-            / pl.col(denom).cast(pl.Float64)
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+class AuditFailure(RuntimeError):
+    pass
+
+
+def log(message: str) -> None:
+    now = datetime.now(UTC).strftime("%H:%M:%S")
+    print(f"[{now}] {message}", flush=True)
+
+
+def human_int(value: int | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:,}"
+
+
+def require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
+
+def derive_region(endpoint_url: str) -> str:
+    match = re.search(
+        r"https?://s3\.([^.]+)\.backblazeb2\.com",
+        endpoint_url,
+    )
+    if match:
+        return match.group(1)
+
+    return os.getenv("AWS_REGION", "us-east-1")
+
+
+def b2_config() -> dict[str, str]:
+    endpoint = require_env("B2_ENDPOINT_URL")
+
+    return {
+        "key_id": require_env("B2_KEY_ID"),
+        "application_key": require_env("B2_APPLICATION_KEY"),
+        "endpoint_url": endpoint,
+        "region": derive_region(endpoint),
+    }
+
+
+def polars_storage_options(config: dict[str, str]) -> dict[str, str]:
+    return {
+        "aws_access_key_id": config["key_id"],
+        "aws_secret_access_key": config["application_key"],
+        "aws_endpoint_url": config["endpoint_url"],
+        "aws_region": config["region"],
+    }
+
+
+def s3_client(config: dict[str, str]):
+    return boto3.client(
+        "s3",
+        endpoint_url=config["endpoint_url"],
+        aws_access_key_id=config["key_id"],
+        aws_secret_access_key=config["application_key"],
+        region_name=config["region"],
+    )
+
+
+def split_s3_uri(uri: str) -> tuple[str, str]:
+    parsed = urlparse(uri)
+
+    if parsed.scheme != "s3":
+        raise ValueError(f"Expected s3:// URI, got: {uri}")
+
+    return parsed.netloc, parsed.path.lstrip("/")
+
+
+def object_exists(client, uri: str) -> bool:
+    bucket, key = split_s3_uri(uri)
+
+    try:
+        client.head_object(Bucket=bucket, Key=key)
+        return True
+    except Exception:
+        return False
+
+
+def read_object_text(client, uri: str) -> str:
+    bucket, key = split_s3_uri(uri)
+    response = client.get_object(Bucket=bucket, Key=key)
+    return response["Body"].read().decode("utf-8").strip()
+
+
+def resolve_latest_snapshot(
+    client,
+    event_spine_root: str,
+) -> str:
+    pointer_uri = f"{event_spine_root.rstrip('/')}/_latest"
+
+    raw = read_object_text(client, pointer_uri)
+
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        value = raw
+
+    if isinstance(value, str):
+        if value.startswith("s3://"):
+            return value.rstrip("/")
+
+        if value.startswith("snapshot_id="):
+            return f"{event_spine_root.rstrip('/')}/{value}"
+
+        return (
+            f"{event_spine_root.rstrip('/')}/"
+            f"snapshot_id={value}"
         )
-        .otherwise(None)
-        .alias(alias)
-    )
 
+    if isinstance(value, dict):
+        if value.get("snapshot_uri"):
+            return str(value["snapshot_uri"]).rstrip("/")
 
-def weighted(condition: pl.Expr, weight: str, alias: str) -> pl.Expr:
-    return (
-        pl.when(condition)
-        .then(pl.col(weight))
-        .otherwise(0)
-        .sum()
-        .alias(alias)
-    )
-
-
-def print_section(title: str) -> None:
-    print("\n" + "=" * 120)
-    print(title)
-    print("=" * 120)
-
-
-def save_df(df: pl.DataFrame, out_dir: Path, name: str) -> None:
-    path = out_dir / f"{name}.parquet"
-    df.write_parquet(path, compression="zstd")
-    print(f"[saved] {path}")
-
-
-def history_scan(lake: CrimeLakeResources) -> pl.LazyFrame:
-    return pl.scan_parquet(
-        f"{HISTORY_ROOT}/feature_available_date=*/version_id=*/part-*.parquet",
-        storage_options=lake.storage_options,
-        credential_provider=None,
-        hive_partitioning=False,
-    )
-
-
-def annual_scan(lake: CrimeLakeResources) -> pl.LazyFrame:
-    return pl.scan_parquet(
-        f"{ANNUAL_ROOT}/as_of_year=*/part-*.parquet",
-        storage_options=lake.storage_options,
-        credential_provider=None,
-        hive_partitioning=False,
-    )
-
-
-def localize_event_times(events: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """
-    Silver occurrence_timestamp is source-local wall-clock time.
-    Convert it to UTC before comparing with feature_available_at.
-
-    Ambiguous DST fall-back times use the EARLIEST possible UTC instant,
-    which is conservative for leakage safety: it cannot make later features
-    appear available earlier than they really were.
-
-    Non-existent spring-forward local times become null and are audited.
-    """
-    timezones = (
-        events
-        .select("source_timezone")
-        .drop_nulls()
-        .unique()
-        .sort("source_timezone")
-        .get_column("source_timezone")
-        .to_list()
-    )
-
-    parts: list[pl.DataFrame] = []
-
-    for tz in timezones:
-        part = (
-            events
-            .filter(pl.col("source_timezone") == tz)
-            .with_columns(
-                pl.col("occurrence_timestamp")
-                .dt.replace_time_zone(
-                    tz,
-                    ambiguous="earliest",
-                    non_existent="null",
-                )
-                .dt.convert_time_zone("UTC")
-                .alias("event_at_utc")
+        if value.get("snapshot_id"):
+            return (
+                f"{event_spine_root.rstrip('/')}/"
+                f"snapshot_id={value['snapshot_id']}"
             )
-        )
-        parts.append(part)
 
-    null_tz = events.filter(pl.col("source_timezone").is_null())
-    if null_tz.height:
-        parts.append(
-            null_tz.with_columns(
-                pl.lit(None, dtype=pl.Datetime("us", "UTC"))
-                .alias("event_at_utc")
+    raise RuntimeError(
+        f"Could not understand _latest pointer contents: {raw!r}"
+    )
+
+
+def scan_parquet_root(
+    uri: str,
+    storage_options: dict[str, str],
+) -> pl.LazyFrame:
+    return pl.scan_parquet(
+        f"{uri.rstrip('/')}/**/*.parquet",
+        storage_options=storage_options,
+        hive_partitioning=True,
+    )
+
+
+def to_jsonable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): to_jsonable(v) for k, v in value.items()}
+
+    if isinstance(value, list):
+        return [to_jsonable(v) for v in value]
+
+    if isinstance(value, tuple):
+        return [to_jsonable(v) for v in value]
+
+    if isinstance(value, datetime):
+        return value.isoformat()
+
+    return value
+
+
+def collect_one(lf: pl.LazyFrame) -> dict[str, Any]:
+    return lf.collect(engine="streaming").row(0, named=True)
+
+
+def fail_if(condition: bool, message: str, failures: list[str]) -> None:
+    if condition:
+        failures.append(message)
+        log(f"FAIL: {message}")
+
+
+def pass_log(message: str) -> None:
+    log(f"PASS: {message}")
+
+
+# ---------------------------------------------------------------------------
+# Publication audit
+# ---------------------------------------------------------------------------
+
+
+def audit_publication(
+    client,
+    snapshot_uri: str,
+    event_spine_root: str,
+) -> dict[str, Any]:
+    log("AUDIT 1: publication / snapshot integrity")
+
+    success_uri = f"{snapshot_uri}/_SUCCESS"
+    manifest_uri = f"{snapshot_uri}/manifest.json"
+
+    success_exists = object_exists(client, success_uri)
+    manifest_exists = object_exists(client, manifest_uri)
+
+    latest_snapshot = resolve_latest_snapshot(
+        client,
+        event_spine_root,
+    )
+
+    manifest = None
+
+    if manifest_exists:
+        try:
+            manifest = json.loads(
+                read_object_text(client, manifest_uri)
             )
+        except Exception as exc:
+            manifest = {
+                "_parse_error": repr(exc),
+            }
+
+    result = {
+        "snapshot_uri": snapshot_uri,
+        "_SUCCESS_exists": success_exists,
+        "manifest_exists": manifest_exists,
+        "latest_snapshot_uri": latest_snapshot,
+        "is_current_latest": (
+            latest_snapshot.rstrip("/") == snapshot_uri.rstrip("/")
+        ),
+        "manifest": manifest,
+    }
+
+    if success_exists:
+        pass_log("_SUCCESS exists")
+    else:
+        log("FAIL: _SUCCESS missing")
+
+    if manifest_exists:
+        pass_log("manifest.json exists")
+    else:
+        log("FAIL: manifest.json missing")
+
+    if result["is_current_latest"]:
+        pass_log("snapshot matches _latest")
+    else:
+        log(
+            "WARN: audited snapshot is not the snapshot currently "
+            "referenced by _latest"
         )
 
-    localized = pl.concat(parts, how="vertical_relaxed")
-
-    tz_audit = (
-        localized.lazy()
-        .group_by("source_timezone")
-        .agg(
-            pl.len().alias("events"),
-            pl.col("event_at_utc").null_count().alias("utc_conversion_nulls"),
-        )
-        .with_columns(
-            pct_expr("utc_conversion_nulls", "events", "utc_conversion_null_pct")
-        )
-        .sort("utc_conversion_nulls", descending=True)
-        .collect()
-    )
-
-    return localized, tz_audit
+    return result
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--out",
-        type=Path,
-        default=DEFAULT_OUT,
-        help="Local directory for audit artifacts.",
-    )
-    parser.add_argument(
-        "--all-silver",
-        action="store_true",
-        help="Audit all Silver rows instead of include_in_model rows only.",
-    )
-    parser.add_argument(
-        "--worst",
-        type=int,
-        default=500,
-        help="Number of worst/example rows to persist per diagnostic.",
-    )
-    args = parser.parse_args()
+# ---------------------------------------------------------------------------
+# Basic schema / grain / null audit
+# ---------------------------------------------------------------------------
 
-    out_dir: Path = args.out
-    out_dir.mkdir(parents=True, exist_ok=True)
 
-    started = perf_counter()
-    lake = CrimeLakeResources()
+def audit_basic_integrity(
+    spine: pl.LazyFrame,
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    log("AUDIT 2: schema, grain, uniqueness, and required nulls")
 
-    # ==================================================================================
-    # A. SILVER EVENTS
-    # ==================================================================================
-    print_section("A. LOAD MODELED SILVER EVENTS")
+    schema = spine.collect_schema()
+    columns = schema.names()
 
-    silver = lake.scan_silver_snapshot()
-    if not args.all_silver:
-        silver = silver.filter(
-            pl.col("include_in_model").fill_null(False)
+    missing = sorted(REQUIRED_COLUMNS - set(columns))
+
+    if missing:
+        raise AuditFailure(
+            f"Event spine missing required columns: {missing}"
         )
 
-    event_cols = [
-        "crime_id",
-        "source_city",
-        "occurrence_timestamp",
-        "occurrence_year",
-        "source_timezone",
-        "latitude",
-        "longitude",
+    exprs: list[pl.Expr] = [
+        pl.len().alias("row_count"),
+        pl.col("crime_id").n_unique().alias("unique_crime_ids"),
     ]
 
-    events = (
-        silver
-        .select(event_cols)
-        .with_columns(
-            plh3.latlng_to_cell(
-                "latitude",
-                "longitude",
-                resolution=9,
-                return_dtype=pl.UInt64,
-            )
-            .cast(pl.Int64, strict=False)
-            .alias("osm_h3_cell_id")
+    for column in sorted(REQUIRED_COLUMNS):
+        exprs.append(
+            pl.col(column)
+            .null_count()
+            .alias(f"null__{column}")
         )
-        .collect(engine="streaming")
+
+    stats = collect_one(spine.select(exprs))
+
+    stats["duplicate_crime_ids"] = (
+        stats["row_count"] - stats["unique_crime_ids"]
     )
 
-    print(f"Silver events loaded: {events.height:,}")
+    failures: list[str] = []
 
-    events, tz_audit = localize_event_times(events)
-    print("\nTIMEZONE CONVERSION AUDIT")
-    print(tz_audit)
-    save_df(tz_audit, out_dir, "timezone_conversion_audit")
+    fail_if(
+        stats["duplicate_crime_ids"] != 0,
+        f"crime_id grain violation: "
+        f"{stats['duplicate_crime_ids']:,} duplicate rows",
+        failures,
+    )
 
-    event_quality = events.select(
-        pl.len().alias("events"),
-        pl.col("crime_id").n_unique().alias("unique_crime_ids"),
-        pl.col("osm_h3_cell_id").null_count().alias("null_h3"),
-        pl.col("occurrence_timestamp").null_count().alias("null_occurrence_timestamp"),
-        pl.col("source_timezone").null_count().alias("null_source_timezone"),
-        pl.col("event_at_utc").null_count().alias("null_event_at_utc"),
+    for column in sorted(REQUIRED_COLUMNS):
+        count = stats[f"null__{column}"]
+
+        fail_if(
+            count != 0,
+            f"{column} contains {count:,} null rows",
+            failures,
+        )
+
+    if not failures:
+        pass_log(
+            f"one row per crime_id across "
+            f"{stats['row_count']:,} rows"
+        )
+        pass_log("all required publication columns are non-null")
+
+    return stats, columns, failures
+
+
+# ---------------------------------------------------------------------------
+# Temporal leakage / chronology audit
+# ---------------------------------------------------------------------------
+
+
+def audit_temporal_integrity(
+    spine: pl.LazyFrame,
+    columns: list[str],
+) -> tuple[dict[str, Any], list[str]]:
+    log("AUDIT 3: temporal leakage and feature chronology")
+
+    exprs: list[pl.Expr] = [
         (
-            pl.col("occurrence_timestamp").dt.year()
-            != pl.col("occurrence_year")
+            pl.col("feature_available_at")
+            > pl.col("occurrence_timestamp_utc")
         )
         .fill_null(False)
         .sum()
-        .alias("occurrence_year_mismatch"),
-    )
-    print("\nEVENT QUALITY")
-    print(event_quality)
+        .alias("future_feature_leaks"),
+        pl.col("occurrence_timestamp_utc")
+        .min()
+        .alias("min_occurrence_timestamp_utc"),
+        pl.col("occurrence_timestamp_utc")
+        .max()
+        .alias("max_occurrence_timestamp_utc"),
+        pl.col("feature_available_at")
+        .min()
+        .alias("min_feature_available_at"),
+        pl.col("feature_available_at")
+        .max()
+        .alias("max_feature_available_at"),
+        pl.col("feature_version_id")
+        .n_unique()
+        .alias("feature_versions_used"),
+    ]
 
-    # ==================================================================================
-    # B. HISTORY STORE CONTRACT
-    # ==================================================================================
-    print_section("B. LOAD AND ATTACK TEMPORAL HISTORY STORE")
+    component_columns = [
+        c for c in COMPONENT_AVAILABILITY_COLUMNS if c in columns
+    ]
 
-    hscan = history_scan(lake)
-    hschema = hscan.collect_schema()
-    hnames = set(hschema.names())
-
-    required = {
-        "osm_h3_cell_id",
-        "feature_available_at",
-        "feature_version_id",
-    }
-    missing_required = sorted(required - hnames)
-    if missing_required:
-        raise RuntimeError(
-            f"History store missing required columns: {missing_required}"
+    for component in component_columns:
+        exprs.append(
+            (
+                pl.col(component)
+                > pl.col("feature_available_at")
+            )
+            .fill_null(False)
+            .sum()
+            .alias(f"future_component__{component}")
         )
 
-    optional_candidates = [
-        "osm_available_at",
-        "osm_snapshot_date",
-        "osm_snapshot_year",
-        "acs_release_date",
-        "acs_vintage",
-        "tiger_release_date",
-        "tiger_line_year",
-        "tract_geoid",
-        "state_fips",
-        "_socioeconomic_matched",
+    stats = collect_one(spine.select(exprs))
+
+    failures: list[str] = []
+
+    fail_if(
+        stats["future_feature_leaks"] != 0,
+        f"{stats['future_feature_leaks']:,} rows use a feature "
+        f"version from the future",
+        failures,
+    )
+
+    for component in component_columns:
+        count = stats[f"future_component__{component}"]
+
+        fail_if(
+            count != 0,
+            f"{component}: {count:,} chronology violations",
+            failures,
+        )
+
+    if not failures:
+        pass_log("zero future feature leaks")
+        pass_log("zero component availability chronology violations")
+
+    return stats, failures
+
+
+# ---------------------------------------------------------------------------
+# Timestamp reconstruction audit
+# ---------------------------------------------------------------------------
+
+
+def audit_timezone_reconstruction(
+    spine: pl.LazyFrame,
+    columns: list[str],
+) -> tuple[dict[str, Any], list[str]]:
+    log("AUDIT 4: source-local timestamp → UTC reconstruction")
+
+    required = {
+        "occurrence_timestamp",
+        "source_timezone",
+        "occurrence_timestamp_utc",
+    }
+
+    if not required.issubset(columns):
+        log(
+            "SKIP: occurrence_timestamp/source_timezone not all "
+            "present in published spine"
+        )
+        return {"skipped": True}, []
+
+    timezones_df = (
+        spine.select("source_timezone")
+        .drop_nulls()
+        .unique()
+        .sort("source_timezone")
+        .collect(engine="streaming")
+    )
+
+    timezones = timezones_df["source_timezone"].to_list()
+
+    expected: pl.Expr = pl.lit(
+        None,
+        dtype=pl.Datetime("us", time_zone="UTC"),
+    )
+
+    for timezone in reversed(timezones):
+        reconstructed = (
+            pl.col("occurrence_timestamp")
+            .dt.replace_time_zone(
+                timezone,
+                ambiguous="earliest",
+                non_existent="null",
+            )
+            .dt.convert_time_zone("UTC")
+        )
+
+        expected = (
+            pl.when(pl.col("source_timezone") == timezone)
+            .then(reconstructed)
+            .otherwise(expected)
+        )
+
+    result = collect_one(
+        spine.select(
+            (~expected.eq_missing(
+                pl.col("occurrence_timestamp_utc")
+            ))
+            .sum()
+            .alias("utc_reconstruction_mismatch_rows"),
+            pl.col("source_timezone")
+            .n_unique()
+            .alias("source_timezone_count"),
+        )
+    )
+
+    result["timezones"] = timezones
+
+    failures: list[str] = []
+
+    fail_if(
+        result["utc_reconstruction_mismatch_rows"] != 0,
+        f"{result['utc_reconstruction_mismatch_rows']:,} UTC "
+        f"timestamps do not reconstruct from source-local time",
+        failures,
+    )
+
+    if not failures:
+        pass_log(
+            "all event UTC timestamps reproduce exactly from "
+            "source-local timestamps"
+        )
+
+    return result, failures
+
+
+# ---------------------------------------------------------------------------
+# Spatial / occurrence-year audit
+# ---------------------------------------------------------------------------
+
+
+def audit_event_sanity(
+    spine: pl.LazyFrame,
+    columns: list[str],
+) -> tuple[dict[str, Any], list[str]]:
+    log("AUDIT 5: coordinate and occurrence-year sanity")
+
+    exprs: list[pl.Expr] = []
+    failures: list[str] = []
+
+    if {"latitude", "longitude"}.issubset(columns):
+        exprs.extend(
+            [
+                (
+                    pl.col("latitude").is_null()
+                    | (pl.col("latitude") < -90)
+                    | (pl.col("latitude") > 90)
+                )
+                .sum()
+                .alias("invalid_latitude_rows"),
+                (
+                    pl.col("longitude").is_null()
+                    | (pl.col("longitude") < -180)
+                    | (pl.col("longitude") > 180)
+                )
+                .sum()
+                .alias("invalid_longitude_rows"),
+            ]
+        )
+
+    if {
+        "occurrence_year",
+        "occurrence_timestamp",
+    }.issubset(columns):
+        exprs.append(
+            (
+                pl.col("occurrence_year")
+                != pl.col("occurrence_timestamp").dt.year()
+            )
+            .fill_null(True)
+            .sum()
+            .alias("occurrence_year_mismatch_rows")
+        )
+
+    if not exprs:
+        log("SKIP: no applicable coordinate/year fields")
+        return {"skipped": True}, []
+
+    stats = collect_one(spine.select(exprs))
+
+    for field, value in stats.items():
+        fail_if(
+            value != 0,
+            f"{field} = {value:,}",
+            failures,
+        )
+
+    if not failures:
+        pass_log("coordinate/year sanity checks clean")
+
+    return stats, failures
+
+
+# ---------------------------------------------------------------------------
+# Distribution / null-profile audit
+# ---------------------------------------------------------------------------
+
+
+def audit_distributions(
+    spine: pl.LazyFrame,
+    columns: list[str],
+) -> dict[str, Any]:
+    log("AUDIT 6: source/year distributions and null profile")
+
+    group_columns = ["source_city"]
+
+    if "occurrence_year" in columns:
+        group_columns.append("occurrence_year")
+
+    counts_df = (
+        spine.group_by(group_columns)
+        .agg(pl.len().alias("rows"))
+        .sort(group_columns)
+        .collect(engine="streaming")
+    )
+
+    null_exprs = [
+        pl.col(c).null_count().alias(c)
+        for c in columns
     ]
-    optional = [c for c in optional_candidates if c in hnames]
 
-    history_cols = [
-        "osm_h3_cell_id",
-        "feature_available_at",
-        "feature_version_id",
-        *optional,
-    ]
+    null_counts = collect_one(
+        spine.select(null_exprs)
+    )
 
-    print("History metadata columns:")
-    for c in history_cols:
-        print(f"  - {c}: {hschema[c]}")
+    row_count = int(
+        spine.select(pl.len())
+        .collect(engine="streaming")
+        .item()
+    )
 
-    history = (
-        hscan
-        .select(history_cols)
-        .with_columns(
-            pl.col("osm_h3_cell_id").cast(pl.Int64, strict=False),
+    null_profile = []
+
+    for column, null_count in null_counts.items():
+        null_count = int(null_count)
+
+        null_profile.append(
+            {
+                "column": column,
+                "null_count": null_count,
+                "null_pct": (
+                    100.0 * null_count / row_count
+                    if row_count
+                    else 0.0
+                ),
+            }
+        )
+
+    null_profile.sort(
+        key=lambda x: x["null_count"],
+        reverse=True,
+    )
+
+    log(
+        f"distribution groups: {counts_df.height:,}; "
+        f"columns profiled: {len(columns):,}"
+    )
+
+    return {
+        "source_year_counts": counts_df.to_dicts(),
+        "null_profile": null_profile,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Feature staleness
+# ---------------------------------------------------------------------------
+
+
+def audit_feature_staleness(
+    spine: pl.LazyFrame,
+) -> dict[str, Any]:
+    log("AUDIT 7: selected feature staleness")
+
+    age_days = (
+        (
+            pl.col("occurrence_timestamp_utc")
+            - pl.col("feature_available_at")
+        )
+        .dt.total_seconds()
+        / 86_400
+    )
+
+    result = collect_one(
+        spine.select(
+            age_days.min().alias("min_days"),
+            age_days.quantile(0.50).alias("p50_days"),
+            age_days.quantile(0.90).alias("p90_days"),
+            age_days.quantile(0.95).alias("p95_days"),
+            age_days.quantile(0.99).alias("p99_days"),
+            age_days.max().alias("max_days"),
+            (age_days > 365).sum().alias("rows_gt_1y"),
+            (age_days > 730).sum().alias("rows_gt_2y"),
+        )
+    )
+
+    log(
+        "feature age: "
+        f"p50={result['p50_days']:.2f}d "
+        f"p95={result['p95_days']:.2f}d "
+        f"p99={result['p99_days']:.2f}d"
+    )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Independent exact temporal as-of audit
+# ---------------------------------------------------------------------------
+
+
+def audit_exact_asof(
+    spine: pl.LazyFrame,
+    history_root: str,
+    storage_options: dict[str, str],
+) -> tuple[
+    dict[str, Any],
+    pl.DataFrame,
+    pl.DataFrame,
+    list[str],
+]:
+    log("AUDIT 8: independent exact temporal as-of reconstruction")
+
+    started = time.perf_counter()
+
+    events = (
+        spine.select(
+            "crime_id",
+            "osm_h3_cell_id",
+            "occurrence_timestamp_utc",
+            pl.col("feature_available_at")
+            .alias("spine_feature_available_at"),
+            pl.col("feature_version_id")
+            .alias("spine_feature_version_id"),
         )
         .collect(engine="streaming")
     )
 
-    print(f"\nHistory rows loaded: {history.height:,}")
-    print(
-        f"Unique H3 cells: "
-        f"{history.get_column('osm_h3_cell_id').n_unique():,}"
-    )
-    print(
-        f"Unique feature versions: "
-        f"{history.get_column('feature_version_id').n_unique():,}"
-    )
-    print(
-        f"Feature availability range: "
-        f"{history.get_column('feature_available_at').min()} -> "
-        f"{history.get_column('feature_available_at').max()}"
+    relevant_cells = (
+        events.select("osm_h3_cell_id")
+        .unique()
     )
 
-    # Hard key uniqueness check.
-    dup_history_keys = (
-        history.lazy()
-        .group_by(["osm_h3_cell_id", "feature_available_at"])
-        .agg(
-            pl.len().alias("rows"),
-            pl.col("feature_version_id").n_unique().alias("version_ids"),
-        )
-        .filter(pl.col("rows") > 1)
-        .sort("rows", descending=True)
-        .collect()
+    log(
+        f"independent audit event rows={events.height:,}; "
+        f"relevant H3 cells={relevant_cells.height:,}"
     )
 
-    print("\nDUPLICATE (H3, feature_available_at) KEYS")
-    print(dup_history_keys.head(args.worst))
-    save_df(
-        dup_history_keys.head(args.worst),
-        out_dir,
-        "duplicate_history_keys",
+    history_scan = scan_parquet_root(
+        history_root,
+        storage_options,
     )
 
-    if dup_history_keys.height:
-        raise RuntimeError(
-            "Temporal history violates unique (H3, feature_available_at) key. "
-            "Do not trust an as-of join until this is fixed."
+    history_schema = history_scan.collect_schema()
+    history_columns = history_schema.names()
+
+    missing = sorted(
+        HISTORY_REQUIRED_COLUMNS - set(history_columns)
+    )
+
+    if missing:
+        raise AuditFailure(
+            f"History missing required columns: {missing}"
         )
 
-    # Component availability must never exceed the composite availability time.
-    component_availability_cols = [
-        c
-        for c in [
-            "osm_available_at",
-            "acs_release_date",
-            "tiger_release_date",
-        ]
-        if c in history.columns
+    skinny_columns = [
+        "osm_h3_cell_id",
+        "feature_available_at",
+        "feature_version_id",
     ]
 
-    component_contract_exprs: list[pl.Expr] = []
-    for c in component_availability_cols:
-        component_contract_exprs.append(
-            (
-                pl.col(c).is_not_null()
-                & (
-                    pl.col(c)
+    skinny_columns += [
+        c
+        for c in COMPONENT_AVAILABILITY_COLUMNS
+        if c in history_columns
+    ]
+
+    history = (
+        history_scan
+        .select(skinny_columns)
+        .join(
+            relevant_cells.lazy(),
+            on="osm_h3_cell_id",
+            how="semi",
+        )
+        .collect(engine="streaming")
+    )
+
+    log(
+        f"filtered temporal history rows={history.height:,}; "
+        f"H3 cells="
+        f"{history['osm_h3_cell_id'].n_unique():,}"
+    )
+
+    duplicate_key_rows = (
+        history.group_by(HISTORY_KEY)
+        .len()
+        .filter(pl.col("len") > 1)
+        .select(pl.col("len").sum())
+        .item()
+    )
+
+    duplicate_key_rows = int(duplicate_key_rows or 0)
+
+    chronology_violations: dict[str, int] = {}
+
+    for component in COMPONENT_AVAILABILITY_COLUMNS:
+        if component not in history.columns:
+            continue
+
+        violations = (
+            history.select(
+                (
+                    pl.col(component)
                     > pl.col("feature_available_at")
                 )
+                .fill_null(False)
+                .sum()
             )
-            .sum()
-            .alias(f"{c}_after_feature_available_at")
+            .item()
         )
 
-    if component_contract_exprs:
-        component_contract = history.select(component_contract_exprs)
-        print("\nCOMPONENT -> FEATURE AVAILABILITY CONTRACT")
-        print(component_contract)
-        save_df(
-            component_contract,
-            out_dir,
-            "component_availability_contract",
-        )
+        chronology_violations[component] = int(violations)
 
-    # Sort per H3 to derive next legal feature transition.
-    history = (
-        history
-        .sort(["osm_h3_cell_id", "feature_available_at"])
-        .with_columns(
+    right = (
+        history.select(
+            "osm_h3_cell_id",
             pl.col("feature_available_at")
-            .shift(-1)
-            .over("osm_h3_cell_id")
-            .alias("next_feature_available_at")
-        )
-    )
-
-    # H3 temporal support bounds used to classify missing events.
-    support = (
-        history.lazy()
-        .group_by("osm_h3_cell_id")
-        .agg(
-            pl.col("feature_available_at")
-            .min()
-            .alias("first_feature_available_at"),
-            pl.col("feature_available_at")
-            .max()
-            .alias("last_feature_available_at"),
-            pl.len().alias("history_versions"),
+            .alias("expected_feature_available_at"),
             pl.col("feature_version_id")
-            .n_unique()
-            .alias("unique_feature_versions"),
+            .alias("expected_feature_version_id"),
         )
-        .collect()
+        .sort("expected_feature_available_at")
     )
 
-    # ==================================================================================
-    # C. EXACT BACKWARD AS-OF JOIN
-    # ==================================================================================
-    print_section("C. FULL EXACT BACKWARD AS-OF JOIN")
+    left = events.sort("occurrence_timestamp_utc")
 
-    joinable = events.filter(
-        pl.col("osm_h3_cell_id").is_not_null()
-        & pl.col("event_at_utc").is_not_null()
-    )
-
-    unjoinable = events.filter(
-        pl.col("osm_h3_cell_id").is_null()
-        | pl.col("event_at_utc").is_null()
-    )
-
-    print(f"Joinable events:   {joinable.height:,}")
-    print(f"Unjoinable events: {unjoinable.height:,}")
-
-    # Polars join_asof requires the as-of key to be sorted.
-    # The `by` predicate constrains matches to the same H3 cell.
-    left = joinable.sort("event_at_utc")
-    right = history.sort("feature_available_at")
-
-    t0 = perf_counter()
-    joined = left.join_asof(
+    reconstructed = left.join_asof(
         right,
-        left_on="event_at_utc",
-        right_on="feature_available_at",
+        left_on="occurrence_timestamp_utc",
+        right_on="expected_feature_available_at",
         by="osm_h3_cell_id",
         strategy="backward",
         allow_exact_matches=True,
     )
-    join_seconds = perf_counter() - t0
-    print(f"As-of join completed in {join_seconds:,.1f}s")
 
-    joined = (
-        joined
-        .join(
-            support,
-            on="osm_h3_cell_id",
-            how="left",
-            validate="m:1",
-        )
-        .with_columns(
-            pl.col("feature_available_at")
-            .is_not_null()
-            .alias("_history_matched")
-        )
-        .with_columns(
-            pl.when(pl.col("_history_matched"))
-            .then(
-                pl.col("event_at_utc")
-                - pl.col("feature_available_at")
+    comparison = reconstructed.select(
+        pl.len().alias("rows"),
+        pl.col("expected_feature_available_at")
+        .null_count()
+        .alias("history_missing_rows"),
+        (
+            ~pl.col("spine_feature_available_at")
+            .eq_missing(
+                pl.col("expected_feature_available_at")
             )
-            .otherwise(None)
-            .alias("feature_age"),
-
-            (
-                pl.col("_history_matched")
-                & (
-                    pl.col("feature_available_at")
-                    > pl.col("event_at_utc")
-                )
-            )
-            .alias("_future_feature_leak"),
-
-            (
-                pl.col("_history_matched")
-                & pl.col("next_feature_available_at").is_not_null()
-                & (
-                    pl.col("event_at_utc")
-                    >= pl.col("next_feature_available_at")
-                )
-            )
-            .alias("_not_latest_legal_version"),
         )
-    )
-
-    # ==================================================================================
-    # D. LEAKAGE / LATEST-LEGAL-VERSION PROOF
-    # ==================================================================================
-    print_section("D. HARD TEMPORAL CORRECTNESS INVARIANTS")
-
-    invariant_exprs: list[pl.Expr] = [
-        pl.col("_history_matched").sum().alias("matched_events"),
-        (~pl.col("_history_matched")).sum().alias("joinable_missing_events"),
-        pl.col("_future_feature_leak").sum().alias("future_feature_leaks"),
-        pl.col("_not_latest_legal_version")
         .sum()
-        .alias("not_latest_legal_version"),
-    ]
-
-    for c in component_availability_cols:
-        invariant_exprs.append(
-            (
-                pl.col("_history_matched")
-                & pl.col(c).is_not_null()
-                & (
-                    pl.col(c)
-                    > pl.col("event_at_utc")
-                )
+        .alias("not_latest_legal_timestamp_rows"),
+        (
+            ~pl.col("spine_feature_version_id")
+            .eq_missing(
+                pl.col("expected_feature_version_id")
             )
-            .sum()
-            .alias(f"future_{c}_events")
         )
+        .sum()
+        .alias("feature_version_mismatch_rows"),
+    ).row(0, named=True)
 
-    invariants = joined.select(invariant_exprs)
-    print(invariants)
-    save_df(invariants, out_dir, "temporal_invariants")
-
-    inv = invariants.row(0, named=True)
-    hard_failures = {
-        k: int(v)
-        for k, v in inv.items()
-        if (
-            k == "future_feature_leaks"
-            or k == "not_latest_legal_version"
-            or k.startswith("future_")
-        )
-        and int(v) != 0
-    }
-
-    # Persist actual violating rows, if any.
-    violations = joined.filter(
-        pl.col("_future_feature_leak")
-        | pl.col("_not_latest_legal_version")
-    )
-    if violations.height:
-        cols = [
-            "crime_id",
-            "source_city",
-            "event_at_utc",
+    selected_keys = (
+        events.select(
             "osm_h3_cell_id",
-            "feature_available_at",
-            "next_feature_available_at",
-            "feature_version_id",
-            "_future_feature_leak",
-            "_not_latest_legal_version",
-        ]
-        cols += [
-            c for c in component_availability_cols
-            if c in violations.columns
-        ]
-        save_df(
-            violations.select(cols).head(args.worst),
-            out_dir,
-            "hard_temporal_violations",
+            pl.col("spine_feature_available_at")
+            .alias("feature_available_at"),
         )
-
-    # ==================================================================================
-    # E. MISSINGNESS FORENSICS
-    # ==================================================================================
-    print_section("E. EXACT MISSINGNESS FORENSICS")
-
-    missing_joinable = (
-        joined
-        .filter(~pl.col("_history_matched"))
-        .with_columns(
-            pl.when(pl.col("first_feature_available_at").is_null())
-            .then(pl.lit("h3_absent_from_history"))
-            .when(
-                pl.col("event_at_utc")
-                < pl.col("first_feature_available_at")
-            )
-            .then(pl.lit("event_before_first_feature"))
-            .otherwise(pl.lit("unexplained_asof_miss"))
-            .alias("missing_reason")
-        )
+        .unique()
     )
 
-    missing_reason = (
-        missing_joinable.lazy()
-        .group_by("missing_reason")
-        .agg(pl.len().alias("events"))
-        .sort("events", descending=True)
-        .collect()
+    comparison["unique_selected_history_keys"] = (
+        selected_keys.height
     )
 
-    if unjoinable.height:
-        unjoinable_reason = (
-            unjoinable.lazy()
-            .with_columns(
-                pl.when(pl.col("osm_h3_cell_id").is_null())
-                .then(pl.lit("null_h3"))
-                .when(pl.col("event_at_utc").is_null())
-                .then(pl.lit("invalid_event_utc"))
-                .otherwise(pl.lit("unknown_unjoinable"))
-                .alias("missing_reason")
-            )
-            .group_by("missing_reason")
-            .agg(pl.len().alias("events"))
-            .collect()
-        )
-        missing_reason = pl.concat(
-            [missing_reason, unjoinable_reason],
-            how="vertical_relaxed",
-        ).sort("events", descending=True)
-
-    print(missing_reason)
-    save_df(missing_reason, out_dir, "missing_reasons")
-
-    if missing_joinable.height:
-        missing_examples = (
-            missing_joinable
-            .select(
-                "crime_id",
-                "source_city",
-                "occurrence_timestamp",
-                "event_at_utc",
-                "occurrence_year",
-                "osm_h3_cell_id",
-                "missing_reason",
-                "first_feature_available_at",
-                "last_feature_available_at",
-                "history_versions",
-            )
-            .sort(
-                ["missing_reason", "source_city", "event_at_utc"]
-            )
-            .head(args.worst)
-        )
-        save_df(
-            missing_examples,
-            out_dir,
-            "missing_event_examples",
-        )
-
-    # ==================================================================================
-    # F. COVERAGE
-    # ==================================================================================
-    print_section("F. EVENT-WEIGHTED HISTORY COVERAGE")
-
-    total_events = events.height
-    matched_events = int(
-        joined.get_column("_history_matched").sum()
+    comparison["filtered_history_rows"] = history.height
+    comparison["filtered_history_h3_cells"] = (
+        history["osm_h3_cell_id"].n_unique()
     )
-    missing_events = total_events - matched_events
-
-    global_coverage = pl.DataFrame(
-        {
-            "events": [total_events],
-            "matched_events": [matched_events],
-            "missing_events": [missing_events],
-            "coverage_pct": [
-                100.0 * matched_events / total_events
-                if total_events
-                else None
-            ],
-            "joinable_events": [joinable.height],
-            "unjoinable_events": [unjoinable.height],
-        }
+    comparison["duplicate_history_key_rows"] = (
+        duplicate_key_rows
     )
-    print(global_coverage)
-    save_df(global_coverage, out_dir, "global_history_coverage")
-
-    by_city = (
-        joined.lazy()
-        .group_by("source_city")
-        .agg(
-            pl.len().alias("joinable_events"),
-            pl.col("_history_matched")
-            .sum()
-            .alias("matched_events"),
-            (~pl.col("_history_matched"))
-            .sum()
-            .alias("missing_events"),
-            pl.col("osm_h3_cell_id")
-            .n_unique()
-            .alias("unique_h3_cells"),
-        )
-        .with_columns(
-            pct_expr(
-                "matched_events",
-                "joinable_events",
-                "coverage_pct",
-            )
-        )
-        .sort("coverage_pct")
-        .collect()
+    comparison["component_chronology_violations"] = (
+        chronology_violations
     )
-    print("\nBY CITY")
-    print(by_city)
-    save_df(by_city, out_dir, "history_coverage_by_city")
-
-    by_year = (
-        joined.lazy()
-        .group_by("occurrence_year")
-        .agg(
-            pl.len().alias("joinable_events"),
-            pl.col("_history_matched")
-            .sum()
-            .alias("matched_events"),
-            (~pl.col("_history_matched"))
-            .sum()
-            .alias("missing_events"),
-            pl.col("osm_h3_cell_id")
-            .n_unique()
-            .alias("unique_h3_cells"),
-        )
-        .with_columns(
-            pct_expr(
-                "matched_events",
-                "joinable_events",
-                "coverage_pct",
-            )
-        )
-        .sort("occurrence_year")
-        .collect()
-    )
-    print("\nBY YEAR")
-    print(by_year)
-    save_df(by_year, out_dir, "history_coverage_by_year")
-
-    by_city_year = (
-        joined.lazy()
-        .group_by(["source_city", "occurrence_year"])
-        .agg(
-            pl.len().alias("joinable_events"),
-            pl.col("_history_matched")
-            .sum()
-            .alias("matched_events"),
-            (~pl.col("_history_matched"))
-            .sum()
-            .alias("missing_events"),
-            pl.col("osm_h3_cell_id")
-            .n_unique()
-            .alias("unique_h3_cells"),
-        )
-        .with_columns(
-            pct_expr(
-                "matched_events",
-                "joinable_events",
-                "coverage_pct",
-            )
-        )
-        .sort(["source_city", "occurrence_year"])
-        .collect()
-    )
-    save_df(
-        by_city_year,
-        out_dir,
-        "history_coverage_by_city_year",
+    comparison["runtime_seconds"] = (
+        time.perf_counter() - started
     )
 
-    # ==================================================================================
-    # G. FEATURE STALENESS
-    # ==================================================================================
-    print_section("G. FEATURE STALENESS / AGE AT EVENT TIME")
+    failures: list[str] = []
 
-    matched = joined.filter(pl.col("_history_matched"))
-
-    staleness_global = matched.select(
-        pl.len().alias("events"),
-        pl.col("feature_age").min().alias("min_age"),
-        pl.col("feature_age").median().alias("median_age"),
-        pl.col("feature_age").quantile(0.90).alias("p90_age"),
-        pl.col("feature_age").quantile(0.95).alias("p95_age"),
-        pl.col("feature_age").quantile(0.99).alias("p99_age"),
-        pl.col("feature_age").max().alias("max_age"),
-        (pl.col("feature_age") > pl.duration(days=30))
-        .sum()
-        .alias("gt_30d"),
-        (pl.col("feature_age") > pl.duration(days=90))
-        .sum()
-        .alias("gt_90d"),
-        (pl.col("feature_age") > pl.duration(days=365))
-        .sum()
-        .alias("gt_1y"),
-        (pl.col("feature_age") > pl.duration(days=730))
-        .sum()
-        .alias("gt_2y"),
+    fail_if(
+        comparison["history_missing_rows"] != 0,
+        f"{comparison['history_missing_rows']:,} published Gold "
+        f"events no longer have a legal history match",
+        failures,
     )
-    print(staleness_global)
-    save_df(staleness_global, out_dir, "staleness_global")
 
-    staleness_city = (
-        matched.lazy()
-        .group_by("source_city")
-        .agg(
-            pl.len().alias("events"),
-            pl.col("feature_age").median().alias("median_age"),
-            pl.col("feature_age").quantile(0.95).alias("p95_age"),
-            pl.col("feature_age").quantile(0.99).alias("p99_age"),
-            pl.col("feature_age").max().alias("max_age"),
-            (pl.col("feature_age") > pl.duration(days=365))
-            .sum()
-            .alias("gt_1y"),
+    fail_if(
+        comparison["not_latest_legal_timestamp_rows"] != 0,
+        f"{comparison['not_latest_legal_timestamp_rows']:,} events "
+        f"did not select the latest legal feature timestamp",
+        failures,
+    )
+
+    fail_if(
+        comparison["feature_version_mismatch_rows"] != 0,
+        f"{comparison['feature_version_mismatch_rows']:,} events "
+        f"have the wrong feature_version_id",
+        failures,
+    )
+
+    fail_if(
+        duplicate_key_rows != 0,
+        f"{duplicate_key_rows:,} duplicate relevant history-key rows",
+        failures,
+    )
+
+    for component, violations in chronology_violations.items():
+        fail_if(
+            violations != 0,
+            f"{component}: {violations:,} history chronology violations",
+            failures,
         )
-        .sort("p99_age", descending=True)
-        .collect()
-    )
-    print("\nSTALENESS BY CITY")
-    print(staleness_city)
-    save_df(staleness_city, out_dir, "staleness_by_city")
 
-    staleness_year = (
-        matched.lazy()
-        .group_by("occurrence_year")
-        .agg(
-            pl.len().alias("events"),
-            pl.col("feature_age").median().alias("median_age"),
-            pl.col("feature_age").quantile(0.95).alias("p95_age"),
-            pl.col("feature_age").quantile(0.99).alias("p99_age"),
-            pl.col("feature_age").max().alias("max_age"),
+    if not failures:
+        pass_log(
+            "every Gold event independently selects the exact "
+            "latest legal temporal history version"
         )
-        .sort("occurrence_year")
-        .collect()
-    )
-    save_df(staleness_year, out_dir, "staleness_by_year")
+        pass_log("zero relevant history duplicate keys")
 
-    worst_stale_cols = [
-        "crime_id",
-        "source_city",
-        "occurrence_timestamp",
-        "event_at_utc",
-        "osm_h3_cell_id",
-        "feature_available_at",
-        "next_feature_available_at",
-        "feature_version_id",
-        "feature_age",
-    ]
-    worst_stale_cols += [
+    return comparison, selected_keys, relevant_cells, failures
+
+
+# ---------------------------------------------------------------------------
+# Full feature payload equality audit
+# ---------------------------------------------------------------------------
+
+
+def audit_full_feature_payload(
+    spine: pl.LazyFrame,
+    spine_columns: list[str],
+    history_root: str,
+    storage_options: dict[str, str],
+    selected_keys: pl.DataFrame,
+    relevant_cells: pl.DataFrame,
+) -> tuple[dict[str, Any], list[str]]:
+    log("AUDIT 9: full feature payload equality against source history")
+
+    started = time.perf_counter()
+
+    history_scan = scan_parquet_root(
+        history_root,
+        storage_options,
+    )
+
+    history_columns = history_scan.collect_schema().names()
+
+    shared_columns = [
         c
-        for c in [
-            "osm_available_at",
-            "osm_snapshot_date",
-            "acs_release_date",
-            "acs_vintage",
-            "tiger_release_date",
-            "tiger_line_year",
-            "tract_geoid",
-        ]
-        if c in matched.columns
+        for c in history_columns
+        if c in spine_columns
+        and c not in HISTORY_KEY
     ]
 
-    worst_stale = (
-        matched
-        .select(worst_stale_cols)
-        .sort("feature_age", descending=True)
-        .head(args.worst)
+    if not shared_columns:
+        raise AuditFailure(
+            "No history payload columns are shared with the event spine"
+        )
+
+    log(
+        f"comparing {len(shared_columns):,} history payload columns"
     )
-    save_df(worst_stale, out_dir, "worst_stale_events")
 
-    # ==================================================================================
-    # H. COMPONENT-LEVEL LEAKAGE AND AGE
-    # ==================================================================================
-    print_section("H. OSM / ACS / TIGER COMPONENT AUDIT")
-
-    component_summary_exprs: list[pl.Expr] = []
-    for c in component_availability_cols:
-        component_summary_exprs.extend(
-            [
-                pl.col(c).null_count().alias(f"{c}_nulls"),
-                (
-                    pl.col(c).is_not_null()
-                    & (
-                        pl.col(c)
-                        > pl.col("event_at_utc")
-                    )
-                )
-                .sum()
-                .alias(f"{c}_future"),
-                (
-                    pl.col("event_at_utc") - pl.col(c)
-                )
-                .median()
-                .alias(f"{c}_median_age"),
-                (
-                    pl.col("event_at_utc") - pl.col(c)
-                )
-                .quantile(0.99)
-                .alias(f"{c}_p99_age"),
-            ]
+    selected_history = (
+        history_scan
+        .join(
+            relevant_cells.lazy(),
+            on="osm_h3_cell_id",
+            how="semi",
         )
-
-    if component_summary_exprs:
-        component_summary = matched.select(
-            component_summary_exprs
+        .join(
+            selected_keys.lazy(),
+            on=HISTORY_KEY,
+            how="semi",
         )
-        print(component_summary)
-        save_df(
-            component_summary,
-            out_dir,
-            "component_event_time_audit",
-        )
-    else:
-        print("No component availability columns found.")
-
-    if "_socioeconomic_matched" in matched.columns:
-        socio_global = matched.select(
-            pl.len().alias("matched_events"),
-            pl.col("_socioeconomic_matched")
-            .fill_null(False)
-            .sum()
-            .alias("socio_matched_events"),
-        ).with_columns(
-            pct_expr(
-                "socio_matched_events",
-                "matched_events",
-                "socio_coverage_pct",
-            )
-        )
-        print("\nSOCIOECONOMIC COVERAGE AMONG HISTORY-MATCHED EVENTS")
-        print(socio_global)
-        save_df(
-            socio_global,
-            out_dir,
-            "history_socio_global",
-        )
-
-        socio_city = (
-            matched.lazy()
-            .group_by("source_city")
-            .agg(
-                pl.len().alias("matched_events"),
-                pl.col("_socioeconomic_matched")
-                .fill_null(False)
-                .sum()
-                .alias("socio_matched_events"),
-            )
-            .with_columns(
-                pct_expr(
-                    "socio_matched_events",
-                    "matched_events",
-                    "socio_coverage_pct",
-                )
-            )
-            .sort("socio_coverage_pct")
-            .collect()
-        )
-        print(socio_city)
-        save_df(
-            socio_city,
-            out_dir,
-            "history_socio_by_city",
-        )
-
-    # ==================================================================================
-    # I. VERSION SELECTION DISTRIBUTION
-    # ==================================================================================
-    print_section("I. FEATURE VERSION SELECTION")
-
-    version_usage = (
-        matched.lazy()
-        .group_by("feature_version_id")
-        .agg(
-            pl.len().alias("events"),
-            pl.col("osm_h3_cell_id").n_unique().alias("h3_cells"),
-            pl.col("feature_available_at").min().alias("available_min"),
-            pl.col("feature_available_at").max().alias("available_max"),
-        )
-        .sort("events", descending=True)
-        .collect()
-    )
-    print(version_usage.head(100))
-    save_df(version_usage, out_dir, "feature_version_usage")
-
-    # ==================================================================================
-    # J. COMPARE EXACT HISTORY AGAINST ANNUAL CACHE
-    # ==================================================================================
-    print_section("J. EXACT HISTORY VS ANNUAL CACHE")
-
-    ascan = annual_scan(lake)
-    aschema = ascan.collect_schema()
-    anames = set(aschema.names())
-
-    annual_required = {
-        "osm_h3_cell_id",
-        "as_of_year",
-    }
-    missing_annual = sorted(annual_required - anames)
-    if missing_annual:
-        raise RuntimeError(
-            f"Annual store missing columns: {missing_annual}"
-        )
-
-    annual_cols = [
-        "osm_h3_cell_id",
-        "as_of_year",
-    ]
-    for c in [
-        "feature_available_at",
-        "feature_version_id",
-        "_socioeconomic_matched",
-    ]:
-        if c in anames:
-            annual_cols.append(c)
-
-    annual = (
-        ascan
-        .select(annual_cols)
-        .with_columns(
-            pl.col("osm_h3_cell_id").cast(pl.Int64, strict=False),
-            pl.col("as_of_year").cast(pl.Int16, strict=False),
+        .select(
+            *HISTORY_KEY,
+            *[
+                pl.col(c).alias(f"hist__{c}")
+                for c in shared_columns
+            ],
         )
         .collect(engine="streaming")
     )
 
-    annual_dups = (
-        annual.lazy()
-        .group_by(["osm_h3_cell_id", "as_of_year"])
-        .agg(pl.len().alias("rows"))
-        .filter(pl.col("rows") > 1)
-        .collect()
-    )
-    print(f"Annual duplicate keys: {annual_dups.height:,}")
-
-    if annual_dups.height:
-        save_df(
-            annual_dups.head(args.worst),
-            out_dir,
-            "annual_duplicate_keys",
-        )
-        raise RuntimeError(
-            "Annual serving table violates unique (H3, as_of_year) key."
-        )
-
-    # Collapse exact-history result to city/year/H3 so the annual comparison
-    # remains cheap but preserves exact event weights.
-    exact_cell_year = (
-        joined.lazy()
-        .group_by(
-            [
-                "source_city",
-                "occurrence_year",
-                "osm_h3_cell_id",
-            ]
-        )
-        .agg(
-            pl.len().alias("events"),
-            pl.col("_history_matched")
-            .sum()
-            .alias("history_matched_events"),
-        )
-        .collect()
+    selected_history_unique = (
+        selected_history.select(HISTORY_KEY).n_unique()
     )
 
-    annual_key = (
-        annual
-        .select(
-            pl.col("osm_h3_cell_id"),
-            pl.col("as_of_year")
-            .alias("occurrence_year"),
-        )
-        .with_columns(
-            pl.lit(True).alias("_annual_matched")
-        )
+    expected_keys = selected_keys.height
+
+    log(
+        f"full selected history rows={selected_history.height:,}; "
+        f"expected keys={expected_keys:,}"
     )
 
-    compare = (
-        exact_cell_year
+    joined = (
+        spine.select(
+            *HISTORY_KEY,
+            *shared_columns,
+        )
         .join(
-            annual_key,
-            on=["osm_h3_cell_id", "occurrence_year"],
+            selected_history.lazy(),
+            on=HISTORY_KEY,
             how="left",
-            validate="m:1",
-        )
-        .with_columns(
-            pl.col("_annual_matched")
-            .fill_null(False)
-        )
-        .with_columns(
-            (
-                pl.col("_annual_matched")
-                & (
-                    pl.col("history_matched_events")
-                    < pl.col("events")
-                )
-            )
-            .alias("_annual_but_history_regression"),
-
-            (
-                ~pl.col("_annual_matched")
-                & (
-                    pl.col("history_matched_events") > 0
-                )
-            )
-            .alias("_history_gain_over_annual"),
         )
     )
 
-    annual_vs_history = compare.select(
-        pl.col("events").sum().alias("events"),
-        weighted(
-            pl.col("_annual_matched"),
-            "events",
-            "annual_matched_events",
-        ),
-        pl.col("history_matched_events")
+    mismatch_exprs = [
+        (
+            ~pl.col(column)
+            .eq_missing(pl.col(f"hist__{column}"))
+        )
         .sum()
-        .alias("history_matched_events"),
-        weighted(
-            pl.col("_annual_but_history_regression"),
-            "events",
-            "annual_but_history_regression_events",
+        .alias(column)
+        for column in shared_columns
+    ]
+
+    mismatches = collect_one(
+        joined.select(mismatch_exprs)
+    )
+
+    nonzero_mismatches = {
+        column: int(count)
+        for column, count in mismatches.items()
+        if int(count) != 0
+    }
+
+    result = {
+        "expected_selected_keys": expected_keys,
+        "full_history_rows_retrieved": selected_history.height,
+        "full_history_unique_keys": selected_history_unique,
+        "payload_columns_compared": len(shared_columns),
+        "columns_compared": shared_columns,
+        "nonzero_mismatch_columns": nonzero_mismatches,
+        "runtime_seconds": time.perf_counter() - started,
+    }
+
+    failures: list[str] = []
+
+    fail_if(
+        selected_history.height != expected_keys,
+        f"selected full history returned "
+        f"{selected_history.height:,} rows for "
+        f"{expected_keys:,} expected keys",
+        failures,
+    )
+
+    fail_if(
+        bool(nonzero_mismatches),
+        "published feature payload differs from canonical temporal "
+        f"history: {nonzero_mismatches}",
+        failures,
+    )
+
+    if not failures:
+        pass_log(
+            f"all {len(shared_columns):,} shared history columns "
+            f"match canonical history exactly"
+        )
+
+    return result, failures
+
+
+# ---------------------------------------------------------------------------
+# Current-reference regression check
+# ---------------------------------------------------------------------------
+
+
+def audit_current_reference(
+    basic: dict[str, Any],
+) -> dict[str, Any]:
+    log("AUDIT 10: current production reference regression")
+
+    actual_rows = int(basic["row_count"])
+    expected_rows = CURRENT_REFERENCE["event_spine_rows"]
+
+    matches = actual_rows == expected_rows
+
+    if matches:
+        pass_log(
+            f"row count exactly matches audited reference: "
+            f"{expected_rows:,}"
+        )
+    else:
+        log(
+            "WARN: row count differs from the current reference. "
+            "This may be legitimate for a newer Silver snapshot."
+        )
+
+    return {
+        "actual_event_spine_rows": actual_rows,
+        "reference_event_spine_rows": expected_rows,
+        "matches_current_reference": matches,
+        "reference": CURRENT_REFERENCE,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Thorough independent audit of the CrimeNet Gold event spine."
+        )
+    )
+
+    parser.add_argument(
+        "--snapshot-uri",
+        help=(
+            "Exact event-spine snapshot URI. "
+            "Default: resolve gold/event_spine/_latest."
         ),
-        weighted(
-            pl.col("_history_gain_over_annual"),
-            "events",
-            "history_gain_over_annual_cell_year_events",
-        ),
-    ).with_columns(
-        pct_expr(
-            "annual_matched_events",
-            "events",
-            "annual_coverage_pct",
-        ),
-        pct_expr(
-            "history_matched_events",
-            "events",
-            "history_coverage_pct",
-        ),
     )
 
-    print(annual_vs_history)
-    save_df(
-        annual_vs_history,
-        out_dir,
-        "annual_vs_history",
+    parser.add_argument(
+        "--event-spine-root",
+        default=DEFAULT_EVENT_SPINE_ROOT,
     )
 
-    regressions = compare.filter(
-        pl.col("_annual_but_history_regression")
-    )
-    if regressions.height:
-        save_df(
-            regressions
-            .sort("events", descending=True)
-            .head(args.worst),
-            out_dir,
-            "annual_history_regressions",
-        )
-
-    gains = compare.filter(
-        pl.col("_history_gain_over_annual")
-    )
-    if gains.height:
-        save_df(
-            gains
-            .sort("events", descending=True)
-            .head(args.worst),
-            out_dir,
-            "history_gains_over_annual",
-        )
-
-    # ==================================================================================
-    # K. CELL-YEAR SUPPORT / CONCENTRATION
-    # ==================================================================================
-    print_section("K. CELL-YEAR SUPPORT AND FAILURE CONCENTRATION")
-
-    cell_year = (
-        joined.lazy()
-        .group_by(
-            [
-                "source_city",
-                "occurrence_year",
-                "osm_h3_cell_id",
-            ]
-        )
-        .agg(
-            pl.len().alias("events"),
-            pl.col("_history_matched")
-            .sum()
-            .alias("matched_events"),
-        )
-        .with_columns(
-            (
-                pl.col("matched_events")
-                == pl.col("events")
-            ).alias("fully_matched"),
-            (
-                pl.col("matched_events") == 0
-            ).alias("fully_missing"),
-        )
-        .collect()
+    parser.add_argument(
+        "--history-root",
+        default=DEFAULT_HISTORY_ROOT,
     )
 
-    cell_year_city = (
-        cell_year.lazy()
-        .group_by("source_city")
-        .agg(
-            pl.len().alias("crime_cell_years"),
-            pl.col("fully_matched").sum().alias("fully_matched_cell_years"),
-            pl.col("fully_missing").sum().alias("fully_missing_cell_years"),
+    parser.add_argument(
+        "--skip-deep-asof",
+        action="store_true",
+        help="Skip independent national-history as-of reconstruction.",
+    )
+
+    parser.add_argument(
+        "--skip-payload",
+        action="store_true",
+        help="Skip full 40-column history payload equality audit.",
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        default="artifacts/audits/event_spine",
+    )
+
+    args = parser.parse_args()
+
+    started = time.perf_counter()
+
+    config = b2_config()
+    storage_options = polars_storage_options(config)
+    client = s3_client(config)
+
+    snapshot_uri = (
+        args.snapshot_uri.rstrip("/")
+        if args.snapshot_uri
+        else resolve_latest_snapshot(
+            client,
+            args.event_spine_root,
         )
-        .with_columns(
-            pct_expr(
-                "fully_matched_cell_years",
-                "crime_cell_years",
-                "cell_year_coverage_pct",
+    )
+
+    log("=" * 79)
+    log("CrimeNet Gold Event Spine Audit")
+    log(f"snapshot: {snapshot_uri}")
+    log(f"history:  {args.history_root}")
+    log("=" * 79)
+
+    report: dict[str, Any] = {
+        "audit_started_at": datetime.now(UTC).isoformat(),
+        "snapshot_uri": snapshot_uri,
+        "history_root": args.history_root,
+    }
+
+    all_failures: list[str] = []
+
+    # Publication
+    publication = audit_publication(
+        client,
+        snapshot_uri,
+        args.event_spine_root,
+    )
+    report["publication"] = publication
+
+    if not publication["_SUCCESS_exists"]:
+        all_failures.append("snapshot missing _SUCCESS")
+
+    if not publication["manifest_exists"]:
+        all_failures.append("snapshot missing manifest.json")
+
+    # Scan once as LazyFrame definition. Individual audits execute their
+    # own projected streaming plans.
+    spine = scan_parquet_root(
+        snapshot_uri,
+        storage_options,
+    )
+
+    # Basic
+    basic, columns, failures = audit_basic_integrity(spine)
+    report["basic_integrity"] = basic
+    report["schema"] = {
+        "column_count": len(columns),
+        "columns": columns,
+    }
+    all_failures.extend(failures)
+
+    # Compare manifest count when available.
+    manifest = publication.get("manifest")
+
+    if isinstance(manifest, dict) and manifest.get("row_count") is not None:
+        manifest_count = int(manifest["row_count"])
+        actual_count = int(basic["row_count"])
+
+        report["publication"]["manifest_row_count_matches"] = (
+            manifest_count == actual_count
+        )
+
+        fail_if(
+            manifest_count != actual_count,
+            f"manifest row_count={manifest_count:,}, "
+            f"actual={actual_count:,}",
+            all_failures,
+        )
+
+    # Temporal leakage
+    temporal, failures = audit_temporal_integrity(
+        spine,
+        columns,
+    )
+    report["temporal_integrity"] = temporal
+    all_failures.extend(failures)
+
+    # Local -> UTC
+    timezone_audit, failures = audit_timezone_reconstruction(
+        spine,
+        columns,
+    )
+    report["timezone_reconstruction"] = timezone_audit
+    all_failures.extend(failures)
+
+    # Coordinates / occurrence year
+    sanity, failures = audit_event_sanity(
+        spine,
+        columns,
+    )
+    report["event_sanity"] = sanity
+    all_failures.extend(failures)
+
+    # Distributions
+    report["distributions"] = audit_distributions(
+        spine,
+        columns,
+    )
+
+    # Staleness
+    report["feature_staleness"] = audit_feature_staleness(
+        spine,
+    )
+
+    # Reference
+    report["current_reference"] = audit_current_reference(
+        basic,
+    )
+
+    # Deep exact temporal audit
+    if not args.skip_deep_asof:
+        asof_result, selected_keys, relevant_cells, failures = (
+            audit_exact_asof(
+                spine,
+                args.history_root,
+                storage_options,
             )
         )
-        .sort("cell_year_coverage_pct")
-        .collect()
-    )
-    print(cell_year_city)
-    save_df(
-        cell_year_city,
-        out_dir,
-        "cell_year_coverage_by_city",
-    )
 
-    # ==================================================================================
-    # L. FINAL VERDICT
-    # ==================================================================================
-    print_section("L. FINAL VERDICT")
+        report["independent_exact_asof"] = asof_result
+        all_failures.extend(failures)
 
-    unexplained = 0
-    if missing_joinable.height:
-        unexplained = missing_joinable.filter(
-            pl.col("missing_reason") == "unexplained_asof_miss"
-        ).height
+        if not args.skip_payload:
+            payload_result, failures = audit_full_feature_payload(
+                spine,
+                columns,
+                args.history_root,
+                storage_options,
+                selected_keys,
+                relevant_cells,
+            )
 
-    annual_regression_events = int(
-        annual_vs_history.row(0, named=True)[
-            "annual_but_history_regression_events"
-        ]
-    )
+            report["full_feature_payload"] = payload_result
+            all_failures.extend(failures)
+    else:
+        report["independent_exact_asof"] = {
+            "skipped": True,
+        }
 
-    elapsed = perf_counter() - started
+    elapsed = time.perf_counter() - started
 
-    verdict = {
-        "modeled_only": not args.all_silver,
-        "events": total_events,
-        "joinable_events": joinable.height,
-        "matched_events": matched_events,
-        "missing_events": missing_events,
-        "history_coverage_pct": (
-            100.0 * matched_events / total_events
-            if total_events
-            else None
-        ),
-        "future_feature_leaks": int(
-            inv["future_feature_leaks"]
-        ),
-        "not_latest_legal_version": int(
-            inv["not_latest_legal_version"]
-        ),
-        "unexplained_asof_misses": unexplained,
-        "annual_but_history_regression_events": annual_regression_events,
-        "duplicate_history_keys": dup_history_keys.height,
-        "runtime_seconds": elapsed,
-    }
+    report["runtime_seconds"] = elapsed
+    report["audit_completed_at"] = datetime.now(UTC).isoformat()
+    report["failure_count"] = len(all_failures)
+    report["failures"] = all_failures
+    report["verdict"] = "PASS" if not all_failures else "FAIL"
 
-    for k, v in hard_failures.items():
-        verdict[k] = v
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    verdict_path = out_dir / "verdict.json"
-    verdict_path.write_text(
-        json.dumps(verdict, indent=2, default=str)
+    snapshot_id = snapshot_uri.rstrip("/").split("/")[-1]
+    output_path = output_dir / f"{snapshot_id}_audit.json"
+
+    output_path.write_text(
+        json.dumps(
+            to_jsonable(report),
+            indent=2,
+            sort_keys=True,
+            default=str,
+        )
+        + "\n"
     )
 
-    print(json.dumps(verdict, indent=2, default=str))
-    print(f"\nAudit artifacts: {out_dir.resolve()}")
+    print()
+    print("=" * 79)
+    print("FINAL EVENT SPINE AUDIT")
+    print("=" * 79)
+    print(f"Snapshot:              {snapshot_uri}")
+    print(
+        f"Rows:                  "
+        f"{human_int(int(basic['row_count']))}"
+    )
+    print(
+        f"Unique crime IDs:      "
+        f"{human_int(int(basic['unique_crime_ids']))}"
+    )
+    print(
+        f"Future feature leaks:  "
+        f"{human_int(int(temporal['future_feature_leaks']))}"
+    )
 
-    fatal = {
-        "duplicate_history_keys": dup_history_keys.height,
-        "future_feature_leaks": int(inv["future_feature_leaks"]),
-        "not_latest_legal_version": int(
-            inv["not_latest_legal_version"]
-        ),
-        "unexplained_asof_misses": unexplained,
-        "annual_but_history_regression_events": annual_regression_events,
-    }
-    fatal.update(hard_failures)
+    if "independent_exact_asof" in report:
+        exact = report["independent_exact_asof"]
 
-    bad = {k: v for k, v in fatal.items() if v != 0}
+        if not exact.get("skipped"):
+            print(
+                f"Wrong temporal version: "
+                f"{human_int(int(exact['not_latest_legal_timestamp_rows']))}"
+            )
+            print(
+                f"Version-ID mismatches: "
+                f"{human_int(int(exact['feature_version_mismatch_rows']))}"
+            )
+            print(
+                f"Relevant history rows: "
+                f"{human_int(int(exact['filtered_history_rows']))}"
+            )
 
-    if bad:
-        print("\nHARD AUDIT FAILURES:")
-        for k, v in bad.items():
-            print(f"  {k}: {v:,}")
-        raise SystemExit(2)
+    if "full_feature_payload" in report:
+        payload = report["full_feature_payload"]
 
-    print("\nHARD TEMPORAL QUALITY GATE: PASS")
+        print(
+            f"Payload columns checked: "
+            f"{payload['payload_columns_compared']}"
+        )
+        print(
+            f"Payload mismatches:      "
+            f"{len(payload['nonzero_mismatch_columns'])}"
+        )
+
+    print(f"Failures:              {len(all_failures)}")
+    print(f"Runtime:               {elapsed:.2f}s")
+    print(f"Report:                {output_path}")
+    print()
+    print(
+        "HARD EVENT SPINE QUALITY GATE: "
+        + ("PASS" if not all_failures else "FAIL")
+    )
+    print("=" * 79)
+
+    if all_failures:
+        print()
+        print("Failures:")
+        for failure in all_failures:
+            print(f"  - {failure}")
+
+        return 1
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("\nAudit interrupted.", file=sys.stderr)
+        raise SystemExit(130)
+    except Exception as exc:
+        print(
+            f"\nAUDIT CRASHED: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        raise
