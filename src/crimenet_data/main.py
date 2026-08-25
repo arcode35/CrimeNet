@@ -157,8 +157,8 @@ def resolve_latest_snapshot(
     client,
     event_spine_root: str,
 ) -> str:
-    pointer_uri = f"{event_spine_root.rstrip('/')}/_latest"
-
+    pointer_uri = f"{event_spine_root.rstrip('/')}/_latest.json"
+    
     raw = read_object_text(client, pointer_uri)
 
     try:
