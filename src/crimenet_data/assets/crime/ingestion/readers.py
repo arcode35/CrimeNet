@@ -187,7 +187,13 @@ def _read_geojson(
     for uri in _iter_object_uris(uri_pattern, s3_client_factory):
         rows = list(_geojson_rows(_read_object_bytes(uri, s3_client_factory), uri))
         if rows:
-            frames.append(pl.DataFrame(rows, strict=False))
+            frames.append(
+                pl.DataFrame(
+                    rows,
+                    strict=False,
+                    infer_schema_length=None,
+                )
+            )
     if not frames:
         raise FileNotFoundError(f"No GeoJSON features matched {uri_pattern!r}")
     return pl.concat(frames, how="diagonal_relaxed").lazy()

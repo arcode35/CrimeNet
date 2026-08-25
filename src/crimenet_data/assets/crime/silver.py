@@ -44,7 +44,7 @@ def build_silver_source_asset(source_key: str) -> dg.AssetsDefinition:
         crime_lake: CrimeLakeResources,
         duckdb_resource: DuckDBResource,
     ) -> dg.MaterializeResult:
-        source_uri = crime_lake.resolve_source_path(source_key, "bronze")
+        source_uri = crime_lake.resolve_current_bronze_snapshot(source_key)
         target_uri = crime_lake.resolve_source_path(source_key, "silver")
         with log_context(
             run_id=context.run_id,
@@ -58,12 +58,15 @@ def build_silver_source_asset(source_key: str) -> dg.AssetsDefinition:
             )
             with duckdb_resource.get_connection() as connection:
                 silver_lf = build_silver(
-                    crime_lake.scan_source_delta(source_key, "bronze"),
+                    crime_lake.scan_bronze_snapshot(
+                        source_key,
+                        snapshot_uri=source_uri,
+                    ),
                     crime_lake.resolve_crosswalk(),
                     source_key=source_key,
                     adapter_context=AdapterContext(duckdb=connection),
                 )
-                crime_lake.write_crimenet_table(
+                crime_lake.write_delta_table(
                     lf=silver_lf,
                     target_uri=target_uri,
                     partitioning_columns=["occurrence_year"],
@@ -104,7 +107,7 @@ def silver_crime_offenses(
             how="vertical",
         )
         target_uri = f"{crime_lake.silver_root}/crime_offenses"
-        crime_lake.write_crimenet_table(
+        crime_lake.write_delta_table(
             lf=silver_lf,
             target_uri=target_uri,
             partitioning_columns=["source_city", "occurrence_year"],

@@ -10,6 +10,15 @@ from crimenet_data.resources.duckdb import DuckDBResource
 crime_bronze_job = dg.define_asset_job(
     name="crime_bronze_job",
     selection=dg.AssetSelection.groups("bronze_crime"),
+    config={
+        "execution": {
+            "config": {
+                "multiprocess": {
+                    "max_concurrent": 3,
+                }
+            }
+        }
+    },
 )
 
 crime_silver_job = dg.define_asset_job(
