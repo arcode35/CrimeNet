@@ -1,9 +1,0 @@
-column,dtype,null_count,null_pct,n_unique,uniqueness_ratio,avg_string_length,max_string_length,taxonomy_name_score,taxonomy_name_reasons,profile_status,accepted,rejection_reason,explicit_override,selected_for_combination
-nibrs_offense_code_description,String,0,0.0,64,0.00006261232308350039,22.340174707947753,43,57,offen[sc]e:15; nibrs:15; description:8; _desc:7; descr:7; code:5,profiled,true,,false,true
-nibrs_offense_code,String,0,0.0,64,0.00006261232308350039,2.9974328947535764,3,35,offen[sc]e:15; nibrs:15; code:5,profiled,true,,false,true
-nibrs_crime_against_category,String,0,0.0,6,5.86990528907816e-6,7.2978468209082115,11,33,nibrs:15; crime:10; category:8,profiled,true,,false,true
-offense_sub_category,String,0,0.0,31,0.000030327843993570496,18.310044484098917,53,31,offen[sc]e:15; category:8; sub_category:8,profiled,true,,false,true
-offense_category,String,0,0.0,3,2.93495264453908e-6,11.583364884074262,14,23,offen[sc]e:15; category:8,profiled,true,,false,true
-nibrs_group_a_b,String,0,0.0,3,2.93495264453908e-6,1.0,1,15,nibrs:15,profiled,true,,false,true
-shooting_type_group,String,0,0.0,4,3.913270192718774e-6,1.3600042263318082,48,5,type:5,profiled,true,,false,true
-offense_id,String,0,0.0,1022163,1.0,10.519003329214616,11,15,offen[sc]e:15,profiled,false,n_unique>50000,false,false

@@ -1,4 +1,0 @@
-column,dtype,null_count,null_pct,n_unique,uniqueness_ratio,avg_string_length,max_string_length,taxonomy_name_score,taxonomy_name_reasons,profile_status,accepted,rejection_reason,explicit_override,selected_for_combination
-description,String,0,0.0,28,0.00012005162219754494,11.964760561327084,45,15,description:8; descr:7,profiled,true,,false,true
-crime_code,String,0,0.0,43,0.00018436499123194403,3.0,3,15,crime:10; code:5,profiled,true,,false,true
-weapon,String,0,0.0,22,0.00009432627458378532,5.062748410387895,30,3,weapon:3,profiled,true,,false,true

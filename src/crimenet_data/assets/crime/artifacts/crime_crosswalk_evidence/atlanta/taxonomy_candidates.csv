@@ -1,2 +1,0 @@
-column,dtype,null_count,null_pct,n_unique,uniqueness_ratio,avg_string_length,max_string_length,taxonomy_name_score,taxonomy_name_reasons,profile_status,accepted,rejection_reason,explicit_override,selected_for_combination
-ucrliteral,String,0,0.0,13,0.000033645895071394004,16.95400864958318,20,0,"",profiled,true,,true,true

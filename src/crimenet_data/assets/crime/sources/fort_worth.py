@@ -28,9 +28,13 @@ def adapt(lf: pl.LazyFrame, _context: AdapterContext) -> pl.LazyFrame:
         occurrence(lf),
         source_record_id=text_expr(lf, "case_no_offense"),
         report_timestamp=datetime_expr(lf, "reported_date"),
-        source_offense_code=text_expr(lf, "offense"),
-        source_offense_category=text_expr(lf, "offense"),
-        source_offense_description=text_expr(lf, "offense_desc"),
+        # Preserve the exact profiler/crosswalk key. text_expr intentionally
+        # trims strings, which changes Fort Worth's whitespace-bearing labels.
+        source_offense_code=pl.col("offense").cast(pl.String, strict=False),
+        source_offense_category=nullable_string(),
+        source_offense_description=pl.col("offense_desc").cast(
+            pl.String, strict=False
+        ),
         latitude=numeric_expr(lf, "latitude"),
         longitude=numeric_expr(lf, "longitude"),
         location_label=text_expr(lf, "block_address", "address", "location_1"),

@@ -1,6 +1,0 @@
-column,dtype,null_count,null_pct,n_unique,uniqueness_ratio,avg_string_length,max_string_length,taxonomy_name_score,taxonomy_name_reasons,profile_status,accepted,rejection_reason,explicit_override,selected_for_combination
-nibrs_code,String,1010502,66.66666666666666,55,0.00010885678603308059,3.0,3,20,nibrs:15; code:5,profiled,true,,false,true
-offence_code,String,0,0.0,4732,0.0031218806758093174,5.547980442723848,11,20,offen[sc]e:15; code:5,profiled,true,,false,true
-crimename1,String,1010502,66.66666666666666,5,9.89607145755278e-6,21.42845635139762,25,10,crime:10,profiled,true,,false,true
-crimename2,String,1010502,66.66666666666666,55,0.00010885678603308059,21.542674828946407,43,10,crime:10,profiled,true,,false,true
-crimename3,String,1010502,66.66666666666666,361,0.0007144963592353108,23.45612774640723,50,10,crime:10,profiled,true,,false,true
