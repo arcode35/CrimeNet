@@ -7,8 +7,10 @@ import dagster as dg
 from dagster import AssetExecutionContext
 
 from crimenet_data.assets.event_spine.build import (
-    build_event_spine,
+    attach_selected_features,
     load_modeled_events,
+    prepare_event_index,
+    select_temporal_matches,
 )
 from crimenet_data.assets.event_spine.publishing import (
     publish_event_spine_snapshot,
@@ -16,7 +18,9 @@ from crimenet_data.assets.event_spine.publishing import (
 from crimenet_data.assets.event_spine.schema import H3_RESOLUTION, PARTITION_COLUMNS
 from crimenet_data.assets.event_spine.temporal import (
     history_root,
-    load_temporal_history,
+    load_selected_feature_rows,
+    load_temporal_index,
+    selected_history_keys,
 )
 from crimenet_data.assets.event_spine.validation import validate_event_spine
 from crimenet_data.observability.context import log_context
@@ -67,8 +71,33 @@ def gold_event_spine(
             silver_snapshot_uri=silver_snapshot_uri,
             expected_modeled_rows=expected_modeled_rows,
         )
-        history, history_summary = load_temporal_history(crime_lake)
-        spine, build_summary = build_event_spine(events=events, history=history)
+        event_index, relevant_h3_cells, event_summary = prepare_event_index(events)
+        temporal_index, history_summary = load_temporal_index(
+            crime_lake,
+            relevant_h3_cells=relevant_h3_cells,
+        )
+        matched_event_keys, build_summary = select_temporal_matches(
+            event_index=event_index,
+            temporal_index=temporal_index,
+            event_summary=event_summary,
+        )
+        del event_index, temporal_index
+
+        selected_keys = selected_history_keys(matched_event_keys)
+        full_feature_rows, retrieval_summary = load_selected_feature_rows(
+            crime_lake,
+            relevant_h3_cells=relevant_h3_cells,
+            selected_keys=selected_keys,
+        )
+        history_summary.update(retrieval_summary)
+        del relevant_h3_cells, selected_keys
+
+        spine = attach_selected_features(
+            events=events,
+            matched_event_keys=matched_event_keys,
+            full_feature_rows=full_feature_rows,
+        )
+        del events, matched_event_keys, full_feature_rows
         join_summary = validate_event_spine(spine, build_summary)
         manifest = publish_event_spine_snapshot(
             crime_lake=crime_lake,
@@ -88,16 +117,10 @@ def gold_event_spine(
                 "input_modeled_rows": int(join_summary["input_modeled_rows"]),
                 "output_rows": int(join_summary["output_rows"]),
                 "dropped_rows": int(join_summary["dropped_rows"]),
-                "invalid_event_utc_rows": int(
-                    join_summary["invalid_event_utc_rows"]
-                ),
-                "history_unmatched_rows": int(
-                    join_summary["history_unmatched_rows"]
-                ),
+                "invalid_event_utc_rows": int(join_summary["invalid_event_utc_rows"]),
+                "history_unmatched_rows": int(join_summary["history_unmatched_rows"]),
                 "history_coverage_pct": float(join_summary["coverage_pct"]),
-                "feature_versions_used": int(
-                    join_summary["feature_versions_used"]
-                ),
+                "feature_versions_used": int(join_summary["feature_versions_used"]),
                 "h3_resolution": H3_RESOLUTION,
                 "partitioning_columns": PARTITION_COLUMNS,
                 "event_grain": "one model-eligible crime event",

@@ -76,7 +76,7 @@ def scan_event_spine_snapshot(
     missing = set(expected_schema.names()) - available
     if missing:
         raise RuntimeError(
-            "Written event-spine snapshot is missing columns: " f"{sorted(missing)}"
+            f"Written event-spine snapshot is missing columns: {sorted(missing)}"
         )
     return scanned.select(
         pl.col(name).cast(dtype, strict=False).alias(name)
@@ -182,13 +182,20 @@ def publish_event_spine_snapshot(
         "history_rows": history_summary["history_rows"],
         "history_h3_cells": history_summary["history_h3_cells"],
         "history_feature_versions": history_summary["history_feature_versions"],
+        "history_scope": history_summary["history_scope"],
+        "unique_relevant_h3_cells": history_summary["unique_relevant_h3_cells"],
+        "skinny_history_columns": history_summary["skinny_history_columns"],
+        "skinny_history_column_count": history_summary["skinny_history_column_count"],
+        "filtered_skinny_history_rows": history_summary["filtered_skinny_history_rows"],
+        "filtered_history_h3_cells": history_summary["filtered_history_h3_cells"],
+        "unique_selected_history_keys": history_summary["unique_selected_history_keys"],
+        "full_feature_rows_retrieved": history_summary["full_feature_rows_retrieved"],
+        "full_feature_column_count": history_summary["full_feature_column_count"],
         "feature_version_ids_used": feature_version_ids,
         "schema": schema_document(expected_schema),
         "schema_sha256": schema_sha256(expected_schema),
     }
-    git_commit_sha = os.environ.get("GIT_COMMIT_SHA") or os.environ.get(
-        "GITHUB_SHA"
-    )
+    git_commit_sha = os.environ.get("GIT_COMMIT_SHA") or os.environ.get("GITHUB_SHA")
     if git_commit_sha:
         manifest["git_commit_sha"] = git_commit_sha
 

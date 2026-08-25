@@ -29,29 +29,28 @@ def event_spine_quality_summary(
     if missing:
         raise RuntimeError(f"Event spine is missing required columns: {missing}")
 
-    summary = lf.select(
-        pl.len().alias("row_count"),
-        pl.col("source_city").n_unique().alias("source_count"),
-        pl.col("crime_id").n_unique().alias("unique_crime_ids"),
-        pl.col("occurrence_timestamp_utc")
-        .null_count()
-        .alias("null_occurrence_timestamp_utc"),
-        pl.col("osm_h3_cell_id").null_count().alias("null_osm_h3_cell_id"),
-        pl.col("feature_available_at")
-        .null_count()
-        .alias("null_feature_available_at"),
-        (
+    summary = (
+        lf.select(
+            pl.len().alias("row_count"),
+            pl.col("source_city").n_unique().alias("source_count"),
+            pl.col("crime_id").n_unique().alias("unique_crime_ids"),
+            pl.col("occurrence_timestamp_utc")
+            .null_count()
+            .alias("null_occurrence_timestamp_utc"),
+            pl.col("osm_h3_cell_id").null_count().alias("null_osm_h3_cell_id"),
             pl.col("feature_available_at")
-            > pl.col("occurrence_timestamp_utc")
+            .null_count()
+            .alias("null_feature_available_at"),
+            (pl.col("feature_available_at") > pl.col("occurrence_timestamp_utc"))
+            .fill_null(False)
+            .sum()
+            .alias("future_feature_leaks"),
         )
-        .fill_null(False)
-        .sum()
-        .alias("future_feature_leaks"),
-    ).collect(engine="streaming").row(0, named=True)
-    result = {name: int(value) for name, value in summary.items()}
-    result["duplicate_crime_ids"] = (
-        result["row_count"] - result["unique_crime_ids"]
+        .collect(engine="streaming")
+        .row(0, named=True)
     )
+    result = {name: int(value) for name, value in summary.items()}
+    result["duplicate_crime_ids"] = result["row_count"] - result["unique_crime_ids"]
     return result
 
 
