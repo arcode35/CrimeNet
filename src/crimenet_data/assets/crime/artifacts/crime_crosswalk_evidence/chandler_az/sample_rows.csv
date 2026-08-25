@@ -1,0 +1,201 @@
+report_summary_offense_description,report_primary_offense_description,report_summary_offense_code,report_primary_offense_code,event_type,source_file_uri
+,Suspicious Activity,NONCRIM ,0005-6,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft From Building,LARCENYT,2308-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Welfare Check,NONCRIM ,0005-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Burglary - No Forced Entry,BURGLARY,2204-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Drugs,DRUGNARC,3599-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Welfare Check,NONCRIM ,0005-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Drugs,DRUGNARC,3599-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non Criminal Incident,NONCRIM ,0005-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft-Shoplift,SHOPTHEF,2303-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Damage of Property - Substantial Damage,DESTRUCT,2999-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Damage of Property - Substantial Damage,DESTRUCT,2999-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Welfare Check,NONCRIM ,0005-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft,LARCENYT,2399-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Drugs,DRUGNARC,3599-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non Criminal Incident,NONCRIM ,0005-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Damage of Property - Substantial Damage,DESTRUCT,2999-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Child/Adult Abuse,FAMILYOF,1313-2,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft-Shoplift,SHOPTHEF,2303-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Public Order,OTHER   ,7399-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non-Injury Collision,NONINJUR,5499-3,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft-Shoplift,SHOPTHEF,2303-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non Criminal Incident,NONCRIM ,0005-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Burglary - No Forced Entry,BURGLARY,2204-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft,LARCENYT,2399-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Nonviolent Family Offenses,FAMILYOF,3899-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Liquor Violation - Possession,LIQORLA ,4104-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non Criminal Incident,NONCRIM ,0005-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Fraud,FRAUDOFF,2699-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft-Vehicle Parts/Accessory,VEHBURG ,2304-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Mental Health Pick Up,NONCRIM ,0005-3,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Drugs - Civil,DRUGNARC,3599-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Assault - Dv,ASSAULDV,1313-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Suspicious Activity,NONCRIM ,0005-6,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Found/Seized Property,OTHER   ,0004-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Drugs,DRUGNARC,3599-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Runaway,RUNAWAY ,7399-4,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disorderly Conduct - Dv,DISCCOND,5311-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Assault,ASSAULTO,1313-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Runaway,RUNAWAY ,7399-4,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Trespassing,TRESPASS,5707-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft-Shoplift,SHOPTHEF,2303-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Found/Seized Property,OTHER   ,0004-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Welfare Check,NONCRIM ,0005-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Vehicle Burglary,VEHBURG ,2305-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Assault,ASSAULTO,1313-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Suspicious Activity,NONCRIM ,0005-6,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non Criminal Incident,NONCRIM ,0005-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non-Injury Collision,NONINJUR,5499-3,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Found/Seized Property,OTHER   ,0004-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Assist Other Agency,OTHER   ,0007-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Welfare Check,NONCRIM ,0005-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Damage of Property - Substantial Damage,DESTRUCT,2999-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Graffiti - Substantial Damage,GRAFFITI,2999-2,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Found/Seized Property,OTHER   ,0004-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft,LARCENYT,2399-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Stolen Vehicle,MOTORVEH,2499-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non-Injury Collision,NONINJUR,5499-3,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disorderly Conduct - Dv,DISCCOND,5311-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Injury Collision,INJURYCO,5499-4,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft-Vehicle Parts/Accessory,VEHBURG ,2304-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Burglary - Forced Entry,BURGLARY,2202-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disorderly Conduct - Dv,DISCCOND,5311-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Mental Health Pick Up,NONCRIM ,0005-3,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Sexual Exploitation,SEXOFFEN,3699-2,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Child/Adult Abuse - Dv,CADVABUS,1313-3,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Missing and Overdue Party,OTHER   ,0002-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Identity Theft,IDTHEFT ,2610-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Civil Traffic,TRAFFIC ,5499-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Custodial Interference - Dv,FAMILYDV,1010-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Drugs,DRUGNARC,3599-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft-Shoplift,SHOPTHEF,2303-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Drugs,DRUGNARC,3599-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Drugs,DRUGNARC,3599-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,DUI,DRIVINGU,5404-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Assault - Dv,ASSAULDV,1313-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non Criminal Incident,NONCRIM ,0005-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Welfare Check,NONCRIM ,0005-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Vehicle Burglary,VEHBURG ,2305-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Drugs,DRUGNARC,3599-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Stolen Vehicle,MOTORVEH,2499-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Burglary From Yard,BURGLARY,2309-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Missing and Overdue Party,OTHER   ,0002-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Vehicle Burglary,VEHBURG ,2305-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Criminal Traffic,TRAFFIC ,5499-2,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Private Property Collision,PPCOLLIS,5499-6,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non Criminal Incident,NONCRIM ,0005-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non Criminal Incident,NONCRIM ,0005-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Prohibited Possesser,WEAPONLA,5203-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Assault,ASSAULTO,1313-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Trespassing,TRESPASS,5707-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Possess Drug Paraphernalia,POSSPARA,3550-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft From Building,LARCENYT,2308-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Criminal Traffic,TRAFFIC ,5499-2,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Hit and Run Collision,HRCOLLIS,5401-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non Criminal Incident,NONCRIM ,0005-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Order of Protection Service,NONCRIM ,0005-2,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Robbery,ROBBERY ,1299-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non Criminal Incident,NONCRIM ,0005-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Assault - Dv,ASSAULDV,1313-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Liquor Violation - Possession,LIQORLA ,4104-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Suspicious Activity,NONCRIM ,0005-6,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non-Injury Collision,NONINJUR,5499-3,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disorderly Conduct,DISORDER,5311-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non-Injury Collision,NONINJUR,5499-3,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Injury Collision,INJURYCO,5499-4,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Order of Protection Service,NONCRIM ,0005-2,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Fraud,FRAUDOFF,2699-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Assault - Dv,ASSAULDV,1313-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Runaway,RUNAWAY ,7399-4,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft From Vehicle,VEHBURG ,2305-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non-Injury Collision,NONINJUR,5499-3,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Suspicious Activity,NONCRIM ,0005-6,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Suspicious Activity,NONCRIM ,0005-6,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Stolen Veh-Recovery Other Jur,OTHVEHTF,2499-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Missing and Overdue Party,OTHER   ,0002-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Welfare Check,NONCRIM ,0005-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft,LARCENYT,2399-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Damage of Property - Substantial Damage - Dv,CRIMDADV,2999-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Suspicious Activity,NONCRIM ,0005-6,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Suspicious Activity,NONCRIM ,0005-6,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disorderly Conduct,DISORDER,5311-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Found/Seized Property,OTHER   ,0004-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Neighborhood Complaint,NONCRIM ,0005-4,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft-Shoplift,SHOPTHEF,2303-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Criminal Traffic,TRAFFIC ,5499-2,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non-Injury Collision,NONINJUR,5499-3,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Found/Seized Property,OTHER   ,0004-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Child/Adult Abuse,FAMILYOF,1313-2,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Aggravated Assault,ASSAULTO,1315-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Damage of Property - Substantial Damage - Dv,CRIMDADV,2999-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft-Shoplift,SHOPTHEF,2303-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non-Injury Collision,NONINJUR,5499-3,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Burglary - Forced Entry,BURGLARY,2202-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft From Vehicle,VEHBURG ,2305-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Injury Collision,INJURYCO,5499-4,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Damage of Property - Substantial Damage,DESTRUCT,2999-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Assault - Dv,ASSAULDV,1313-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Possess Drug Paraphernalia,POSSPARA,3550-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Threats,OTHER   ,1316-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Fraud,FRAUDOFF,2699-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Damage of Property - Substantial Damage,DESTRUCT,2999-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Assault,ASSAULTO,1313-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Trespassing,TRESPASS,5707-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Suspicious Activity,NONCRIM ,0005-6,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Sexual Assault - Rape,SEXOFFEF,1103-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Trespassing,TRESPASS,5707-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Warrant Arrest - Other Agency,WOA     ,0006-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Vehicle Burglary,VEHBURG ,2305-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Possess Drug Paraphernalia,POSSPARA,3550-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Public Peace,OTHER   ,5399-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Public Peace,OTHER   ,5399-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Threats,OTHER   ,1316-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non-Injury Collision,NONINJUR,5499-3,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non-Injury Collision,NONINJUR,5499-3,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Assault,ASSAULTO,1313-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Found/Seized Property,OTHER   ,0004-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non-Injury Collision,NONINJUR,5499-3,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non-Injury Collision,NONINJUR,5499-3,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Intimidation/Stalking,OTHER   ,1316-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Identity Theft,IDTHEFT ,2610-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Endangerment - Dv,OTHER   ,1399-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non-Injury Collision,NONINJUR,5499-3,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Assist Other Agency,OTHER   ,0007-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Barking Dog,OTHER   ,5399-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Aggravated DUI,DRIVINGU,5404-1,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Warrant Arrest,WARRANT ,0006-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Hit and Run Collision,HRCOLLIS,5401-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Stolen Vehicle,MOTORVEH,2499-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Nonviolent Family Offenses,FAMILYOF,3899-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Disturbance,NONCRIM ,0005-5,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non-Injury Collision,NONINJUR,5499-3,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Suspicious Activity,NONCRIM ,0005-6,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Theft - Mail/Package,MAILTHEF,2310-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Found/Seized Property,OTHER   ,0004-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Drugs,DRUGNARC,3599-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv
+,Non Criminal Incident,NONCRIM ,0005-0,General Offense,s3://crimenet-data/raw_files/landing/chandler_az/general_offenses.csv

@@ -1,0 +1,24 @@
+column,dtype,null_count,null_pct,n_unique,uniqueness_ratio,avg_string_length,max_string_length,taxonomy_name_score,taxonomy_name_reasons,profile_status,accepted,rejection_reason,explicit_override,selected_for_combination
+ucr_offense_description,String,1098116,72.98071465694048,46,0.00011314721436477678,13.096278440536219,28,37,offen[sc]e:15; description:8; _desc:7; descr:7,profiled,true,,false,true
+nibrs_crime_category,String,259688,17.2588468138444,34,0.000027309719529180435,20.782833913531004,42,33,nibrs:15; crime:10; category:8,profiled,true,,false,true
+hate_crime_description,String,1719,0.11424462305920384,26,0.000017299345885117705,4.053396427152787,39,32,crime:10; description:8; _desc:7; descr:7,profiled,true,,false,true
+nibrs_crime_against,String,259688,17.2588468138444,6,4.819362269855371e-6,10.114363466663669,28,25,nibrs:15; crime:10,profiled,true,,false,true
+nibrs_crime,String,259688,17.2588468138444,58,0.00004658716860860192,17.804218227149395,43,25,nibrs:15; crime:10,profiled,true,,false,true
+offense_type,String,1098117,72.98078111687245,4,9.838912406622572e-6,5.609048355794751,9,20,offen[sc]e:15; type:5,profiled,true,,false,true
+nibrs_type,String,256180,17.02570537248798,16,0.000012815522160440725,8.38005392130949,14,20,nibrs:15; type:5,profiled,true,,false,true
+nibrs_code,String,259689,17.258913273776372,52,0.00004176783988780516,3.0,3,20,nibrs:15; code:5,profiled,true,,false,true
+family_offense,String,132683,8.818103153789613,2,1.4577440099476451e-6,5.0,5,15,offen[sc]e:15,profiled,true,,false,true
+nibrs_group,String,259688,17.2588468138444,4,3.2129081799035808e-6,1.0,1,15,nibrs:15,profiled,true,,false,true
+gang_related_offense,String,986830,65.58465466754748,6,0.000011586679952726347,2.3077151839578556,3,15,offen[sc]e:15,profiled,true,,false,false
+offense_status,String,11742,0.7803725212106873,7,4.688785229522735e-6,10.066765622362558,27,15,offen[sc]e:15,profiled,true,,false,false
+ucr_offense_name,String,1098117,72.98078111687245,54,0.0001328253174894047,12.570885674297562,25,15,offen[sc]e:15,profiled,true,,false,false
+hate_crime,String,1503402,99.91599464598788,3,0.0023734177215189874,2.444620253164557,3,10,crime:10,profiled,true,,false,false
+person_involvement_type,String,55069,3.659881993744791,8,5.5187752182158216e-6,6.473528159895475,16,5,type:5,profiled,true,,false,false
+victim_type,String,63591,4.226253534006882,10,6.9392640910431445e-6,10.065346356018944,20,5,type:5,profiled,true,,false,false
+type_of_property,String,132837,8.82833798331324,42,0.000030616060748096155,6.204728869268692,36,5,type:5,profiled,true,,false,false
+ucr_code,String,1098116,72.98071465694048,66,0.00016234165539294058,3.4098536465379414,4,5,code:5,profiled,true,,false,false
+penal_code,String,1712,0.11377940353540254,743,0.0004943597741514378,11.86534384951236,28,5,code:5,profiled,true,,false,false
+criminal_justice_information_service_code,String,1712,0.11377940353540254,782,0.0005203086721217016,7.999115741399937,8,5,code:5,profiled,true,,false,false
+type_of_incident,String,48,0.003190076734637454,1315,0.0008739759859313128,33.95427876045614,77,5,type:5,profiled,true,,false,false
+rms_code,String,0,0.0,1554,0.0010327873428388758,14.977721301604475,17,5,code:5,profiled,true,,false,false
+weapon_used,String,1069605,71.0858755364978,37,0.00008504554533732052,11.555632428555995,39,3,weapon:3,profiled,true,,false,false

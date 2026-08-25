@@ -1,0 +1,11 @@
+{
+  "source_city": "atlanta",
+  "snapshot_uri": "s3://crimenet-data/bronze/crime/atlanta/snapshot_id=4f02cc45-5b78-476f-b177-11f238073e01",
+  "row_count": 386377,
+  "column_count": 20,
+  "selected_taxonomy_columns": [
+    "ucrliteral"
+  ],
+  "taxonomy_combination_count": 13,
+  "candidate_column_count": 1
+}

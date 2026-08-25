@@ -47,7 +47,7 @@ SOURCE = SourceDefinition(
         source_system="atlanta_police_open_data",
         patterns=CSV,
         timezone="America/New_York",
-        crosswalk_keys=("source_offense_category", "source_offense_description"),
+        crosswalk_keys=("source_offense_description",),
         coordinate_bounds=(33.60, 33.95, -84.60, -84.20),
     ),
     prepare_bronze=prepare_snake_case,

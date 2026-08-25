@@ -1,4 +1,3 @@
-import duckdb
 import polars as pl
 
 from crimenet_data.assets.crime.common.expressions import (
@@ -28,41 +27,7 @@ def occurrence(lf: pl.LazyFrame) -> pl.Expr:
     )
 
 
-def _convert_coordinates(
-    lf: pl.LazyFrame,
-    connection: duckdb.DuckDBPyConnection,
-) -> pl.LazyFrame:
-    return connection.sql(
-        """
-        WITH transformed AS (
-            SELECT
-                *,
-                ST_Transform(
-                    ST_Point(
-                        TRY_CAST(x_coordinate AS DOUBLE),
-                        TRY_CAST(y_cordinate AS DOUBLE)
-                    ),
-                    'EPSG:2276',
-                    'EPSG:4326',
-                    always_xy := true
-                ) AS wgs84_point
-            FROM lf
-        )
-        SELECT
-            * EXCLUDE (wgs84_point),
-            ST_Y(wgs84_point) AS latitude,
-            ST_X(wgs84_point) AS longitude
-        FROM transformed
-        """
-    ).pl(lazy=True)
-
-
-def adapt(lf: pl.LazyFrame, context: AdapterContext) -> pl.LazyFrame:
-    if context.duckdb is None:
-        raise ValueError(
-            "Dallas source adapter requires AdapterContext.duckdb with Spatial loaded"
-        )
-    lf = _convert_coordinates(lf, context.duckdb)
+def adapt(lf: pl.LazyFrame, _context: AdapterContext) -> pl.LazyFrame:
     return adapt_standard(
         lf,
         occurrence(lf),

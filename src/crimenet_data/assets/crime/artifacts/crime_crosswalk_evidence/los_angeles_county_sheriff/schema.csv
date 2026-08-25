@@ -1,0 +1,26 @@
+column,dtype
+lurn_sak,String
+incident_date,String
+incident_reported_date,String
+category,String
+stat,String
+stat_desc,String
+address,String
+street,String
+city,String
+zip,String
+incident_id,String
+reporting_district,String
+seq,String
+gang_related,String
+unit_id,String
+unit_name,String
+longitude,String
+latitude,String
+part_category,String
+source_city,String
+source_file_uri,String
+ingestion_run_id,String
+ingested_at_utc,"Datetime(time_unit='us', time_zone='UTC')"
+snapshot_id,String
+occurrence_year,Int64

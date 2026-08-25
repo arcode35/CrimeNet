@@ -1,0 +1,44 @@
+column,dtype,null_count,null_pct,n_unique,uniqueness_ratio,avg_string_length,max_string_length,taxonomy_name_score,taxonomy_name_reasons,profile_status
+cmplnt_num,String,0,0.0,5932918,1.0,8.985956488864334,15,0,"",profiled
+cmplnt_fr_dt,String,0,0.0,4383,0.000738759578339023,23.0,23,0,"",profiled
+cmplnt_fr_tm,String,0,0.0,1440,0.00024271361916682483,8.0,8,0,"",profiled
+cmplnt_to_dt,String,673527,11.35237331781764,4398,0.0008362184899354316,23.0,23,0,"",profiled
+cmplnt_to_tm,String,0,0.0,1441,0.00024288217029124623,7.773970919537401,8,0,"",profiled
+rpt_dt,String,0,0.0,4383,0.000738759578339023,23.0,23,0,"",profiled
+ky_cd,String,0,0.0,74,0.000012472783207184053,3.0,3,0,"",profiled
+ofns_desc,String,0,0.0,74,0.000012472783207184053,18.223537389190277,36,22,ofns:15; _desc:7,profiled
+pd_cd,String,4284,0.0722073017021304,428,0.00007219200915421664,3.0,3,0,"",profiled
+pd_desc,String,0,0.0,418,0.00007045437000814776,26.22194980614935,71,7,_desc:7,profiled
+crm_atpt_cptd_cd,String,0,0.0,3,5.056533732642184e-7,8.999918084153531,9,0,"",profiled
+law_cat_cd,String,0,0.0,3,5.056533732642184e-7,9.09813147594489,11,14,_cat_:6; law_cat:8,profiled
+boro_nm,String,0,0.0,6,1.0113067465284368e-6,7.38763960668258,13,0,"",profiled
+addr_pct_cd,String,98,0.0016518010193297802,79,0.00001331575877913033,2.198389804511177,3,0,"",profiled
+loc_of_occur_desc,String,0,0.0,6,1.0113067465284368e-6,6.6070741244021916,11,7,_desc:7,profiled
+prem_typ_desc,String,0,0.0,91,0.000015338152322347956,14.406916798782657,28,7,_desc:7,profiled
+juris_desc,String,0,0.0,25,4.2137781105351535e-6,16.263828692727593,33,7,_desc:7,profiled
+jurisdiction_code,String,0,0.0,25,4.2137781105351535e-6,1.007036335240096,2,5,code:5,profiled
+parks_nm,String,0,0.0,1309,0.00022063342186762062,6.0967402549639145,83,0,"",profiled
+hadevelopt,String,0,0.0,30,5.056533732642184e-6,6.010538827605573,31,0,"",profiled
+housing_psa,String,541238,9.122627347959302,723,0.00013409549528161909,5.801188683304647,6,0,"",profiled
+transit_district,String,5758733,97.06409223926575,13,0.00007463329218933892,1.5741194706777277,2,-100,excluded:district,profiled
+patrol_boro,String,0,0.0,9,1.5169601197926552e-6,21.50445345780946,25,0,"",profiled
+station_name,String,0,0.0,372,0.00006270101828476308,6.292600201115202,30,0,"",profiled
+latitude,String,29,0.0004887982608220777,164147,0.02766729665766543,9.608286283461565,18,-100,excluded:latitude,profiled
+longitude,String,29,0.0004887982608220777,166840,0.028121207054438404,10.595837205112046,18,-100,excluded:longitude,profiled
+x_coord_cd,String,25,0.0004213778110535154,68801,0.011596534776541562,6.600767281661746,7,0,"",profiled
+y_coord_cd,String,25,0.0004213778110535154,71563,0.012062074943876453,5.999983144816534,6,0,"",profiled
+source_dataset_id,String,0,0.0,1,1.6855112442140613e-7,9.0,9,0,"",profiled
+source_dataset_kind,String,0,0.0,2,3.3710224884281226e-7,7.598502119867492,8,0,"",profiled
+downloaded_at_utc,String,0,0.0,12,2.0226134930568737e-6,32.0,32,0,"",profiled
+source_dataset,String,0,0.0,1,1.6855112442140613e-7,9.0,9,0,"",profiled
+rescued_data,String,3550864,59.85021198674918,2382055,1.0000004198057644,459.7770789411155,479,0,"",profiled
+source_file,String,0,0.0,174,0.000029327895649324667,127.8554215649028,150,-100,excluded:source_file,profiled
+source_row_hash,String,0,0.0,5932918,1.0,64.0,64,0,"",profiled
+source_system,String,0,0.0,1,1.6855112442140613e-7,8.0,8,0,"",profiled
+ingested_at,"Datetime(time_unit='ns', time_zone=None)",0,0.0,3,5.056533732642184e-7,,,-100,excluded:ingest,profiled
+source_city,String,0,0.0,1,1.6855112442140613e-7,8.0,8,-100,ingestion_metadata,profiled
+source_file_uri,String,0,0.0,12,2.0226134930568737e-6,164.0,164,-100,ingestion_metadata,profiled
+ingestion_run_id,String,0,0.0,1,1.6855112442140613e-7,36.0,36,-100,ingestion_metadata,profiled
+ingested_at_utc,"Datetime(time_unit='us', time_zone='UTC')",0,0.0,1,1.6855112442140613e-7,,,-100,ingestion_metadata,profiled
+snapshot_id,String,0,0.0,1,1.6855112442140613e-7,36.0,36,-100,ingestion_metadata,profiled
+occurrence_year,Int64,0,0.0,12,2.0226134930568737e-6,,,-100,ingestion_metadata,profiled

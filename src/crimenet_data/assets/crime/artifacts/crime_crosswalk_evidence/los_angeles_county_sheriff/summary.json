@@ -1,0 +1,14 @@
+{
+  "source_city": "los_angeles_county_sheriff",
+  "snapshot_uri": "s3://crimenet-data/bronze/crime/los_angeles_county_sheriff/snapshot_id=4f02cc45-5b78-476f-b177-11f238073e01",
+  "row_count": 1940486,
+  "column_count": 25,
+  "selected_taxonomy_columns": [
+    "part_category",
+    "category",
+    "stat_desc",
+    "stat"
+  ],
+  "taxonomy_combination_count": 269,
+  "candidate_column_count": 4
+}

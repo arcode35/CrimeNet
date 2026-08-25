@@ -1,0 +1,41 @@
+column,dtype,null_count,null_pct,n_unique,uniqueness_ratio,avg_string_length,max_string_length,taxonomy_name_score,taxonomy_name_reasons,profile_status
+address,String,119,0.01901259144816832,165310,0.2641654761562333,17.226561326468325,91,-100,excluded:address,profiled
+attempt_complete,String,13,0.002077005788455363,3,4.79318983588118e-6,1.0,1,0,"",profiled
+block_address,String,123,0.019651670152308433,52014,0.08311893355151508,17.22457964326007,91,-100,excluded:address,profiled
+beat,String,166057,26.530873093348628,166,0.000360991988587434,2.983694470298623,3,-100,excluded:beat,profiled
+case_no,String,0,0.0,555771,0.8879535261966349,8.999920115161983,9,-100,excluded:case.*(?:id|number|num|no),profiled
+case_no_offense,String,0,0.0,625901,1.0,12.999920115161983,13,-100,excluded:case.*(?:id|number|num|no),profiled
+city,String,785,0.1254191956874969,117,0.00018716526212734917,9.989557138195151,10,0,"",profiled
+councildistrict,Int64,260733,41.65722694164093,13,0.00003560005257853919,,,-100,excluded:district,profiled
+division,String,265314,42.38913182755739,8,0.00002218604664061655,5.572594131236013,10,0,"",profiled
+from_date,Int64,19,0.00303562384466553,423061,0.6759437082389332,,,-100,excluded:date,profiled
+geocodescore,Int64,0,0.0,74,0.00011822956026592065,,,5,code:5,profiled
+lastupdated,Int64,0,0.0,6592,0.01053201704422904,,,-100,excluded:date,profiled
+latitude,Float64,6232,0.9956846210502938,254286,0.4103577877867055,,,-100,excluded:latitude,profiled
+locationtypedescription,String,119,0.01901259144816832,87,0.00013902605060548242,19.74849708045294,39,-100,excluded:location,profiled
+location_1,String,15153,2.420989900958778,250419,0.41002017198582724,40.37915146672605,41,-100,excluded:location,profiled
+location_type,Int64,525,0.08387907991838965,48,0.0000767538248989408,,,-100,excluded:location,profiled
+longitude,Float64,6232,0.9956846210502938,249088,0.4019694385228243,,,-100,excluded:longitude,profiled
+nature_of_call,String,0,0.0,371,0.0005927454980899535,10.344858052631327,25,6,nature:6,profiled
+objectid,Int64,0,0.0,625901,1.0,,,-100,excluded:object.*id,profiled
+offense,String,0,0.0,60,0.00009586180562101674,3.0,3,15,offen[sc]e:15,profiled
+offense_desc,String,0,0.0,2102,0.0033583585902562866,39.71870151988893,50,22,offen[sc]e:15; _desc:7,profiled
+reported_date,Int64,0,0.0,535704,0.8558925453066859,,,-100,excluded:date,profiled
+state,String,583,0.09314572112842127,18,0.000028785354011878758,1.998541542063398,2,0,"",profiled
+x_coordinate,Float64,6232,0.9956846210502938,248742,0.40141107591310843,,,-100,excluded:coordinate,profiled
+y_coordinate,Float64,6232,0.9956846210502938,246258,0.3974024842294838,,,-100,excluded:coordinate,profiled
+alternate_latitude,Float64,6232,0.9956846210502938,239214,0.3860351252039395,,,-100,excluded:latitude,profiled
+alternate_longitude,Float64,6232,0.9956846210502938,239214,0.3860351252039395,,,-100,excluded:longitude,profiled
+source_object_id,Int64,0,0.0,625901,1.0,,,-100,excluded:object.*id,profiled
+inttotal,Int64,0,0.0,1,1.5976967603502791e-6,,,0,"",profiled
+source_file,String,0,0.0,1,1.5976967603502791e-6,102.0,102,-100,excluded:source_file,profiled
+source_row_hash,String,0,0.0,625901,1.0,64.0,64,0,"",profiled
+source_system,String,0,0.0,1,1.5976967603502791e-6,10.0,10,0,"",profiled
+ingested_at,"Datetime(time_unit='ns', time_zone=None)",0,0.0,1,1.5976967603502791e-6,,,-100,excluded:ingest,profiled
+source_file_uri,String,0,0.0,43,0.000068700960695062,85.00066783724583,107,-100,ingestion_metadata,profiled
+occurrence_timestamp,"Datetime(time_unit='ns', time_zone=None)",19,0.00303562384466553,423061,0.6759437082389332,,,-100,excluded:time; excluded:timestamp,profiled
+source_city,String,0,0.0,1,1.5976967603502791e-6,10.0,10,-100,ingestion_metadata,profiled
+ingestion_run_id,String,0,0.0,1,1.5976967603502791e-6,36.0,36,-100,ingestion_metadata,profiled
+ingested_at_utc,"Datetime(time_unit='us', time_zone='UTC')",0,0.0,1,1.5976967603502791e-6,,,-100,ingestion_metadata,profiled
+snapshot_id,String,0,0.0,1,1.5976967603502791e-6,36.0,36,-100,ingestion_metadata,profiled
+occurrence_year,Int64,19,0.00303562384466553,43,0.00006870304626111631,,,-100,ingestion_metadata,profiled

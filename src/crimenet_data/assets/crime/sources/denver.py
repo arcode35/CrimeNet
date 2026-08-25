@@ -56,7 +56,7 @@ SOURCE = SourceDefinition(
         source_system="denver_open_data",
         patterns=GEOJSON,
         timezone="America/Denver",
-        crosswalk_keys=("source_offense_code", "source_offense_description"),
+        crosswalk_keys=("source_offense_description",),
         coordinate_bounds=None,
     ),
     prepare_bronze=prepare,

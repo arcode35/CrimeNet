@@ -1,0 +1,5 @@
+column,dtype,null_count,null_pct,n_unique,uniqueness_ratio,avg_string_length,max_string_length,taxonomy_name_score,taxonomy_name_reasons,profile_status,accepted,rejection_reason,explicit_override,selected_for_combination
+part_category,String,0,0.0,2,1.0306696363694456e-6,1.0,1,8,category:8,profiled,true,,true,true
+category,String,0,0.0,30,0.000015460044545541685,15.638190123505142,28,8,category:8,profiled,true,,true,true
+stat_desc,String,0,0.0,269,0.00013862506609169044,44.00469418485884,68,7,_desc:7,profiled,true,,true,true
+stat,String,0,0.0,267,0.000137594396455321,3.0,3,0,"",profiled,true,,true,true

@@ -1,0 +1,42 @@
+column,dtype,null_count,null_pct,n_unique,uniqueness_ratio,avg_string_length,max_string_length,taxonomy_name_score,taxonomy_name_reasons,profile_status
+row_id,String,0,0.0,233233,1.0,5.688864783285384,6,-100,excluded:row.*id,profiled
+ccnumber,String,0,0.0,201378,0.8634198419606145,9.0,9,0,"",profiled
+crime_date_time,String,0,0.0,135349,0.5803166790291254,13.0,13,-100,excluded:date; excluded:time,profiled
+crime_code,String,0,0.0,43,0.00018436499123194403,3.0,3,15,crime:10; code:5,profiled
+description,String,0,0.0,28,0.00012005162219754494,11.964760561327084,45,15,description:8; descr:7,profiled
+inside_outside,String,0,0.0,3,0.000012862673806879815,0.9989581234216427,1,0,"",profiled
+weapon,String,0,0.0,22,0.00009432627458378532,5.062748410387895,30,3,weapon:3,profiled
+shooting,String,0,0.0,2,8.57511587125321e-6,0.008545102965703825,1,0,"",profiled
+post,String,0,0.0,204,0.0008746618188678275,2.9946577028122094,3,0,"",profiled
+gender,String,0,0.0,5,0.000021437789678133026,1.0080305960134286,2,0,"",profiled
+age,String,0,0.0,106,0.0004544811411764201,1.6667452718954865,3,0,"",profiled
+race,String,0,0.0,7,0.000030012905549386236,15.04759618064339,41,0,"",profiled
+ethnicity,String,0,0.0,8,0.00003430046348501284,12.334476682116167,22,0,"",profiled
+location,String,0,0.0,15002,0.06432194415027033,16.11670303944982,39,-100,excluded:location,profiled
+old_district,String,0,0.0,11,0.00004716313729189266,5.02282267089134,9,-100,excluded:district,profiled
+new_district,String,0,0.0,12,0.00005145069522751926,6.25727920148521,19,-100,excluded:district,profiled
+neighborhood,String,0,0.0,291,0.001247679359267342,9.89072729845262,33,0,"",profiled
+latitude,String,0,0.0,60514,0.2594572809165084,8.87228651177149,9,-100,excluded:latitude,profiled
+longitude,String,0,0.0,68937,0.29557138140829126,9.870935931021767,10,-100,excluded:longitude,profiled
+geo_location,String,0,0.0,90670,0.3887528780232643,21.743222442793257,22,-100,excluded:location,profiled
+premise_type,String,0,0.0,40,0.0001715023174250642,49.99978562210322,50,-100,excluded:premise,profiled
+total_incidents,String,0,0.0,1,4.287557935626605e-6,1.0,1,0,"",profiled
+geometry_x,String,262,0.11233401791341706,68937,0.2959037820157874,18.000012877139216,21,0,"",profiled
+geometry_y,String,262,0.11233401791341706,60514,0.25974906748050186,17.29217370402325,21,0,"",profiled
+geometry_json,String,262,0.11233401791341706,90670,0.3891900708671895,46.29218658116246,53,0,"",profiled
+source_city,String,0,0.0,1,4.287557935626605e-6,9.0,9,-100,ingestion_metadata,profiled
+source_dataset_id,String,0,0.0,1,4.287557935626605e-6,32.0,32,0,"",profiled
+source_dataset_kind,String,0,0.0,1,4.287557935626605e-6,6.0,6,0,"",profiled
+source_dataset,String,0,0.0,1,4.287557935626605e-6,23.0,23,0,"",profiled
+source_record_id,String,0,0.0,233233,1.0,5.688864783285384,6,-100,excluded:record.*(?:id|number|num|no),profiled
+occurred_at_raw,String,0,0.0,135349,0.5803166790291254,13.0,13,0,"",profiled
+occurred_at_end_raw,String,233233,100.0,1,,,,0,"",profiled
+latitude_raw,String,0,0.0,60514,0.2594572809165084,8.87228651177149,9,-100,excluded:latitude,profiled
+longitude_raw,String,0,0.0,68937,0.29557138140829126,9.870935931021767,10,-100,excluded:longitude,profiled
+downloaded_at_utc,String,0,0.0,4,0.00001715023174250642,32.0,32,0,"",profiled
+source_url,String,0,0.0,1,4.287557935626605e-6,106.0,106,0,"",profiled
+source_file_uri,String,0,0.0,118,0.0005059318364039394,125.0,125,-100,ingestion_metadata,profiled
+ingestion_run_id,String,0,0.0,1,4.287557935626605e-6,36.0,36,-100,ingestion_metadata,profiled
+ingested_at_utc,"Datetime(time_unit='us', time_zone='UTC')",0,0.0,1,4.287557935626605e-6,,,-100,ingestion_metadata,profiled
+snapshot_id,String,0,0.0,1,4.287557935626605e-6,36.0,36,-100,ingestion_metadata,profiled
+occurrence_year,Int64,0,0.0,4,0.00001715023174250642,,,-100,ingestion_metadata,profiled

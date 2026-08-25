@@ -55,25 +55,71 @@ def occurrence(lf: pl.LazyFrame) -> pl.Expr:
     return datetime_expr(lf, "start_date")
 
 
-def adapt(lf: pl.LazyFrame, _context: AdapterContext) -> pl.LazyFrame:
+def adapt(
+    lf: pl.LazyFrame,
+    _context: AdapterContext,
+) -> pl.LazyFrame:
     return adapt_standard(
         lf,
         occurrence(lf),
         source_record_id=composite_identifier(
-            lf, "incident_id", "case_number", "offence_code"
+            lf,
+            "incident_id",
+            "case_number",
+            "offence_code",
         ),
-        report_timestamp=datetime_expr(lf, "date"),
-        source_offense_code=text_expr(lf, "nibrs_code", "offence_code"),
-        source_offense_category=text_expr(lf, "crimename1", "crimename2"),
+        report_timestamp=datetime_expr(
+            lf,
+            "date",
+        ),
+        source_offense_code=text_expr(
+            lf,
+            "nibrs_code",
+        ),
+        source_offense_category=text_expr(
+            lf,
+            "crimename1",
+        ),
         source_offense_description=text_expr(
-            lf, "crimename3", "crimename2", "crimename1"
+            lf,
+            "crimename2",
         ),
-        latitude=numeric_expr(lf, "latitude"),
-        longitude=numeric_expr(lf, "longitude"),
-        location_label=text_expr(lf, "location", "address_street"),
-        location_type=text_expr(lf, "place"),
-        police_district=text_expr(lf, "district", "police_district_number"),
-        local_area=text_expr(lf, "sector", "beat", "pra"),
+        source_auxiliary=text_expr(
+            lf,
+            "crimename3",
+        ),
+        source_severity=text_expr(
+            lf,
+            "offence_code",
+        ),
+        latitude=numeric_expr(
+            lf,
+            "latitude",
+        ),
+        longitude=numeric_expr(
+            lf,
+            "longitude",
+        ),
+        location_label=text_expr(
+            lf,
+            "location",
+            "address_street",
+        ),
+        location_type=text_expr(
+            lf,
+            "place",
+        ),
+        police_district=text_expr(
+            lf,
+            "district",
+            "police_district_number",
+        ),
+        local_area=text_expr(
+            lf,
+            "sector",
+            "beat",
+            "pra",
+        ),
     )
 
 
@@ -89,12 +135,16 @@ SOURCE = SourceDefinition(
                     "strategy": "python_tolerant",
                     "encoding": "utf-8-sig",
                     "expected_columns": EXPECTED_COLUMNS,
-                    "overflow_column": "crimename1",
                 },
             ),
         ),
         timezone="America/New_York",
-        crosswalk_keys=("source_offense_code", "source_offense_description"),
+        crosswalk_keys=(
+            "source_offense_code",
+            "source_offense_category",
+            "source_offense_description",
+            "source_auxiliary",
+        ),
         coordinate_bounds=None,
     ),
     prepare_bronze=prepare_snake_case,

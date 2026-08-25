@@ -46,7 +46,7 @@ SOURCE = SourceDefinition(
         source_system="marin_county_sheriff_open_data",
         patterns=CSV,
         timezone="America/Los_Angeles",
-        crosswalk_keys=("source_offense_category", "source_offense_description"),
+        crosswalk_keys=("source_offense_description",),
         coordinate_bounds=None,
     ),
     prepare_bronze=prepare_snake_case,
