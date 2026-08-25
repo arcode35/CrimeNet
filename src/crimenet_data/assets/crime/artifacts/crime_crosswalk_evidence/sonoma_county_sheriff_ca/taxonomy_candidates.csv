@@ -1,2 +1,0 @@
-column,dtype,null_count,null_pct,n_unique,uniqueness_ratio,avg_string_length,max_string_length,taxonomy_name_score,taxonomy_name_reasons,profile_status,accepted,rejection_reason,explicit_override,selected_for_combination
-incident_type,String,1139,0.34557877618388794,26,0.00007915896642746451,17.911165372214594,27,5,type:5,profiled,true,,false,true

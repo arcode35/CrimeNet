@@ -1,3 +1,0 @@
-column,dtype,null_count,null_pct,n_unique,uniqueness_ratio,avg_string_length,max_string_length,taxonomy_name_score,taxonomy_name_reasons,profile_status,accepted,rejection_reason,explicit_override,selected_for_combination
-crime_class,String,13,0.02469839460435072,22,0.0004180760898483524,19.210881380411234,27,10,crime:10,profiled,true,,false,true
-crime,String,0,0.0,101,0.001918875273107248,6.194148380355277,10,10,crime:10,profiled,true,,false,true

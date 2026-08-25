@@ -1,11 +1,15 @@
+import os
 from collections.abc import Mapping
 from contextlib import ExitStack
+from datetime import UTC, datetime
+from uuid import uuid4
 
 import dagster as dg
 import polars as pl
 from dagster import AssetExecutionContext
 
 from crimenet_data.assets.crime.canonical import (
+    CANONICAL_CRIME_SCHEMA,
     CANONICAL_MAPPING_VERSION,
     apply_canonical_crosswalk,
     cleanse_canonical_source,
@@ -29,6 +33,7 @@ from crimenet_data.resources.duckdb import DuckDBResource
 log = get_logger(__name__)
 CROSSWALK_ASSET_KEY = dg.AssetKey(["reference", "canonical_crime_crosswalk"])
 KNOWN_STALE_MONTGOMERY_BRONZE_ROWS = 1_515_753
+SILVER_SCHEMA_VERSION = "crime_silver_v1"
 
 
 def deduplicate_source(lf: pl.LazyFrame, source_key: str) -> pl.LazyFrame:
@@ -54,6 +59,22 @@ def build_silver(
 ) -> pl.LazyFrame:
     """Build one source's canonical rows without persisting an intermediate table."""
 
+    adapted = adapt_silver_source(
+        bronze_lf,
+        source_key=source_key,
+        adapter_context=adapter_context,
+    )
+    return map_silver_source(adapted, crosswalk_lf, source_key=source_key)
+
+
+def adapt_silver_source(
+    bronze_lf: pl.LazyFrame,
+    *,
+    source_key: str,
+    adapter_context: AdapterContext,
+) -> pl.LazyFrame:
+    """Normalize, deduplicate, and adapt a Bronze source before quality filtering."""
+
     source = get_source(source_key)
     normalized = normalize_source(
         bronze_lf,
@@ -61,10 +82,32 @@ def build_silver(
         connection=adapter_context.duckdb,
     )
     deduplicated = deduplicate_source(normalized, source_key)
-    adapted = source.adapt_to_silver(deduplicated, adapter_context)
+    return source.adapt_to_silver(deduplicated, adapter_context)
+
+
+def map_silver_source(
+    adapted: pl.LazyFrame,
+    crosswalk_lf: pl.LazyFrame,
+    *,
+    source_key: str,
+) -> pl.LazyFrame:
+    """Apply generic validity filtering, v1.4 mapping, and canonical projection."""
+
     cleansed = cleanse_canonical_source(adapted, source_key)
     mapped = apply_canonical_crosswalk(cleansed, crosswalk_lf, source_key)
     return project_canonical_schema(mapped, source_key)
+
+
+def zero_zero_coordinate_count(lf: pl.LazyFrame) -> pl.LazyFrame:
+    return lf.select(
+        (
+            (pl.col("latitude") == 0.0)
+            & (pl.col("longitude") == 0.0)
+        )
+        .fill_null(False)
+        .sum()
+        .alias("zero_zero_coordinate_rows")
+    )
 
 
 def build_unified_silver(
@@ -102,7 +145,11 @@ def silver_mapping_summary(lf: pl.LazyFrame, source_key: str) -> pl.LazyFrame:
     review = pl.col("review_required").fill_null(False)
     taxonomy_is_present = pl.any_horizontal(
         *(
-            pl.col(key).is_not_null()
+            pl.col(key)
+            .cast(pl.String, strict=False)
+            .fill_null("")
+            .str.strip_chars()
+            .ne("")
             for key in get_source(source_key).config.crosswalk_keys
         )
     )
@@ -124,6 +171,37 @@ def silver_mapping_summary(lf: pl.LazyFrame, source_key: str) -> pl.LazyFrame:
         .sum()
         .alias("excluded_rows"),
         review.sum().alias("review_required_rows"),
+    )
+
+
+def silver_unmapped_key_counts(
+    lf: pl.LazyFrame,
+    source_key: str,
+    *,
+    limit: int = 25,
+) -> pl.LazyFrame:
+    """Return the most frequent populated source keys missing from the crosswalk."""
+
+    keys = list(get_source(source_key).config.crosswalk_keys)
+    taxonomy_is_present = pl.any_horizontal(
+        *(
+            pl.col(key)
+            .cast(pl.String, strict=False)
+            .fill_null("")
+            .str.strip_chars()
+            .ne("")
+            for key in keys
+        )
+    )
+    return (
+        lf.filter(
+            ~pl.col("canonical_mapping_found").fill_null(False)
+            & taxonomy_is_present
+        )
+        .group_by(keys)
+        .agg(pl.len().alias("row_count"))
+        .sort("row_count", descending=True)
+        .head(limit)
     )
 
 
@@ -155,8 +233,11 @@ def silver_crime_offenses(
         run_id=context.run_id,
         asset_key=context.asset_key.to_user_string(),
     ):
+        snapshot_id = str(uuid4())
+        created_at_utc = datetime.now(UTC)
         crosswalk = validate_canonical_crosswalk(crime_lake.resolve_crosswalk())
         crosswalk_lf = crosswalk.lazy()
+        crosswalk_sha256 = crime_lake.canonical_crosswalk_sha256()
 
         bronze_frames: dict[str, pl.LazyFrame] = {}
         snapshot_uris: dict[str, str] = {}
@@ -168,14 +249,24 @@ def silver_crime_offenses(
                 snapshot_uri=snapshot_uri,
             )
 
-        montgomery_rows = (
-            bronze_frames["montgomery_county_md"]
-            .select(pl.len().alias("rows"))
-            .collect()
-            .item()
+        bronze_counts = pl.collect_all(
+            [
+                bronze_frames[source_key].select(pl.len().alias("rows"))
+                for source_key in SILVER_SOURCE_KEYS
+            ]
         )
+        input_rows = {
+            source_key: int(count.item())
+            for source_key, count in zip(
+                SILVER_SOURCE_KEYS,
+                bronze_counts,
+                strict=True,
+            )
+        }
+        montgomery_rows = input_rows["montgomery_county_md"]
         validate_montgomery_bronze_row_count(montgomery_rows)
 
+        adapted_frames: dict[str, pl.LazyFrame] = {}
         source_frames: dict[str, pl.LazyFrame] = {}
         with ExitStack() as stack:
             for source_key in SILVER_SOURCE_KEYS:
@@ -193,11 +284,33 @@ def silver_crime_offenses(
                         duckdb_resource.get_connection()
                     )
                     adapter_context = AdapterContext(duckdb=connection)
-                source_frames[source_key] = build_silver(
+                adapted_frames[source_key] = adapt_silver_source(
                     bronze_frames[source_key],
-                    crosswalk_lf,
                     source_key=source_key,
                     adapter_context=adapter_context,
+                )
+
+            zero_zero_counts = pl.collect_all(
+                [
+                    zero_zero_coordinate_count(adapted_frames[source_key])
+                    for source_key in SILVER_SOURCE_KEYS
+                ]
+            )
+            for source_key, count in zip(
+                SILVER_SOURCE_KEYS,
+                zero_zero_counts,
+                strict=True,
+            ):
+                log.info(
+                    "silver_source_zero_zero_coordinates",
+                    source_city=source_key,
+                    bronze_snapshot_uri=snapshot_uris[source_key],
+                    zero_zero_coordinate_rows=int(count.item()),
+                )
+                source_frames[source_key] = map_silver_source(
+                    adapted_frames[source_key],
+                    crosswalk_lf,
+                    source_key=source_key,
                 )
 
             summaries = pl.collect_all(
@@ -209,6 +322,7 @@ def silver_crime_offenses(
             summary_rows = [summary.row(0, named=True) for summary in summaries]
             for summary in summary_rows:
                 source_key = str(summary["source_city"])
+                summary["input_rows"] = input_rows[source_key]
                 log.info(
                     "silver_source_mapping_summary",
                     bronze_snapshot_uri=snapshot_uris[source_key],
@@ -241,38 +355,102 @@ def silver_crime_offenses(
                 if summary["unexpected_unmapped_rows"]
             ]
             if unexpected:
+                unexpected_sources = {
+                    str(summary["source_city"]) for summary in unexpected
+                }
+                unmapped_key_frames = pl.collect_all(
+                    [
+                        silver_unmapped_key_counts(
+                            source_frames[source_key], source_key
+                        )
+                        for source_key in SILVER_SOURCE_KEYS
+                        if source_key in unexpected_sources
+                    ]
+                )
+                for source_key, unmapped_keys in zip(
+                    (
+                        source_key
+                        for source_key in SILVER_SOURCE_KEYS
+                        if source_key in unexpected_sources
+                    ),
+                    unmapped_key_frames,
+                    strict=True,
+                ):
+                    log.error(
+                        "silver_source_top_unmapped_keys",
+                        source_city=source_key,
+                        bronze_snapshot_uri=snapshot_uris[source_key],
+                        crosswalk_keys=list(
+                            get_source(source_key).config.crosswalk_keys
+                        ),
+                        top_unmapped_keys=unmapped_keys.to_dicts(),
+                        mapping_version=CANONICAL_MAPPING_VERSION,
+                    )
                 raise RuntimeError(
-                    "Silver overwrite blocked by populated taxonomy values missing "
+                    "Silver publication blocked by populated taxonomy values missing "
                     f"from canonical crosswalk v1.4: {unexpected}"
+                )
+
+            review_required = [
+                summary
+                for summary in summary_rows
+                if summary["review_required_rows"]
+            ]
+            if review_required:
+                raise RuntimeError(
+                    "Silver publication blocked by review-required mappings: "
+                    f"{review_required}"
                 )
 
             silver_lf = pl.concat(
                 [source_frames[source_key] for source_key in SILVER_SOURCE_KEYS],
                 how="vertical",
             )
-            target_uri = crime_lake.silver_crime_offenses_uri
+            actual_schema = silver_lf.collect_schema()
+            if actual_schema != CANONICAL_CRIME_SCHEMA:
+                raise RuntimeError(
+                    "Silver publication blocked by canonical schema mismatch: "
+                    f"expected={CANONICAL_CRIME_SCHEMA}, actual={actual_schema}"
+                )
+            snapshot_uri = crime_lake.silver_snapshot_uri(snapshot_id)
             log.info(
-                "silver_unified_write_started",
-                target_uri=target_uri,
+                "silver_snapshot_write_started",
+                snapshot_id=snapshot_id,
+                snapshot_uri=snapshot_uri,
                 source_count=len(SILVER_SOURCE_KEYS),
                 mapping_version=CANONICAL_MAPPING_VERSION,
                 partitioning_columns=["source_city", "occurrence_year"],
             )
-            crime_lake.write_delta_table(
-                lf=silver_lf,
-                target_uri=target_uri,
-                partitioning_columns=["source_city", "occurrence_year"],
+            manifest = crime_lake.publish_silver_snapshot(
+                silver_lf,
+                snapshot_id=snapshot_id,
+                created_at_utc=created_at_utc,
+                mapping_version=CANONICAL_MAPPING_VERSION,
+                schema_version=SILVER_SCHEMA_VERSION,
+                crosswalk_sha256=crosswalk_sha256,
+                source_snapshots=snapshot_uris,
+                per_source=summary_rows,
+                git_commit_sha=(
+                    os.environ.get("GIT_COMMIT_SHA")
+                    or os.environ.get("GITHUB_SHA")
+                ),
             )
             log.info(
-                "silver_unified_write_completed",
-                target_uri=target_uri,
+                "silver_snapshot_published",
+                snapshot_id=snapshot_id,
+                snapshot_uri=snapshot_uri,
+                row_count=manifest["row_count"],
+                parquet_file_count=manifest["parquet_file_count"],
                 source_count=len(SILVER_SOURCE_KEYS),
                 mapping_version=CANONICAL_MAPPING_VERSION,
             )
 
         return dg.MaterializeResult(
             metadata={
-                "target_uri": target_uri,
+                "snapshot_id": snapshot_id,
+                "snapshot_uri": snapshot_uri,
+                "row_count": manifest["row_count"],
+                "include_in_model_rows": manifest["include_in_model_rows"],
                 "sources_processed": len(SILVER_SOURCE_KEYS),
                 "mapping_version": CANONICAL_MAPPING_VERSION,
                 "partitioning_columns": ["source_city", "occurrence_year"],

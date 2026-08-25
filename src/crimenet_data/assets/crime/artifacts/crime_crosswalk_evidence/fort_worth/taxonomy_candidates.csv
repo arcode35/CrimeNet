@@ -1,5 +1,0 @@
-column,dtype,null_count,null_pct,n_unique,uniqueness_ratio,avg_string_length,max_string_length,taxonomy_name_score,taxonomy_name_reasons,profile_status,accepted,rejection_reason,explicit_override,selected_for_combination
-offense_desc,String,0,0.0,2102,0.0033583585902562866,39.71870151988893,50,22,offen[sc]e:15; _desc:7,profiled,true,,false,true
-offense,String,0,0.0,60,0.00009586180562101674,3.0,3,15,offen[sc]e:15,profiled,true,,false,true
-nature_of_call,String,0,0.0,371,0.0005927454980899535,10.344858052631327,25,6,nature:6,profiled,true,,false,true
-geocodescore,Int64,0,0.0,74,0.00011822956026592065,,,5,code:5,profiled,true,,false,true

@@ -1,6 +1,7 @@
 from crimenet_data.assets.crime.canonical.crosswalk import (
     apply_canonical_crosswalk,
     cleanse_canonical_source,
+    normalize_crosswalk_nulls,
     project_canonical_schema,
     validate_canonical_crosswalk,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "SOURCE_PROJECTION_SCHEMA",
     "apply_canonical_crosswalk",
     "cleanse_canonical_source",
+    "normalize_crosswalk_nulls",
     "project_canonical_schema",
     "project_source_fields",
     "validate_canonical_crosswalk",

@@ -1,7 +1,0 @@
-column,dtype,null_count,null_pct,n_unique,uniqueness_ratio,avg_string_length,max_string_length,taxonomy_name_score,taxonomy_name_reasons,profile_status,accepted,rejection_reason,explicit_override,selected_for_combination
-report_type_description,String,0,0.0,6,6.002394955587279e-6,10.819909143748356,19,27,description:8; _desc:7; descr:7; type:5,profiled,true,,false,true
-incident_description,String,0,0.0,863,0.0008633444744453037,29.395270713014494,84,22,description:8; _desc:7; descr:7,profiled,true,,false,true
-incident_subcategory,String,1484,0.1484592352348587,73,0.00007313771832360335,15.737636970415291,40,16,category:8; subcategory:8,profiled,true,,false,true
-report_type_code,String,0,0.0,4,4.001596637058186e-6,2.0,2,10,type:5; code:5,profiled,true,,false,true
-incident_category,String,1484,0.1484592352348587,50,0.0000500943276189064,13.722487443856782,44,8,category:8,profiled,true,,false,true
-incident_code,String,0,0.0,866,0.0008663456719230973,5.0,5,5,code:5,profiled,true,,false,true
