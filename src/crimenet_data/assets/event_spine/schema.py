@@ -36,6 +36,17 @@ COMPONENT_AVAILABILITY_COLUMNS = (
     "tiger_release_date",
 )
 
+TEMPORAL_INDEX_BASE_COLUMNS = (
+    "osm_h3_cell_id",
+    "feature_available_at",
+    "feature_version_id",
+)
+
+HISTORY_KEY_COLUMNS = (
+    "osm_h3_cell_id",
+    "feature_available_at",
+)
+
 __all__ = [
     "COMPONENT_AVAILABILITY_COLUMNS",
     "EVENT_SPINE_LATEST_POINTER",
@@ -44,10 +55,12 @@ __all__ = [
     "EVENT_SPINE_SCHEMA_VERSION",
     "EVENT_SPINE_SUCCESS_MARKER",
     "H3_RESOLUTION",
+    "HISTORY_KEY_COLUMNS",
     "HISTORY_ROOT_SUFFIX",
     "MAX_UNJOINABLE_EVENT_PCT",
     "MIN_HISTORY_COVERAGE_PCT",
     "PARTITION_COLUMNS",
     "REQUIRED_HISTORY_COLUMNS",
+    "TEMPORAL_INDEX_BASE_COLUMNS",
     "WEATHER_H3_RESOLUTION",
 ]
