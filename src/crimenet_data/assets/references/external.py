@@ -12,9 +12,9 @@ canonical_crime_crosswalk = dg.AssetSpec(
     metadata={
         "path": (
             "s3://crimenet-data/raw_files/landing/reference/"
-            "canonical_crime_crosswalk_v1_4.csv"
+            "canonical_crime_crosswalk_v1_5.csv"
         ),
-        "mapping_version": "crime_canonical_v1_4",
+        "mapping_version": "crime_canonical_v1_5",
     },
     kinds={"s3", "csv"},
 )

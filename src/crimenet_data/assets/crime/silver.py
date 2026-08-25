@@ -34,7 +34,127 @@ log = get_logger(__name__)
 CROSSWALK_ASSET_KEY = dg.AssetKey(["reference", "canonical_crime_crosswalk"])
 KNOWN_STALE_MONTGOMERY_BRONZE_ROWS = 1_515_753
 SILVER_SCHEMA_VERSION = "crime_silver_v1"
+DUPLICATE_SEMANTIC_COLUMNS = (
+    "occurrence_timestamp",
+    "report_timestamp",
+    "source_offense_code",
+    "source_offense_category",
+    "source_offense_description",
+    "source_auxiliary",
+    "source_severity",
+    "latitude",
+    "longitude",
+    "location_label",
+    "location_type",
+    "police_district",
+    "local_area",
+)
 
+def silver_duplicate_id_examples(
+    lf: pl.LazyFrame,
+    *,
+    limit: int = 25,
+) -> pl.LazyFrame:
+    duplicate_ids = (
+        lf.group_by("crime_id")
+        .agg(pl.len().alias("_rows"))
+        .filter(pl.col("_rows") > 1)
+        .select("crime_id")
+    )
+
+    return (
+        lf.join(
+            duplicate_ids,
+            on="crime_id",
+            how="inner",
+        )
+        .select(
+            [
+                "source_city",
+                "crime_id",
+                "source_record_id",
+                "occurrence_timestamp",
+                "report_timestamp",
+                "source_offense_code",
+                "source_offense_category",
+                "source_offense_description",
+                "source_auxiliary",
+                "source_severity",
+                "latitude",
+                "longitude",
+                "source_file_uri",
+            ]
+        )
+        .sort(
+            [
+                "crime_id",
+                "occurrence_timestamp",
+            ]
+        )
+        .head(limit)
+    )
+
+
+def silver_duplicate_id_summary(
+    lf: pl.LazyFrame,
+    source_key: str,
+) -> pl.LazyFrame:
+    duplicate_groups = (
+        lf.group_by(
+            [
+                "crime_id",
+                "source_record_id",
+            ]
+        )
+        .agg(
+            pl.len().alias("row_count"),
+            pl.struct(
+                list(DUPLICATE_SEMANTIC_COLUMNS)
+            )
+            .n_unique()
+            .alias("semantic_variants"),
+        )
+        .filter(
+            pl.col("row_count") > 1
+        )
+    )
+
+    return duplicate_groups.select(
+        pl.lit(source_key).alias("source_city"),
+        pl.len().alias("duplicate_ids"),
+        (
+            pl.col("row_count").sum()
+            - pl.len()
+        ).alias("duplicate_surplus_rows"),
+        (
+            (pl.col("semantic_variants") == 1)
+            .sum()
+        ).alias("exact_duplicate_ids"),
+        (
+            pl.when(
+                pl.col("semantic_variants") == 1
+            )
+            .then(
+                pl.col("row_count") - 1
+            )
+            .otherwise(0)
+            .sum()
+        ).alias("exact_duplicate_surplus_rows"),
+        (
+            (pl.col("semantic_variants") > 1)
+            .sum()
+        ).alias("identity_collision_ids"),
+        (
+            pl.when(
+                pl.col("semantic_variants") > 1
+            )
+            .then(
+                pl.col("row_count") - 1
+            )
+            .otherwise(0)
+            .sum()
+        ).alias("identity_collision_surplus_rows"),
+    )
 
 def deduplicate_source(lf: pl.LazyFrame, source_key: str) -> pl.LazyFrame:
     """Apply the source contract's record identity before crosswalk expansion."""
@@ -400,6 +520,94 @@ def silver_crime_offenses(
                 raise RuntimeError(
                     "Silver publication blocked by review-required mappings: "
                     f"{review_required}"
+                )
+            duplicate_summaries = pl.collect_all(
+                [
+                    silver_duplicate_id_summary(
+                        source_frames[source_key],
+                        source_key,
+                    )
+                    for source_key in SILVER_SOURCE_KEYS
+                ]
+            )
+
+            duplicate_summary_rows = [
+                summary.row(0, named=True)
+                for summary in duplicate_summaries
+            ]
+
+            duplicate_sources: list[str] = []
+            LASD_COMPARE_COLUMNS = [
+                "occurrence_timestamp",
+                "report_timestamp",
+                "source_offense_code",
+                "source_offense_category",
+                "source_offense_description",
+                "source_auxiliary",
+                "latitude",
+                "longitude",
+                "location_label",
+                "police_district",
+                "local_area",
+                "source_file_uri",
+            ]
+
+            lasd = source_frames["los_angeles_county_sheriff"]
+
+            collision_ids = (
+                lasd.group_by("crime_id")
+                .agg(
+                    pl.len().alias("rows"),
+                    pl.struct([
+                        c for c in LASD_COMPARE_COLUMNS
+                        if c != "source_file_uri"
+                    ]).n_unique().alias("semantic_variants"),
+                )
+                .filter(
+                    (pl.col("rows") > 1)
+                    & (pl.col("semantic_variants") > 1)
+                )
+                .select("crime_id")
+            )
+
+            lasd_collision_examples = (
+                lasd.join(
+                    collision_ids,
+                    on="crime_id",
+                    how="inner",
+                )
+                .select(
+                    ["crime_id", "source_record_id"]
+                    + LASD_COMPARE_COLUMNS
+                )
+                .sort(["crime_id", "source_file_uri"])
+                .head(50)
+                .collect(engine="streaming")
+            )
+
+            log.error(
+                "lasd_identity_collision_details",
+                rows=lasd_collision_examples.to_dicts(),
+            )
+            for summary in duplicate_summary_rows:
+                if summary["duplicate_ids"]:
+                    source_key = str(summary["source_city"])
+                    duplicate_sources.append(source_key)
+                    log.error(
+                        "silver_source_duplicate_identity_summary",
+                        **summary,
+                    )
+
+            for source_key in duplicate_sources:
+                duplicate_examples = silver_duplicate_id_examples(
+                    source_frames[source_key],
+                    limit=25,
+                ).collect(engine="streaming")
+
+                log.error(
+                    "silver_source_duplicate_identity_examples",
+                    source_city=source_key,
+                    duplicate_examples=duplicate_examples.to_dicts(),
                 )
 
             silver_lf = pl.concat(

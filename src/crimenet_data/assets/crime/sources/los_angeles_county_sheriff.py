@@ -17,13 +17,40 @@ from crimenet_data.assets.crime.sources.base import (
     CrimeSourceConfig,
     SourceDefinition,
 )
-
+def deduplicate_exports(lf: pl.LazyFrame) -> pl.LazyFrame:
+    return (
+        lf.with_columns(
+            pl.col("source_file_uri")
+            .str.extract(r"lasd_part_i_ii_(\d{4})\.csv", 1)
+            .cast(pl.Int16, strict=False)
+            .alias("_export_year")
+        )
+        .sort(
+            [
+                "incident_id",
+                "lurn_sak",
+                "stat",
+                "_export_year",
+            ]
+        )
+        .unique(
+            subset=[
+                "incident_id",
+                "lurn_sak",
+                "stat",
+            ],
+            keep="last",
+            maintain_order=False,
+        )
+        .drop("_export_year")
+    )
 
 def occurrence(lf: pl.LazyFrame) -> pl.Expr:
     return datetime_expr(lf, "incident_date")
 
 
 def adapt(lf: pl.LazyFrame, _context: AdapterContext) -> pl.LazyFrame:
+    lf = deduplicate_exports(lf)
     return adapt_standard(
         lf,
         occurrence(lf),
