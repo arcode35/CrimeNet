@@ -1,0 +1,14 @@
+{
+  "source_city": "chicago",
+  "snapshot_uri": "s3://crimenet-data/bronze/crime/chicago/snapshot_id=4f02cc45-5b78-476f-b177-11f238073e01",
+  "row_count": 3033860,
+  "column_count": 35,
+  "selected_taxonomy_columns": [
+    "iucr",
+    "description",
+    "fbi_code",
+    "primary_type"
+  ],
+  "taxonomy_combination_count": 576,
+  "candidate_column_count": 4
+}

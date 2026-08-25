@@ -225,7 +225,7 @@ class CrimeLakeResources(dg.ConfigurableResource):
         get_source(source_key)
         roots = {
             "bronze": f"{self.bronze_root}/crime/{source_key}",
-            "silver": f"{self.silver_root}/crime/{source_key}",
+            "silver": self.silver_crime_offenses_uri,
             "gold": f"{self.gold_root}/crime/{source_key}",
         }
         try:
@@ -453,13 +453,22 @@ class CrimeLakeResources(dg.ConfigurableResource):
     @property
     def canonical_crosswalk_uri(self) -> str:
         return self.crosswalk_path or (
-            f"{self.landing_root}/reference/canonical_crime_crosswalk_v1_3.csv"
+            f"{self.landing_root}/reference/canonical_crime_crosswalk_v1_4.csv"
         )
 
+    @property
+    def silver_crime_offenses_uri(self) -> str:
+        return f"{self.silver_root.rstrip('/')}/crime_offenses"
+
     def resolve_crosswalk(self) -> pl.LazyFrame:
+        storage_options = (
+            self.storage_options
+            if self.canonical_crosswalk_uri.startswith("s3://")
+            else {}
+        )
         return pl.scan_csv(
             self.canonical_crosswalk_uri,
-            storage_options=self.storage_options,
+            storage_options=storage_options,
             credential_provider=None,
         )
 
@@ -515,11 +524,14 @@ class CrimeLakeResources(dg.ConfigurableResource):
 
         # Polars reads the physical Parquet files through B2's
         # S3-compatible endpoint.
-        return pl.scan_parquet(
+        lf = pl.scan_parquet(
             s3_files,
             storage_options=self.storage_options,
             hive_partitioning=True,
         )
+        if schema == "silver":
+            return lf.filter(pl.col("source_city") == source_key)
+        return lf
 
     def get_source_fixture(self, source_key: str) -> pl.LazyFrame:
         get_source(source_key)
@@ -532,12 +544,14 @@ class CrimeLakeResources(dg.ConfigurableResource):
         return pl.scan_parquet(path, use_statistics=True)
 
     def get_crosswalk_fixture(self) -> pl.LazyFrame:
-        root = (
-            Path(self.local_fixture_root)
-            if self.local_fixture_root
-            else PROJECT_ROOT / "tests" / "fixtures"
+        path = (
+            Path(self.crosswalk_path)
+            if self.crosswalk_path
+            else PROJECT_ROOT
+            / "src"
+            / "crimenet_data"
+            / "canonical_crime_crosswalk_v1_4.csv"
         )
-        path = root / "data" / "references" / "canonical_crime_crosswalk_v1_3.csv"
         return pl.scan_csv(path)
 
     def write_delta_table(

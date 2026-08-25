@@ -1,0 +1,8 @@
+column,dtype,null_count,null_pct,n_unique,uniqueness_ratio,avg_string_length,max_string_length,taxonomy_name_score,taxonomy_name_reasons,profile_status,accepted,rejection_reason,explicit_override,selected_for_combination
+ofns_desc,String,0,0.0,74,0.000012472783207184053,18.223537389190277,36,22,ofns:15; _desc:7,profiled,true,,false,true
+law_cat_cd,String,0,0.0,3,5.056533732642184e-7,9.09813147594489,11,14,_cat_:6; law_cat:8,profiled,true,,false,true
+loc_of_occur_desc,String,0,0.0,6,1.0113067465284368e-6,6.6070741244021916,11,7,_desc:7,profiled,true,,false,true
+juris_desc,String,0,0.0,25,4.2137781105351535e-6,16.263828692727593,33,7,_desc:7,profiled,true,,false,true
+prem_typ_desc,String,0,0.0,91,0.000015338152322347956,14.406916798782657,28,7,_desc:7,profiled,true,,false,true
+pd_desc,String,0,0.0,418,0.00007045437000814776,26.22194980614935,71,7,_desc:7,profiled,true,,false,true
+jurisdiction_code,String,0,0.0,25,4.2137781105351535e-6,1.007036335240096,2,5,code:5,profiled,true,,false,true

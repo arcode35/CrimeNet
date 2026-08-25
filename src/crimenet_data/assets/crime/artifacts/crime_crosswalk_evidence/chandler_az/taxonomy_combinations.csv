@@ -1,0 +1,235 @@
+report_summary_offense_description,report_primary_offense_description,report_summary_offense_code,report_primary_offense_code,event_type,row_count
+,Disturbance,NONCRIM ,0005-5,General Offense,14142
+,Non-Injury Collision,NONINJUR,5499-3,General Offense,13780
+,Non Criminal Incident,NONCRIM ,0005-0,General Offense,9659
+,Theft-Shoplift,SHOPTHEF,2303-0,General Offense,6709
+,Welfare Check,NONCRIM ,0005-1,General Offense,6597
+,Suspicious Activity,NONCRIM ,0005-6,General Offense,5783
+,Hit and Run Collision,HRCOLLIS,5401-0,General Offense,4938
+,Disorderly Conduct,DISORDER,5311-0,General Offense,4522
+,Criminal Traffic,TRAFFIC ,5499-2,General Offense,4306
+,Theft,LARCENYT,2399-0,General Offense,4007
+,Trespassing,TRESPASS,5707-0,General Offense,3696
+,Injury Collision,INJURYCO,5499-4,General Offense,3660
+,Drugs,DRUGNARC,3599-0,General Offense,3598
+,Assault - Dv,ASSAULDV,1313-1,General Offense,3576
+,DUI,DRIVINGU,5404-0,General Offense,3534
+,Assault,ASSAULTO,1313-0,General Offense,3126
+,Disorderly Conduct - Dv,DISCCOND,5311-1,General Offense,3075
+,Found/Seized Property,OTHER   ,0004-0,General Offense,2815
+,Vehicle Burglary,VEHBURG ,2305-0,General Offense,2779
+,Damage of Property - Substantial Damage,DESTRUCT,2999-0,General Offense,2721
+,Identity Theft,IDTHEFT ,2610-0,General Offense,2055
+,Mental Health Pick Up,NONCRIM ,0005-3,General Offense,2029
+,Possess Drug Paraphernalia,POSSPARA,3550-0,General Offense,1863
+,Assist Other Agency,OTHER   ,0007-0,General Offense,1604
+,Stolen Vehicle,MOTORVEH,2499-0,General Offense,1545
+,Order of Protection Service,NONCRIM ,0005-2,General Offense,1524
+,Threats,OTHER   ,1316-1,General Offense,1498
+,Civil Traffic,TRAFFIC ,5499-1,General Offense,1345
+,Fraud,FRAUDOFF,2699-0,General Offense,1280
+,Missing and Overdue Party,OTHER   ,0002-0,General Offense,1218
+,Runaway,RUNAWAY ,7399-4,General Offense,1173
+,Abandoned Vehicle,TRAFFIC ,5499-8,General Offense,1126
+,Theft From Building,LARCENYT,2308-0,General Offense,1103
+,Theft-Vehicle Parts/Accessory,VEHBURG ,2304-0,General Offense,1074
+,Lost Property,OTHER   ,0004-1,General Offense,1049
+,Burglary - No Forced Entry,BURGLARY,2204-0,General Offense,918
+,Damage of Property - Insubstantial Damage,DESTRUCT,2999-4,General Offense,859
+,Damage of Property - Substantial Damage - Dv,CRIMDADV,2999-1,General Offense,842
+,Sex Offense,SEXOFFEN,3699-0,General Offense,838
+,Liquor Violation,LIQORLA ,4199-0,General Offense,832
+,Fraudulent Use of Credit Cards,CCFRUAD ,2605-0,General Offense,798
+,Burglary - Forced Entry,BURGLARY,2202-0,General Offense,785
+,Private Property Collision,PPCOLLIS,5499-6,General Offense,759
+,Warrant Arrest - Other Agency,WOA     ,0006-1,General Offense,748
+,Aggravated Assault,ASSAULTO,1315-0,General Offense,719
+,Harassment,OTHER   ,5309-0,General Offense,709
+,Death Investigation-Natural,OTHER   ,0001-3,General Offense,698
+,Obscene Material,PORNOGRA,3700-0,General Offense,683
+,Order of Protection Violation - Dv,FAMILYDV,5007-4,General Offense,621
+,Fraud-By Wire,FRAUDOFF,2608-0,General Offense,616
+,Barking Dog,OTHER   ,5399-1,General Offense,594
+,DUI - Extreme,DRIVINGU,5404-2,General Offense,577
+,Public Order,OTHER   ,7399-0,General Offense,564
+,Warrant Arrest,WARRANT ,0006-0,General Offense,542
+,Public Peace,OTHER   ,5399-0,General Offense,539
+,Order of Protection Violation,FAMILYDV,5007-0,General Offense,493
+,Death Investigation,OTHER   ,0001-0,General Offense,457
+,Theft - Mail/Package,MAILTHEF,2310-0,General Offense,451
+,Stolen Veh-Recovery Other Jur,OTHVEHTF,2499-1,General Offense,425
+,Aggravated DUI,DRIVINGU,5404-1,General Offense,403
+,Child/Adult Abuse,FAMILYOF,1313-2,General Offense,390
+,Swat/Sau Operation,SAU     ,0003-0,General Offense,382
+,Traffic Related,TRAFFIC ,5499-0,General Offense,374
+,Animal Cruelty,ANIMCRUE,7201-0,General Offense,365
+,Theft By Fraud,LARCENYT,2699-4,General Offense,362
+,Neighborhood Complaint,NONCRIM ,0005-4,General Offense,356
+,Threats - Dv,FAMILYDV,1316-2,General Offense,349
+,Child/Adult Abuse - Dv,CADVABUS,1313-3,General Offense,341
+,Dog at Large,OTHER   ,7399-5,General Offense,324
+,Robbery,ROBBERY ,1299-0,General Offense,311
+,Public Sexual Indecency,SEXOFFEN,3605-0,General Offense,307
+,DUI - Drugs,DRIVINGU,5403-0,General Offense,285
+,Theft From Vehicle,VEHBURG ,2305-1,General Offense,272
+,Trespassing - Dv,TRESPADV,5707-1,General Offense,268
+,Aggravated Assault - Dv,ASSAULDV,1315-1,General Offense,263
+,Sexual Assault - Rape,SEXOFFEF,1103-0,General Offense,257
+,Stolen Veh-Fail to Return/Pay,FAILPAY ,2699-2,General Offense,255
+,Family Court Order Violation,OTHER   ,5007-2,General Offense,254
+,Unlawful Possession of Weapon,WEAPONLA,5212-0,General Offense,253
+,Sexual Assault - Force Fondle,SEXOFFEF,1199-1,General Offense,253
+,Health and Safety,OTHER   ,5599-0,General Offense,250
+,Organized Retail Theft,SHOPTHEF,2303-1,General Offense,248
+,Liquor Violation - Possession,LIQORLA ,4104-0,General Offense,247
+,Damage of Property - Insubstantial Damage - Dv,DESTRUCT,2999-5,General Offense,242
+,Theft-Obt Service W/Out Paying,LARCENYT,2602-0,General Offense,234
+,Prohibited Possesser,WEAPONLA,5203-0,General Offense,233
+,Agg Assault - Officer - No/Minor Injury,ASSAULTO,1311-0,General Offense,228
+,Death Investigation-Accidental,OTHER   ,0001-2,General Offense,224
+,Burglary From Yard,BURGLARY,2309-1,General Offense,213
+,Intimidation/Stalking,OTHER   ,1316-0,General Offense,207
+,Neglect of Child - Nonviolent,FAMILYOF,3806-0,General Offense,202
+,Forgery,COUNTERF,2589-0,General Offense,201
+,Agg Aslt - Strangulation - Dv,ASSAULDV,1302-1,General Offense,200
+,Obstruction of Police,OTHER   ,4899-0,General Offense,182
+,Death Investigation-Suicide,OTHER   ,0001-1,General Offense,170
+,Discharging A Firearm,WEAPONLA,5213-0,General Offense,168
+,Drugs - Civil,DRUGNARC,3599-1,General Offense,166
+,Civil Standby,NONCRIM ,0005-7,General Offense,166
+,Graffiti - Substantial Damage,GRAFFITI,2999-2,General Offense,164
+,Harassment - Dv,FAMILYDV,5309-1,General Offense,162
+,Disorderly Conduct - Weapons,WEAPONLA,5311-2,General Offense,160
+,Extortion,EXTORTIO,2199-0,General Offense,154
+,Fire Investigation,FIRE    ,0010-0,General Offense,153
+,False Reporting,OTHER   ,4803-0,General Offense,149
+,Curfew,CURFEW  ,7399-2,General Offense,140
+,Icac Investigation,OTHER   ,0008-0,General Offense,138
+,Graffiti - Insubstantial Damage,GRAFFITI,2999-3,General Offense,132
+,All Other Court Order Violatio,OTHER   ,5007-3,General Offense,126
+,Sexual Exploitation,SEXOFFEN,3699-2,General Offense,125
+,Failure to Obey Police,OTHER   ,4813-0,General Offense,122
+,All Other Court Order Violatio - Dv,OTHER   ,5007-7,General Offense,119
+,Counterfeiting,COUNTERF,2599-0,General Offense,119
+,Theft By Embezzlement,EMBEZZLE,2799-0,General Offense,118
+,Injunc Agnst Harassment Violat,OTHER   ,5007-1,General Offense,116
+,Endangerment,OTHER   ,1399-0,General Offense,114
+,Vehicle Burglary-Parts/Access,VEHBURG ,2304-1,General Offense,110
+,Weapons Violation,WEAPONLA,5299-0,General Offense,109
+,Conservation - Environment,OTHER   ,6205-0,General Offense,108
+,Stolen Veh-Trailer Theft,MOTORVEH,2399-3,General Offense,107
+,Stolen Prop-Possession,STOLENPR,2804-0,General Offense,96
+,Sexual Conduct With Minor,SEXOFFEN,1116-0,General Offense,90
+,Vehicle Impound,TRAFFIC ,5499-7,General Offense,90
+,Burglary From Locker,LARCENYT,2399-2,General Offense,87
+,Nonviolent Family Offenses,FAMILYOF,3899-0,General Offense,86
+,Stolen Veh - Possession/Use,MOTORVEH,2804-1,General Offense,83
+,Prostitution,PROSTIT ,4004-0,General Offense,73
+,Theft From Yard,LARCENYT,2309-0,General Offense,70
+,Forgery of Checks,COUNTERF,2501-0,General Offense,66
+,Contrib Delinquency of Minor,FAMILYOF,3805-0,General Offense,64
+,Reckless Burning,RECKBURN,2007-0,General Offense,59
+,Fatal Injury Collision,FATALCOL,5499-5,General Offense,58
+,Commercial Sexual Exploitation,PROSTIT ,4099-0,General Offense,57
+,Nonviolent Family Offenses -Dv,FAMILYDV,3899-1,General Offense,55
+,Child/Adult Abuse-Sr Inj,FAMILYOF,1302-2,General Offense,55
+,Sexual Assault - Oral/Sodomy,EXPIRED ,1199-0,General Offense,54
+,Intimidation/Stalking - Dv,OTHER   ,1316-4,General Offense,51
+,Resisting Arrest,OTHER   ,4801-0,General Offense,50
+,Sexual Assault - Rape - Dv,SEXOFFEF,1103-1,General Offense,50
+,Family Court Order Violation - Dv,OTHER   ,5007-6,General Offense,50
+,Vdo - Tipsoft,NONCRIM ,0005-8,General Offense,49
+,Purchasing Prostitution,JOHN    ,4005-0,General Offense,49
+,Fraud-Bad Checks,BADCHECK,2606-0,General Offense,48
+,Child/Adult Abuse-Sr Inj-Dv,CADVABUS,1302-3,General Offense,46
+,Vulnerable Adult Abuse,FAMILYOF,3811-0,General Offense,45
+,Stolen Veh-Unauth Use Joyride,JOYRIDE ,2411-0,General Offense,43
+,Cybertip - Ncmec,OTHER   ,0008-2,General Offense,43
+,Voyeurism/Peeping Tom,PEEPINGT,3611-0,General Offense,41
+,Computer Tampering,FRAUDOFF,2609-0,General Offense,40
+,Death Investigation-Undetermnd,OTHER   ,0001-4,General Offense,40
+,Arson,ARSON   ,2099-0,General Offense,38
+,Custodial Interference - Dv,FAMILYDV,1010-1,General Offense,38
+,Contempt of Court,OTHER   ,5005-0,General Offense,37
+,Burglary From Trailer,VEHBURG ,2399-1,General Offense,37
+,Terrorism Threat,OTHER   ,1602-0,General Offense,36
+,Impersonation,FRAUDOFF,2604-0,General Offense,34
+,Injunc Agnst Harassment Violat - Dv,OTHER   ,5007-5,General Offense,33
+,Sexual Assault - Force Fondle - Dv,SEXOFFEF,1199-4,General Offense,32
+,Custodial Interference,FAMILYOF,1010-0,General Offense,30
+,Obscene Material - Dv,PORNOGRA,3700-1,General Offense,30
+,Robbery - Shoplift,SHOPLIFT,1203-0,General Offense,28
+,Concealed Carry Violation,WEAPONLA,5202-0,General Offense,27
+,Sex Offender Registration,REGVIOL ,3699-1,General Offense,26
+,Sexual Assault With Object,EXPIRED ,1199-2,General Offense,26
+,Endangerment - Dv,OTHER   ,1399-1,General Offense,22
+,Bomb Threat,BOMBTHRT,1316-3,General Offense,22
+,Aggravated Dv,FAMILYDV,3899-3,General Offense,19
+,Az Child Abuse Hotline,FAMILYOF,0008-3,General Offense,19
+,Failure to Appear,OTHER   ,5015-0,General Offense,17
+,Smuggle Contraband to Prison,OTHER   ,5802-0,General Offense,16
+,Stolen Veh-Misrepresentation,FAILPAY ,2699-1,General Offense,16
+,Prostitution - Keep House of,PANDERER,4001-0,General Offense,15
+,Stolen Veh-Theft and Sale of,MOTORVEH,2401-0,General Offense,15
+,Disorderly Conduct-Weapons-Dv,FAMILYDV,5311-3,General Offense,14
+,2Nd Degree Murder,HOMICIDE,0999-2,General Offense,14
+,Obstruction of Justice,OTHER   ,5006-0,General Offense,12
+,Theft-Pick Pocketing,LARCENYT,2301-0,General Offense,12
+,1St Degree Murder,HOMICIDE,0999-0,General Offense,11
+,Contempt of Court - Dv,FAMILYDV,5005-1,General Offense,11
+,Loitering,CURFEWLO,5399-2,General Offense,10
+,Welfare Fraud,FRAUDOFF,2699-3,General Offense,9
+,Voyeurism/Peeping Tom - Dv,PEEPINGT,3611-1,General Offense,9
+,Vawa Case,OTHER   ,0008-4,General Offense,9
+,Robbery-Carjacking,CARJACK ,1212-0,General Offense,8
+,Kidnap,KIDNAPIN,1099-0,General Offense,8
+,Burglary From Vending Machine,BURGLARY,2307-1,General Offense,8
+,Sexual Assault - Oral/Sodomy - Dv,EXPIRED ,1199-3,General Offense,8
+,Prostitution-Procure/Entice,PANDERER,4002-0,General Offense,8
+,Liquor Violation - Sell,LIQORLA ,4102-0,General Offense,7
+,Obscene - Communication,OTHER   ,3707-0,General Offense,7
+,Conservation - Animals,OTHER   ,6201-0,General Offense,7
+,Obstructing An Investigation,OTHER   ,4802-0,General Offense,7
+,Prevent Use of Telephone - Dv,FAMILYDV,7399-7,General Offense,6
+,Theft From Vending Machine,BURGLARY,2307-0,General Offense,6
+,Stolen Prop-Sale of,STOLENPR,2801-0,General Offense,6
+,Unlawful Imprisonment - Dv,FAMILYDV,1099-3,General Offense,6
+,2Nd Degree Murder - Dv,HOMICIDE,0999-7,General Offense,6
+,Theft-No Force Purse Snatch,LARCENYT,2302-0,General Offense,5
+,Vehicular Murder/Manslaughter,VEHHOMI ,0909-0,General Offense,5
+,Human Trafficking - Sex Acts,OTHER   ,6411-1,General Offense,5
+,Prevent Use of Telephone,OTHER   ,7399-6,General Offense,5
+,Sexual Assault With Object - Dv,EXPIRED ,1199-5,General Offense,5
+,Narcotics Parcel Interdiction,DRUGNARC,3599-2,General Offense,5
+,Animal Cruelty - Dv,ANIMCRUE,7201-1,General Offense,5
+,Agg Assault - Officer - Major Injury,ASSAULTO,1311-1,General Offense,5
+,No Notify,OTHER   ,0012-0,General Offense,4
+,Kidnap - Dv,FAMILYDV,1099-1,General Offense,4
+,Injury Collision,EXPIRED ,5405-1,General Offense,4
+,Conspiracy/Facilitation/Solici,OTHER   ,7399-1,General Offense,4
+,Election Law Violation,OTHER   ,5999-0,General Offense,4
+,Perjury,OTHER   ,5003-0,General Offense,4
+,Child/Adult Abuse-Sr Inj Ng-Dv,CADVABUS,3801-1,General Offense,4
+,Escape,OTHER   ,4901-0,General Offense,4
+,Unlawful Imprisonment,OTHER   ,1099-2,General Offense,3
+,Possession of Burglary Tools,POSSTOOL,2206-0,General Offense,3
+,1St Degree Murder - Dv,HOMICIDE,0999-6,General Offense,3
+,Bestiality,SEXOFFEN,7201-2,General Offense,3
+,Sexual Offense,EXPIRED ,1112-0,General Offense,2
+,Witness Tampering,OTHER   ,4805-0,General Offense,2
+,Non-Injury Collision,EXPIRED ,5405-0,General Offense,2
+,Defacing Weapon,WEAPONLA,5201-0,General Offense,2
+,Human Trafficking - Servitude,OTHER   ,6411-0,General Offense,2
+,Invasion of Privacy,OTHER   ,5799-0,General Offense,2
+,Use/Possess Explosives,WEAPONLA,5206-0,General Offense,1
+,Selling Weapons,WEAPONLA,5214-0,General Offense,1
+,Manslaughter,HOMICIDE,0999-3,General Offense,1
+,Vehicular Murder/Manslaughter - Dv,VEHHOMI ,0909-1,General Offense,1
+,Criminal Damage - Dv,EXPIRED ,2902-1,General Offense,1
+,Possession of Forgery Tools,POSSTOOL,2508-0,General Offense,1
+,Child/Adult Abuse-Sr Inj Ng,FAMILYOF,3801-0,General Offense,1
+,Conservation,OTHER   ,6299-0,General Offense,1
+,Void Citations/Warnings Only,OTHER   ,0011-0,General Offense,1
+,Stolen Veh-Aircraft Theft,MOTORVEH,2410-0,General Offense,1
+,Ifcc Complaints,OTHER   ,0008-1,General Offense,1
+,Gang Related,OTHER   ,0009-0,General Offense,1

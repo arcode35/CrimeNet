@@ -1,0 +1,18 @@
+column,dtype
+id,String
+agency_code,String
+agency,String
+incident_number,String
+date_time,String
+incident_type,String
+location_type,String
+city,String
+intersection,String
+location,String
+upload,String
+source_city,String
+source_file_uri,String
+ingestion_run_id,String
+ingested_at_utc,"Datetime(time_unit='us', time_zone='UTC')"
+snapshot_id,String
+occurrence_year,Int64

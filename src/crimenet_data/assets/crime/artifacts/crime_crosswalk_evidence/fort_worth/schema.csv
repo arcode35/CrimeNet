@@ -1,0 +1,41 @@
+column,dtype
+address,String
+attempt_complete,String
+block_address,String
+beat,String
+case_no,String
+case_no_offense,String
+city,String
+councildistrict,Int64
+division,String
+from_date,Int64
+geocodescore,Int64
+lastupdated,Int64
+latitude,Float64
+locationtypedescription,String
+location_1,String
+location_type,Int64
+longitude,Float64
+nature_of_call,String
+objectid,Int64
+offense,String
+offense_desc,String
+reported_date,Int64
+state,String
+x_coordinate,Float64
+y_coordinate,Float64
+alternate_latitude,Float64
+alternate_longitude,Float64
+source_object_id,Int64
+inttotal,Int64
+source_file,String
+source_row_hash,String
+source_system,String
+ingested_at,"Datetime(time_unit='ns', time_zone=None)"
+source_file_uri,String
+occurrence_timestamp,"Datetime(time_unit='ns', time_zone=None)"
+source_city,String
+ingestion_run_id,String
+ingested_at_utc,"Datetime(time_unit='us', time_zone='UTC')"
+snapshot_id,String
+occurrence_year,Int64

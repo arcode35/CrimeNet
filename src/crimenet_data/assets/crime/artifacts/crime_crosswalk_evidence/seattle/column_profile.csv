@@ -1,0 +1,42 @@
+column,dtype,null_count,null_pct,n_unique,uniqueness_ratio,avg_string_length,max_string_length,taxonomy_name_score,taxonomy_name_reasons,profile_status
+report_number,String,0,0.0,896243,0.876810254333213,11.0,11,-100,excluded:report.*(?:id|number|num|no),profiled
+report_date_time,String,0,0.0,860268,0.8416152805374485,23.0,23,-100,excluded:date; excluded:time,profiled
+offense_id,String,0,0.0,1022163,1.0,10.519003329214616,11,15,offen[sc]e:15,profiled
+offense_date,String,0,0.0,612319,0.5990424227838417,23.0,23,-100,excluded:date,profiled
+nibrs_group_a_b,String,0,0.0,3,2.93495264453908e-6,1.0,1,15,nibrs:15,profiled
+nibrs_crime_against_category,String,0,0.0,6,5.86990528907816e-6,7.2978468209082115,11,33,nibrs:15; crime:10; category:8,profiled
+offense_sub_category,String,0,0.0,31,0.000030327843993570496,18.310044484098917,53,31,offen[sc]e:15; category:8; sub_category:8,profiled
+shooting_type_group,String,0,0.0,4,3.913270192718774e-6,1.3600042263318082,48,5,type:5,profiled
+block_address,String,0,0.0,35952,0.03517247249215634,21.030431545653677,61,-100,excluded:address,profiled
+latitude,String,0,0.0,49391,0.04832008202214324,9.975571410821953,11,-100,excluded:latitude,profiled
+longitude,String,0,0.0,111866,0.10944047084466958,14.493636533507866,19,-100,excluded:longitude,profiled
+beat,String,0,0.0,55,0.00005380746514988314,1.99539408098317,3,-100,excluded:beat,profiled
+precinct,String,0,0.0,7,6.848222837257854e-6,4.938047062943973,9,-100,excluded:precinct,profiled
+sector,String,0,0.0,21,0.000020544668511773562,1.0039064219698814,3,-100,excluded:sector,profiled
+neighborhood,String,0,0.0,62,0.00006065568798714099,10.188102093306059,32,0,"",profiled
+reporting_area,String,0,0.0,10692,0.010460171225137283,4.681474481075915,8,0,"",profiled
+offense_category,String,0,0.0,3,2.93495264453908e-6,11.583364884074262,14,23,offen[sc]e:15; category:8,profiled
+nibrs_offense_code_description,String,0,0.0,64,0.00006261232308350039,22.340174707947753,43,57,offen[sc]e:15; nibrs:15; description:8; _desc:7; descr:7; code:5,profiled
+nibrs_offense_code,String,0,0.0,64,0.00006261232308350039,2.9974328947535764,3,35,offen[sc]e:15; nibrs:15; code:5,profiled
+census_block_2020,String,0,0.0,11385,0.01113814528602581,7.139999197779611,10,0,"",profiled
+source_city,String,0,0.0,1,9.783175481796935e-7,7.0,7,-100,ingestion_metadata,profiled
+source_dataset_id,String,0,0.0,1,9.783175481796935e-7,9.0,9,0,"",profiled
+source_dataset_kind,String,0,0.0,1,9.783175481796935e-7,7.0,7,0,"",profiled
+source_dataset,String,0,0.0,1,9.783175481796935e-7,9.0,9,0,"",profiled
+source_record_id,String,0,0.0,1022163,1.0,10.519003329214616,11,-100,excluded:record.*(?:id|number|num|no),profiled
+occurred_at_raw,String,0,0.0,612319,0.5990424227838417,23.0,23,0,"",profiled
+occurred_at_end_raw,String,1022163,100.0,1,,,,0,"",profiled
+latitude_raw,String,0,0.0,49391,0.04832008202214324,9.975571410821953,11,-100,excluded:latitude,profiled
+longitude_raw,String,0,0.0,111866,0.10944047084466958,14.493636533507866,19,-100,excluded:longitude,profiled
+downloaded_at_utc,String,0,0.0,12,0.00001173981057815632,32.0,32,0,"",profiled
+source_url,String,0,0.0,1,9.783175481796935e-7,48.0,48,0,"",profiled
+rescued_data,String,584154,57.14881090393607,21,0.00004794422032423991,206.0,206,0,"",profiled
+source_file,String,0,0.0,48,0.00004695924231262528,127.85493996554365,149,-100,excluded:source_file,profiled
+source_row_hash,String,0,0.0,1022163,1.0,64.0,64,0,"",profiled
+source_system,String,0,0.0,1,9.783175481796935e-7,7.0,7,0,"",profiled
+ingested_at,"Datetime(time_unit='ns', time_zone=None)",0,0.0,3,2.93495264453908e-6,,,-100,excluded:ingest,profiled
+source_file_uri,String,0,0.0,12,0.00001173981057815632,163.0,163,-100,ingestion_metadata,profiled
+ingestion_run_id,String,0,0.0,1,9.783175481796935e-7,36.0,36,-100,ingestion_metadata,profiled
+ingested_at_utc,"Datetime(time_unit='us', time_zone='UTC')",0,0.0,1,9.783175481796935e-7,,,-100,ingestion_metadata,profiled
+snapshot_id,String,0,0.0,1,9.783175481796935e-7,36.0,36,-100,ingestion_metadata,profiled
+occurrence_year,Int64,0,0.0,12,0.00001173981057815632,,,-100,ingestion_metadata,profiled

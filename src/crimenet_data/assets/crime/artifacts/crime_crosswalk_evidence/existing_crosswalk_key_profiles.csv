@@ -1,0 +1,9 @@
+source_city,mapping_rows,source_file_populated,source_offense_code_populated,source_offense_category_populated,source_offense_description_populated,source_auxiliary_populated,source_severity_populated
+baltimore,45,45,45,0,45,45,0
+chicago,576,576,0,576,576,0,0
+dallas,1783,1783,0,1783,1783,0,0
+fort_worth,2720,2720,2720,0,2720,0,0
+new_york,465,465,0,465,465,0,0
+san_francisco,865,865,0,865,865,0,0
+seattle,64,64,0,64,64,0,0
+washington_dc,9,9,0,9,9,0,0

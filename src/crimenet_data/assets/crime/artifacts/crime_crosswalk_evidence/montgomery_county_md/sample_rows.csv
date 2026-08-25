@@ -1,0 +1,201 @@
+nibrs_code,offence_code,crimename1,crimename2,crimename3,source_file_uri
+23D,2308,Crime Against Property,Theft from Building,LARCENY - FROM BLDG,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26A,2699,Crime Against Property,False Pretenses/Swindle/Confidence Game,FRAUD (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26C,2604,Crime Against Property,Impersonation,FRAUD - IMPERSONATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+240,2404,Crime Against Property,Motor Vehicle Theft,AUTO THEFT - VEHICLE THEFT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+11A,1103,Crime Against Person,Forcible Rape,RAPE - STRONG-ARM,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23D,2308,Crime Against Property,Theft from Building,LARCENY - FROM BLDG,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+250,2504,Crime Against Property,Counterfeiting/Forgery,FORGERY - PASS FORGED,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+250,2589,Crime Against Property,Counterfeiting/Forgery,FORGERY (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26A,2699,Crime Against Property,False Pretenses/Swindle/Confidence Game,FRAUD (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23H,2399,Crime Against Property,All other Larceny,LARCENY (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23D,2308,Crime Against Property,Theft from Building,LARCENY - FROM BLDG,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+11D,1199,Crime Against Person,Forcible Fondling,SEX ASSAULT - FONDLING,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9108,Crime Against Society,All Other Offenses,RECOVERED PROPERTY - MONT CO.,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9105,Crime Against Society,All Other Offenses,LOST PROPERTY,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9105,Crime Against Society,All Other Offenses,LOST PROPERTY,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9105,Crime Against Society,All Other Offenses,LOST PROPERTY,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,2411,Crime Against Society,All Other Offenses,UNAUTHORIZED USE OF VEHICLE (INCLUDES JOY RIDING),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9105,Crime Against Society,All Other Offenses,LOST PROPERTY,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9199,Crime Against Society,All Other Offenses,POLICE INFORMATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+290,2902,Crime Against Property,Destruction/Damage/Vandalism of Property,DAMAGE PROPERTY - PRIVATE,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26C,2604,Crime Against Property,Impersonation,FRAUD - IMPERSONATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23G,2304,Crime Against Property,Theft of Motor Vehicle Parts or Accessories,LARCENY - AUTO PARTS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26F,2610,Crime Against Property,Identity Theft,IDENTITY THEFT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+11A,9003,Crime Against Person,Forcible Rape,SEX ASSAULT - WITH AN OBJECT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9105,Crime Against Society,All Other Offenses,LOST PROPERTY,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,3707,Crime Against Society,All Other Offenses,OBSCENE COMMUNICATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23C,2303,Crime Against Property,Shoplifting,LARCENY - SHOPLIFTING,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+520,5202,Crime Against Society,Weapon Law Violations,WEAPON - CONCEALED,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90J,5707,Crime Against Society,Trespass of Real Property,TRESPASSING,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23H,2399,Crime Against Property,All other Larceny,LARCENY (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+13A,1315,Crime Against Person,Aggravated Assault,ASSAULT - AGGRAVATED - OTHER,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90C,5311,Crime Against Society,Disorderly Conduct,PUBLIC PEACE - DISORDERLY CONDUCT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+35A,3562,Crime Against Society,Drug/Narcotic Violations,DRUGS - MARIJUANA - POSSESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90D,5404,Crime Against Society,Driving Under the Influence,DRIVING UNDER THE INFLUENCE LIQUOR,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90D,5404,Crime Against Society,Driving Under the Influence,DRIVING UNDER THE INFLUENCE LIQUOR,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90C,5311,Crime Against Society,Disorderly Conduct,PUBLIC PEACE - DISORDERLY CONDUCT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+13B,1399,Crime Against Person,Simple Assault,ASSAULT - 2ND DEGREE,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90D,5404,Crime Against Society,Driving Under the Influence,DRIVING UNDER THE INFLUENCE LIQUOR,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90C,5311,Crime Against Society,Disorderly Conduct,PUBLIC PEACE - DISORDERLY CONDUCT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+35A,3504,Crime Against Society,Drug/Narcotic Violations,DRUGS - HALLUCINOGEN - POSSESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+35A,3542,Crime Against Society,Drug/Narcotic Violations,DRUGS - SYNTHETIC NARCOTIC - POSSESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+35A,3562,Crime Against Society,Drug/Narcotic Violations,DRUGS - MARIJUANA - POSSESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+13B,1399,Crime Against Person,Simple Assault,ASSAULT - 2ND DEGREE,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90C,5311,Crime Against Society,Disorderly Conduct,PUBLIC PEACE - DISORDERLY CONDUCT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90D,5404,Crime Against Society,Driving Under the Influence,DRIVING UNDER THE INFLUENCE LIQUOR,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+13B,1313,Crime Against Person,Simple Assault,ASSAULT - SIMPLE,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+220,2202,Crime Against Property,Burglary/Breaking and Entering,BURGLARY - FORCED ENTRY-RESIDENTIAL,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90J,5707,Crime Against Society,Trespass of Real Property,TRESPASSING,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23G,2304,Crime Against Property,Theft of Motor Vehicle Parts or Accessories,LARCENY - AUTO PARTS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+240,2404,Crime Against Property,Motor Vehicle Theft,AUTO THEFT - VEHICLE THEFT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23D,2308,Crime Against Property,Theft from Building,LARCENY - FROM BLDG,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26A,2699,Crime Against Property,False Pretenses/Swindle/Confidence Game,FRAUD (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9199,Crime Against Society,All Other Offenses,POLICE INFORMATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9105,Crime Against Society,All Other Offenses,LOST PROPERTY,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9107,Crime Against Society,All Other Offenses,MISSING PERSON,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26C,2604,Crime Against Property,Impersonation,FRAUD - IMPERSONATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+35A,3562,Crime Against Society,Drug/Narcotic Violations,DRUGS - MARIJUANA - POSSESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+35A,3582,Crime Against Society,Drug/Narcotic Violations,DRUGS - BARBITURATE - POSSESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26C,2604,Crime Against Property,Impersonation,FRAUD - IMPERSONATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23D,2308,Crime Against Property,Theft from Building,LARCENY - FROM BLDG,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23F,2305,Crime Against Property,Theft From Motor Vehicle,LARCENY - FROM AUTO,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+290,2902,Crime Against Property,Destruction/Damage/Vandalism of Property,DAMAGE PROPERTY - PRIVATE,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26A,2699,Crime Against Property,False Pretenses/Swindle/Confidence Game,FRAUD (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26A,2699,Crime Against Property,False Pretenses/Swindle/Confidence Game,FRAUD (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26B,2605,Crime Against Property,Credit Card/Automatic Teller Machine Fraud,FRAUD - ILLEGAL USE CREDIT CARDS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+120,1210,Crime Against Property,Robbery,ROBBERY - FORCIBLE PURSE SNATCHING,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+11D,3699,Crime Against Person,Forcible Fondling,SEX OFFENSE - FONDLING,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+35B,3550,Crime Against Society,Drug Equipment Violations,DRUGS - NARCOTIC EQUIP - POSSESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26A,2602,Crime Against Property,False Pretenses/Swindle/Confidence Game,FRAUD - SWINDLE,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9199,Crime Against Society,All Other Offenses,POLICE INFORMATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23F,2305,Crime Against Property,Theft From Motor Vehicle,LARCENY - FROM AUTO,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23H,2399,Crime Against Property,All other Larceny,LARCENY (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23D,2308,Crime Against Property,Theft from Building,LARCENY - FROM BLDG,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23G,2304,Crime Against Property,Theft of Motor Vehicle Parts or Accessories,LARCENY - AUTO PARTS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26C,2604,Crime Against Property,Impersonation,FRAUD - IMPERSONATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+250,2504,Crime Against Property,Counterfeiting/Forgery,FORGERY - PASS FORGED,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26F,2610,Crime Against Property,Identity Theft,IDENTITY THEFT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9105,Crime Against Society,All Other Offenses,LOST PROPERTY,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+290,2903,Crime Against Property,Destruction/Damage/Vandalism of Property,DAMAGE PROPERTY - PUBLIC,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+35A,3512,Crime Against Society,Drug/Narcotic Violations,DRUGS - HEROIN - POSSESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90C,3615,Crime Against Society,Disorderly Conduct,SEX OFFENSE - INDECENT EXPOSURE TO ADULT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90C,5311,Crime Against Society,Disorderly Conduct,PUBLIC PEACE - DISORDERLY CONDUCT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+250,2502,Crime Against Property,Counterfeiting/Forgery,FORGERY OF OTHER,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+250,2504,Crime Against Property,Counterfeiting/Forgery,FORGERY - PASS FORGED,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9199,Crime Against Society,All Other Offenses,POLICE INFORMATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26A,2601,Crime Against Property,False Pretenses/Swindle/Confidence Game,FRAUD - CONFIDENCE GAME,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23D,2308,Crime Against Property,Theft from Building,LARCENY - FROM BLDG,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9199,Crime Against Society,All Other Offenses,POLICE INFORMATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9199,Crime Against Society,All Other Offenses,POLICE INFORMATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+270,2799,Crime Against Property,Embezzlement,EMBEZZLE (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+13A,1304,Crime Against Person,Aggravated Assault,ASSAULT - AGGRAVATED - NON-FAMILY-GUN,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+220,2202,Crime Against Property,Burglary/Breaking and Entering,BURGLARY - FORCED ENTRY-RESIDENTIAL,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+250,2589,Crime Against Property,Counterfeiting/Forgery,FORGERY (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+290,2903,Crime Against Property,Destruction/Damage/Vandalism of Property,DAMAGE PROPERTY - PUBLIC,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+250,2501,Crime Against Property,Counterfeiting/Forgery,FORGERY OF CHECKS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+13B,1399,Crime Against Person,Simple Assault,ASSAULT - 2ND DEGREE,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23H,2399,Crime Against Property,All other Larceny,LARCENY (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26C,2604,Crime Against Property,Impersonation,FRAUD - IMPERSONATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23D,2308,Crime Against Property,Theft from Building,LARCENY - FROM BLDG,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9106,Crime Against Society,All Other Offenses,MENTAL ILLNESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90G,4199,Crime Against Society,Liquor Law Violations,LIQUOR (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26C,2604,Crime Against Property,Impersonation,FRAUD - IMPERSONATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26C,2604,Crime Against Property,Impersonation,FRAUD - IMPERSONATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23G,2304,Crime Against Property,Theft of Motor Vehicle Parts or Accessories,LARCENY - AUTO PARTS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23G,2304,Crime Against Property,Theft of Motor Vehicle Parts or Accessories,LARCENY - AUTO PARTS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26C,2604,Crime Against Property,Impersonation,FRAUD - IMPERSONATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26C,2604,Crime Against Property,Impersonation,FRAUD - IMPERSONATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26A,2609,Crime Against Property,False Pretenses/Swindle/Confidence Game,FRAUD AND ABUSE - COMPUTER,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26A,2699,Crime Against Property,False Pretenses/Swindle/Confidence Game,FRAUD (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+290,2902,Crime Against Property,Destruction/Damage/Vandalism of Property,DAMAGE PROPERTY - PRIVATE,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26C,2604,Crime Against Property,Impersonation,FRAUD - IMPERSONATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26F,2610,Crime Against Property,Identity Theft,IDENTITY THEFT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+11A,1112,Crime Against Person,Forcible Rape,SEX ASSAULT - SODOMY-BOY-STRONG-ARM,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+11D,3601,Crime Against Person,Forcible Fondling,SEX OFFENSE - AGAINST CHILD-FONDLING,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+290,2902,Crime Against Property,Destruction/Damage/Vandalism of Property,DAMAGE PROPERTY - PRIVATE,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23D,2308,Crime Against Property,Theft from Building,LARCENY - FROM BLDG,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9105,Crime Against Society,All Other Offenses,LOST PROPERTY,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9105,Crime Against Society,All Other Offenses,LOST PROPERTY,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9105,Crime Against Society,All Other Offenses,LOST PROPERTY,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9199,Crime Against Society,All Other Offenses,POLICE INFORMATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9199,Crime Against Society,All Other Offenses,POLICE INFORMATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26B,2605,Crime Against Property,Credit Card/Automatic Teller Machine Fraud,FRAUD - ILLEGAL USE CREDIT CARDS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23D,2308,Crime Against Property,Theft from Building,LARCENY - FROM BLDG,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9199,Crime Against Society,All Other Offenses,POLICE INFORMATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90C,3615,Crime Against Society,Disorderly Conduct,SEX OFFENSE - INDECENT EXPOSURE TO ADULT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26A,2699,Crime Against Property,False Pretenses/Swindle/Confidence Game,FRAUD (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26A,2602,Crime Against Property,False Pretenses/Swindle/Confidence Game,FRAUD - SWINDLE,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+11D,3699,Crime Against Person,Forcible Fondling,SEX OFFENSE - FONDLING,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+250,2505,Crime Against Property,Counterfeiting/Forgery,COUNTERFEITING - PASS COUNTERFEITED,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+290,2999,Crime Against Property,Destruction/Damage/Vandalism of Property,DAMAGE PROPERTY (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+290,2902,Crime Against Property,Destruction/Damage/Vandalism of Property,DAMAGE PROPERTY - PRIVATE,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90C,5311,Crime Against Society,Disorderly Conduct,PUBLIC PEACE - DISORDERLY CONDUCT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9105,Crime Against Society,All Other Offenses,LOST PROPERTY,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9106,Crime Against Society,All Other Offenses,MENTAL ILLNESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+13B,1399,Crime Against Person,Simple Assault,ASSAULT - 2ND DEGREE,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23C,2303,Crime Against Property,Shoplifting,LARCENY - SHOPLIFTING,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9106,Crime Against Society,All Other Offenses,MENTAL ILLNESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23C,2303,Crime Against Property,Shoplifting,LARCENY - SHOPLIFTING,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23F,2305,Crime Against Property,Theft From Motor Vehicle,LARCENY - FROM AUTO,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23F,2305,Crime Against Property,Theft From Motor Vehicle,LARCENY - FROM AUTO,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26A,2699,Crime Against Property,False Pretenses/Swindle/Confidence Game,FRAUD (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+290,2901,Crime Against Property,Destruction/Damage/Vandalism of Property,DAMAGE PROPERTY - BUSINESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26A,2699,Crime Against Property,False Pretenses/Swindle/Confidence Game,FRAUD (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23D,2308,Crime Against Property,Theft from Building,LARCENY - FROM BLDG,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9109,Crime Against Society,All Other Offenses,RECOVERED PROPERTY - OTHER,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23D,2308,Crime Against Property,Theft from Building,LARCENY - FROM BLDG,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23H,2399,Crime Against Property,All other Larceny,LARCENY (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26B,2605,Crime Against Property,Credit Card/Automatic Teller Machine Fraud,FRAUD - ILLEGAL USE CREDIT CARDS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90G,4199,Crime Against Society,Liquor Law Violations,LIQUOR (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26A,2601,Crime Against Property,False Pretenses/Swindle/Confidence Game,FRAUD - CONFIDENCE GAME,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23F,2305,Crime Against Property,Theft From Motor Vehicle,LARCENY - FROM AUTO,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+290,2901,Crime Against Property,Destruction/Damage/Vandalism of Property,DAMAGE PROPERTY - BUSINESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+220,2202,Crime Against Property,Burglary/Breaking and Entering,BURGLARY - FORCED ENTRY-RESIDENTIAL,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+11A,1114,Crime Against Person,Forcible Rape,SEX ASSAULT - SODOMY-GIRL-STRONG-ARM,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+11D,1117,Crime Against Person,Forcible Fondling,SEX ASSAULT - CARNAL ABUSE,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+11A,9003,Crime Against Person,Forcible Rape,SEX ASSAULT - WITH AN OBJECT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90G,4199,Crime Against Society,Liquor Law Violations,LIQUOR (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26A,2699,Crime Against Property,False Pretenses/Swindle/Confidence Game,FRAUD (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+270,2703,Crime Against Property,Embezzlement,EMBEZZLE - BANKING-TYPE INST,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+220,2202,Crime Against Property,Burglary/Breaking and Entering,BURGLARY - FORCED ENTRY-RESIDENTIAL,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23C,2303,Crime Against Property,Shoplifting,LARCENY - SHOPLIFTING,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+220,2205,Crime Against Property,Burglary/Breaking and Entering,BURGLARY - NO FORCED ENTRY-NONRESIDENTIAL,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90G,4199,Crime Against Society,Liquor Law Violations,LIQUOR (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+250,2504,Crime Against Property,Counterfeiting/Forgery,FORGERY - PASS FORGED,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9042,Crime Against Society,All Other Offenses,SUICIDE - ATTEMPT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9199,Crime Against Society,All Other Offenses,POLICE INFORMATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,5309,Crime Against Society,All Other Offenses,PUBLIC PEACE - HARASSING COMMUNICATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90G,4199,Crime Against Society,Liquor Law Violations,LIQUOR (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+35A,3562,Crime Against Society,Drug/Narcotic Violations,DRUGS - MARIJUANA - POSSESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23C,2303,Crime Against Property,Shoplifting,LARCENY - SHOPLIFTING,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23H,2399,Crime Against Property,All other Larceny,LARCENY (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9101,Crime Against Society,All Other Offenses,SUDDEN DEATH,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+220,2202,Crime Against Property,Burglary/Breaking and Entering,BURGLARY - FORCED ENTRY-RESIDENTIAL,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90G,4104,Crime Against Society,Liquor Law Violations,LIQUOR - POSSESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23C,2303,Crime Against Property,Shoplifting,LARCENY - SHOPLIFTING,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+35A,3562,Crime Against Society,Drug/Narcotic Violations,DRUGS - MARIJUANA - POSSESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90D,5404,Crime Against Society,Driving Under the Influence,DRIVING UNDER THE INFLUENCE LIQUOR,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90G,4104,Crime Against Society,Liquor Law Violations,LIQUOR - POSSESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90G,4199,Crime Against Society,Liquor Law Violations,LIQUOR (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9106,Crime Against Society,All Other Offenses,MENTAL ILLNESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+220,2202,Crime Against Property,Burglary/Breaking and Entering,BURGLARY - FORCED ENTRY-RESIDENTIAL,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+26B,2605,Crime Against Property,Credit Card/Automatic Teller Machine Fraud,FRAUD - ILLEGAL USE CREDIT CARDS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+290,2902,Crime Against Property,Destruction/Damage/Vandalism of Property,DAMAGE PROPERTY - PRIVATE,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+35A,3562,Crime Against Society,Drug/Narcotic Violations,DRUGS - MARIJUANA - POSSESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+220,2203,Crime Against Property,Burglary/Breaking and Entering,BURGLARY - FORCED ENTRY-NONRESIDENTIAL,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90G,4104,Crime Against Society,Liquor Law Violations,LIQUOR - POSSESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90G,4199,Crime Against Society,Liquor Law Violations,LIQUOR (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9199,Crime Against Society,All Other Offenses,POLICE INFORMATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90D,5404,Crime Against Society,Driving Under the Influence,DRIVING UNDER THE INFLUENCE LIQUOR,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+11D,1199,Crime Against Person,Forcible Fondling,SEX ASSAULT - FONDLING,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+23B,2302,Crime Against Property,Purse-snatching,LARCENY - PURSE SNATCHING - NO FORCE,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9107,Crime Against Society,All Other Offenses,MISSING PERSON,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90G,4104,Crime Against Society,Liquor Law Violations,LIQUOR - POSSESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9106,Crime Against Society,All Other Offenses,MENTAL ILLNESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90G,4104,Crime Against Society,Liquor Law Violations,LIQUOR - POSSESS,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+35A,3564,Crime Against Society,Drug/Narcotic Violations,DRUGS - MARIJUANA (DESCRIBE OFFENSE),s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90C,5311,Crime Against Society,Disorderly Conduct,PUBLIC PEACE - DISORDERLY CONDUCT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90J,5707,Crime Against Society,Trespass of Real Property,TRESPASSING,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+240,2404,Crime Against Property,Motor Vehicle Theft,AUTO THEFT - VEHICLE THEFT,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv
+90Z,9199,Crime Against Society,All Other Offenses,POLICE INFORMATION,s3://crimenet-data/raw_files/landing/montgomery_county_md/part-00000.csv

@@ -18,7 +18,12 @@ from crimenet_data.assets.crime.sources.base import (
 
 
 def occurrence(lf: pl.LazyFrame) -> pl.Expr:
-    return datetime_expr(lf, "crime_date_time", "occurred_at_raw")
+    return datetime_expr(
+        lf,
+        "occurrence_timestamp",
+        "crime_date_time",
+        "occurred_at_raw",
+    )
 
 
 def adapt(lf: pl.LazyFrame, _context: AdapterContext) -> pl.LazyFrame:

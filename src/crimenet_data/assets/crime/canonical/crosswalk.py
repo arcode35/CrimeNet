@@ -8,6 +8,140 @@ from crimenet_data.assets.crime.canonical.schema import (
     CANONICAL_MAPPING_VERSION,
 )
 
+CROSSWALK_SOURCE_COLUMNS = (
+    "source_offense_code",
+    "source_offense_category",
+    "source_offense_description",
+    "source_auxiliary",
+    "source_severity",
+)
+CROSSWALK_REQUIRED_COLUMNS = (
+    "mapping_version",
+    "source_city",
+    *CROSSWALK_SOURCE_COLUMNS,
+    "canonical_family_code",
+    "canonical_offense_family",
+    "canonical_subtype_code",
+    "canonical_offense_subtype",
+    "canonical_domain",
+    "canonical_target",
+    "is_criminal_event",
+    "is_violent",
+    "is_property",
+    "mapping_confidence",
+    "review_required",
+    "mapping_action",
+    "include_in_model",
+)
+
+
+def _inconsistent_code_rows(
+    crosswalk: pl.DataFrame,
+    *,
+    code: str,
+    values: tuple[str, ...],
+) -> pl.DataFrame:
+    return (
+        crosswalk.filter(pl.col(code).is_not_null())
+        .group_by(code)
+        .agg(*(pl.col(value).n_unique().alias(value) for value in values))
+        .filter(pl.any_horizontal(*(pl.col(value) > 1 for value in values)))
+    )
+
+
+def validate_canonical_crosswalk(
+    crosswalk_lf: pl.LazyFrame,
+    *,
+    source_keys: tuple[str, ...] | None = None,
+) -> pl.DataFrame:
+    """Validate the small finalized crosswalk before scanning Bronze sources."""
+
+    from crimenet_data.assets.crime.sources import SILVER_SOURCE_KEYS, get_source
+
+    enabled_sources = source_keys or SILVER_SOURCE_KEYS
+    available = set(crosswalk_lf.collect_schema().names())
+    missing_columns = set(CROSSWALK_REQUIRED_COLUMNS) - available
+    if missing_columns:
+        raise ValueError(
+            "Canonical crosswalk is missing required columns: "
+            f"{sorted(missing_columns)}"
+        )
+
+    crosswalk = crosswalk_lf.collect()
+    invalid_versions = crosswalk.filter(
+        (pl.col("mapping_version") != CANONICAL_MAPPING_VERSION).fill_null(True)
+    )
+    if not invalid_versions.is_empty():
+        versions = crosswalk["mapping_version"].unique().to_list()
+        raise ValueError(
+            "Canonical crosswalk version mismatch: expected "
+            f"{CANONICAL_MAPPING_VERSION!r}, found {versions}"
+        )
+
+    for source_key in enabled_sources:
+        source_crosswalk = crosswalk.filter(pl.col("source_city") == source_key)
+        if source_crosswalk.is_empty():
+            raise ValueError(
+                f"Canonical crosswalk has no rows for Silver source {source_key!r}"
+            )
+        keys = get_source(source_key).config.crosswalk_keys
+        missing_keys = set(keys) - available
+        if missing_keys:
+            raise ValueError(
+                f"Crosswalk keys for {source_key!r} are missing: "
+                f"{sorted(missing_keys)}"
+            )
+        null_keys = source_crosswalk.filter(
+            pl.any_horizontal(*(pl.col(key).is_null() for key in keys))
+        )
+        if not null_keys.is_empty():
+            raise ValueError(
+                f"Crosswalk keys for {source_key!r} contain nulls; keys={keys}, "
+                f"examples={null_keys.select(keys).head(10).to_dicts()}"
+            )
+        duplicates = (
+            source_crosswalk.group_by(list(keys))
+            .len()
+            .filter(pl.col("len") > 1)
+        )
+        if not duplicates.is_empty():
+            raise ValueError(
+                f"Canonical crosswalk is not unique for {source_key!r} on "
+                f"keys={keys}; duplicates={duplicates.head(10).to_dicts()}"
+            )
+
+    inconsistent_subtypes = _inconsistent_code_rows(
+        crosswalk,
+        code="canonical_subtype_code",
+        values=(
+            "canonical_offense_subtype",
+            "canonical_family_code",
+            "canonical_offense_family",
+        ),
+    )
+    if not inconsistent_subtypes.is_empty():
+        raise ValueError(
+            "Canonical subtype codes are inconsistent: "
+            f"{inconsistent_subtypes.head(10).to_dicts()}"
+        )
+
+    for code, name in (
+        ("canonical_family_code", "canonical_offense_family"),
+        ("canonical_offense_family", "canonical_family_code"),
+    ):
+        inconsistent_families = _inconsistent_code_rows(
+            crosswalk,
+            code=code,
+            values=(name,),
+        )
+        if not inconsistent_families.is_empty():
+            raise ValueError(
+                "Canonical family codes/names are inconsistent: "
+                f"{inconsistent_families.head(10).to_dicts()}"
+            )
+
+    return crosswalk
+
 
 def apply_canonical_crosswalk(
     lf: pl.LazyFrame,
@@ -26,6 +160,10 @@ def apply_canonical_crosswalk(
         on=list(config.crosswalk_keys),
         how="left",
         validate="m:1",
+    ).with_columns(
+        pl.col("mapping_version")
+        .is_not_null()
+        .alias("canonical_mapping_found")
     )
 
 
@@ -38,10 +176,9 @@ def cleanse_canonical_source(lf: pl.LazyFrame, source_key: str) -> pl.LazyFrame:
         pl.col("longitude").cast(pl.Float64, strict=False),
     )
     year_is_valid = pl.col("occurrence_year").is_between(2014, 2026).fill_null(False)
-    if config.coordinate_bounds is None:
-        return lf.filter(year_is_valid)
-
-    min_latitude, max_latitude, min_longitude, max_longitude = config.coordinate_bounds
+    min_latitude, max_latitude, min_longitude, max_longitude = (
+        config.coordinate_bounds or (-90.0, 90.0, -180.0, 180.0)
+    )
     coordinates_are_valid = (
         pl.col("latitude").is_finite()
         & pl.col("longitude").is_finite()
@@ -72,14 +209,6 @@ def project_canonical_schema(lf: pl.LazyFrame, source_key: str) -> pl.LazyFrame:
         ),
         "source_city": pl.lit(source_key),
         "source_timezone": pl.lit(get_source(source_key).config.timezone),
-        "mapping_version": pl.col("mapping_version").fill_null(
-            CANONICAL_MAPPING_VERSION
-        ),
-        "canonical_mapping_found": pl.col("canonical_family_code").is_not_null(),
-        "mapping_confidence": pl.col("mapping_confidence").fill_null("unmatched"),
-        "review_required": pl.col("review_required").fill_null(True),
-        "mapping_action": pl.col("mapping_action").fill_null("unmatched"),
-        "include_in_model": pl.col("include_in_model").fill_null(False),
     }
     for name, dtype in CANONICAL_CRIME_SCHEMA.items():
         expression = defaults.get(name)

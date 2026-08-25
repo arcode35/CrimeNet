@@ -1,0 +1,11 @@
+{
+  "source_city": "washington_dc",
+  "snapshot_uri": "s3://crimenet-data/bronze/crime/washington_dc/snapshot_id=4f02cc45-5b78-476f-b177-11f238073e01",
+  "row_count": 205072,
+  "column_count": 42,
+  "selected_taxonomy_columns": [
+    "offense"
+  ],
+  "taxonomy_combination_count": 9,
+  "candidate_column_count": 1
+}

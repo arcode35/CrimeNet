@@ -1,0 +1,19 @@
+column,dtype
+im_dr,String
+crime,String
+crime_class,String
+incident_date_time,String
+incident_street_address,String
+incident_city_town,String
+incident_city_town_mapping,String
+jurisdiction,String
+latitude,String
+longitude,String
+location,String
+unique_id,String
+source_city,String
+source_file_uri,String
+ingestion_run_id,String
+ingested_at_utc,"Datetime(time_unit='us', time_zone='UTC')"
+snapshot_id,String
+occurrence_year,Int64

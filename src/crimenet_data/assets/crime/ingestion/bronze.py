@@ -59,13 +59,4 @@ def prepare_bronze_source(
     occurrence_year = source.occurrence_timestamp(lf).dt.year().cast(pl.Int16)
     lf = lf.with_columns(occurrence_year.alias("occurrence_year"))
 
-    keys = source.config.deduplication_keys
-    if keys:
-        missing = set(keys) - set(lf.collect_schema().names())
-        if missing:
-            raise KeyError(
-                f"Cannot prepare Bronze for {source.config.key!r}; "
-                f"deduplication keys are missing: {sorted(missing)}"
-            )
-        lf = lf.unique(subset=list(keys), keep="last", maintain_order=False)
     return lf

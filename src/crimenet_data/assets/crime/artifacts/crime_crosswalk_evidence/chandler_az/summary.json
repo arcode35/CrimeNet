@@ -1,0 +1,15 @@
+{
+  "source_city": "chandler_az",
+  "snapshot_uri": "s3://crimenet-data/bronze/crime/chandler_az/snapshot_id=4f02cc45-5b78-476f-b177-11f238073e01",
+  "row_count": 160444,
+  "column_count": 33,
+  "selected_taxonomy_columns": [
+    "report_summary_offense_description",
+    "report_primary_offense_description",
+    "report_summary_offense_code",
+    "report_primary_offense_code",
+    "event_type"
+  ],
+  "taxonomy_combination_count": 234,
+  "candidate_column_count": 5
+}

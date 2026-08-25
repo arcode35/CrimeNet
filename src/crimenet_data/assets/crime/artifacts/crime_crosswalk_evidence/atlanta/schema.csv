@@ -1,0 +1,21 @@
+column,dtype
+reportnumber,String
+reportdate,String
+occurdate,String
+occurtime,String
+possibledate,String
+possibletime,String
+beat,String
+location,String
+ucrliteral,String
+neighborhood,String
+npu,String
+latitude,String
+longitude,String
+geometry,String
+source_city,String
+source_file_uri,String
+ingestion_run_id,String
+ingested_at_utc,"Datetime(time_unit='us', time_zone='UTC')"
+snapshot_id,String
+occurrence_year,Int64

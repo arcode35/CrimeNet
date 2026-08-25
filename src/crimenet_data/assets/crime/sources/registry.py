@@ -64,6 +64,31 @@ SOURCES = MappingProxyType(
 )
 SOURCE_KEYS = tuple(SOURCES)
 
+SILVER_SOURCE_KEYS = (
+    "atlanta",
+    "baltimore",
+    "chandler_az",
+    "chicago",
+    "dallas",
+    "denver",
+    "fort_worth",
+    "los_angeles_county_sheriff",
+    "marin_county_sheriff_ca",
+    "montgomery_county_md",
+    "new_york",
+    "san_francisco",
+    "seattle",
+    "sonoma_county_sheriff_ca",
+    "washington_dc",
+)
+
+_unknown_silver_sources = set(SILVER_SOURCE_KEYS) - set(SOURCES)
+if _unknown_silver_sources:
+    raise ValueError(
+        "Silver-enabled crime sources are not registered: "
+        f"{sorted(_unknown_silver_sources)}"
+    )
+
 
 def get_source(source_key: str) -> SourceDefinition:
     try:

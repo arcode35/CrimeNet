@@ -3,8 +3,10 @@ from __future__ import annotations
 import csv
 import fnmatch
 import glob
+import io
 import json
 import logging
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from urllib.parse import urlparse
@@ -15,6 +17,7 @@ from crimenet_data.assets.crime.sources.base import SourcePattern
 
 LOG = logging.getLogger(__name__)
 S3ClientFactory = Callable[[], object]
+MAX_MALFORMED_EXAMPLES = 25
 
 
 def _split_reader_options(
@@ -23,6 +26,7 @@ def _split_reader_options(
     options = dict(read_options)
     strategy = str(options.pop("strategy", "native"))
     return strategy, options
+
 
 def _fnmatch_globstar(path: str, pattern: str) -> bool:
     """Match S3 object keys while allowing **/ to represent zero directories."""
@@ -47,6 +51,7 @@ def _fnmatch_globstar(path: str, pattern: str) -> bool:
                 return True
 
     return False
+
 
 def _iter_object_uris(
     uri_pattern: str, s3_client_factory: S3ClientFactory
@@ -88,22 +93,6 @@ def _read_object_bytes(uri: str, s3_client_factory: S3ClientFactory) -> bytes:
     return response["Body"].read()
 
 
-def _normalize_ragged_row(
-    row: list[str],
-    width: int,
-    overflow_index: int | None,
-) -> tuple[list[str], bool]:
-    if len(row) == width:
-        return row, False
-    if len(row) < width:
-        return [*row, *([""] * (width - len(row)))], True
-    if overflow_index is None:
-        return row[:width], True
-    overflow = len(row) - width
-    merged = ",".join(row[overflow_index : overflow_index + overflow + 1])
-    return [*row[:overflow_index], merged, *row[overflow_index + overflow + 1 :]], True
-
-
 def _read_python_csv(
     uri_pattern: str,
     options: dict[str, object],
@@ -111,44 +100,98 @@ def _read_python_csv(
 ) -> pl.LazyFrame:
     encoding = str(options.pop("encoding", "utf-8"))
     expected_columns = tuple(options.pop("expected_columns", ()))
-    overflow_column = options.pop("overflow_column", None)
     if options:
         raise ValueError(f"Unsupported tolerant CSV options: {sorted(options)}")
 
     frames: list[pl.DataFrame] = []
     for uri in _iter_object_uris(uri_pattern, s3_client_factory):
         text = _read_object_bytes(uri, s3_client_factory).decode(encoding)
-        lines = text.splitlines()
-        if not lines:
+        reader = csv.reader(io.StringIO(text, newline=""), strict=False)
+        try:
+            header = next(reader)
+        except StopIteration:
             continue
-        header = next(csv.reader([lines[0]], strict=False))
         if expected_columns and tuple(header) != expected_columns:
             raise ValueError(
                 f"CSV header mismatch for {uri}: expected {expected_columns}, got {tuple(header)}"
             )
-        overflow_index = (
-            header.index(str(overflow_column)) if overflow_column in header else None
-        )
         columns: dict[str, list[str | None]] = {name: [] for name in header}
-        repaired = 0
-        for line_number, line in enumerate(lines[1:], start=2):
+        width_deltas: Counter[int] = Counter()
+        total_records = 0
+        correct_width_records = 0
+        short_records = 0
+        long_records = 0
+        rejected_records = 0
+        parse_failed_records = 0
+        malformed_examples: list[dict[str, object]] = []
+
+        while True:
             try:
-                row = next(csv.reader([line], strict=False))
+                row = next(reader)
+            except StopIteration:
+                break
             except csv.Error as error:
+                total_records += 1
+                parse_failed_records += 1
+                rejected_records += 1
                 LOG.warning(
                     "csv_record_parse_failed",
-                    extra={"source_file_uri": uri, "line_number": line_number},
+                    extra={
+                        "source_file_uri": uri,
+                        "line_number": reader.line_num,
+                    },
                     exc_info=error,
                 )
-                row = [line]
-            row, changed = _normalize_ragged_row(row, len(header), overflow_index)
-            repaired += int(changed)
+                continue
+
+            total_records += 1
+            width_delta = len(row) - len(header)
+            width_deltas[width_delta] += 1
+            if width_delta:
+                short_records += int(width_delta < 0)
+                long_records += int(width_delta > 0)
+                rejected_records += 1
+                if len(malformed_examples) < MAX_MALFORMED_EXAMPLES:
+                    malformed_examples.append(
+                        {
+                            "source_file_uri": uri,
+                            "line_number": reader.line_num,
+                            "expected_width": len(header),
+                            "actual_width": len(row),
+                            "width_delta": width_delta,
+                            "raw_parsed_row": row,
+                        }
+                    )
+                continue
+
+            correct_width_records += 1
             for name, value in zip(header, row, strict=True):
                 columns[name].append(value or None)
-        if repaired:
-            LOG.warning(
-                "csv_records_repaired",
-                extra={"source_file_uri": uri, "repaired_records": repaired},
+
+        LOG.info(
+            "csv_record_width_summary",
+            extra={
+                "source_file_uri": uri,
+                "expected_width": len(header),
+                "total_records": total_records,
+                "correct_width_records": correct_width_records,
+                "short_records": short_records,
+                "long_records": long_records,
+                "repaired_records": 0,
+                "rejected_records": rejected_records,
+                "parse_failed_records": parse_failed_records,
+                "width_deltas": dict(sorted(width_deltas.items())),
+            },
+        )
+        if malformed_examples:
+            # Raw rows are deliberately restricted to bounded debug diagnostics;
+            # normal structured logs contain counts only.
+            LOG.debug(
+                "csv_malformed_record_examples",
+                extra={
+                    "source_file_uri": uri,
+                    "malformed_records": malformed_examples,
+                },
             )
         frame = pl.DataFrame(columns, schema={name: pl.String for name in header})
         frames.append(frame.with_columns(pl.lit(uri).alias("__landing_object_uri")))

@@ -1,0 +1,18 @@
+column,dtype,null_count,null_pct,n_unique,uniqueness_ratio,avg_string_length,max_string_length,taxonomy_name_score,taxonomy_name_reasons,profile_status
+id,String,0,0.0,329592,1.0,21.823642564139906,51,0,"",profiled
+agency_code,String,0,0.0,3,9.102162673851307e-6,3.7614474865894802,4,-100,excluded:agency,profiled
+agency,String,0,0.0,3,9.102162673851307e-6,28.70654324134081,30,-100,excluded:agency,profiled
+incident_number,String,0,0.0,328529,0.996774800359232,10.999987863783101,12,-100,excluded:incident.*(?:id|number|num|no),profiled
+date_time,String,3,0.0009102162673851307,308831,0.9370185291378049,23.0,23,-100,excluded:date; excluded:time,profiled
+incident_type,String,1139,0.34557877618388794,26,0.00007915896642746451,17.911165372214594,27,5,type:5,profiled
+location_type,String,7426,2.2530886672006605,144,0.0004469745410750979,17.015799308431056,49,-100,excluded:location,profiled
+city,String,2518,0.7639748537585864,434,0.0013269168445061363,8.752575869680868,25,0,"",profiled
+intersection,String,4105,1.2454792592053203,11027,0.03387846519215821,24.509031082654605,70,-100,excluded:intersection,profiled
+location,String,0,0.0,13279,0.040289206048690504,28.620555110560936,29,-100,excluded:location,profiled
+upload,String,0,0.0,1495,0.004535911065802568,23.0,23,-100,excluded:upload,profiled
+source_city,String,0,0.0,1,3.0340542246171023e-6,24.0,24,-100,ingestion_metadata,profiled
+source_file_uri,String,0,0.0,7,0.000021238379572319717,76.0,76,-100,ingestion_metadata,profiled
+ingestion_run_id,String,0,0.0,1,3.0340542246171023e-6,36.0,36,-100,ingestion_metadata,profiled
+ingested_at_utc,"Datetime(time_unit='us', time_zone='UTC')",0,0.0,1,3.0340542246171023e-6,,,-100,ingestion_metadata,profiled
+snapshot_id,String,0,0.0,1,3.0340542246171023e-6,36.0,36,-100,ingestion_metadata,profiled
+occurrence_year,Int64,3,0.0009102162673851307,68,0.000206317565210004,,,-100,ingestion_metadata,profiled

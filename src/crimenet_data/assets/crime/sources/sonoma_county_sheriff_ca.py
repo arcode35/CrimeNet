@@ -1,10 +1,13 @@
 import polars as pl
 
-from crimenet_data.assets.crime.common.expressions import datetime_expr, text_expr
+from crimenet_data.assets.crime.common.expressions import (
+    datetime_expr,
+    numeric_expr,
+    text_expr,
+)
 from crimenet_data.assets.crime.sources._shared import (
     CSV,
     adapt_standard,
-    nullable_float,
     nullable_string,
     prepare_snake_case,
 )
@@ -28,8 +31,8 @@ def adapt(lf: pl.LazyFrame, _context: AdapterContext) -> pl.LazyFrame:
         source_offense_code=nullable_string(),
         source_offense_category=text_expr(lf, "incident_type"),
         source_offense_description=text_expr(lf, "incident_type"),
-        latitude=nullable_float(),
-        longitude=nullable_float(),
+        latitude=numeric_expr(lf, "latitude"),
+        longitude=numeric_expr(lf, "longitude"),
         location_label=text_expr(lf, "location", "intersection"),
         location_type=text_expr(lf, "location_type"),
         police_district=text_expr(lf, "agency"),
@@ -46,6 +49,7 @@ SOURCE = SourceDefinition(
         crosswalk_keys=("source_offense_description",),
         coordinate_bounds=None,
         coordinates_required=False,
+        deduplication_keys=("id",),
     ),
     prepare_bronze=prepare_snake_case,
     occurrence_timestamp=occurrence,

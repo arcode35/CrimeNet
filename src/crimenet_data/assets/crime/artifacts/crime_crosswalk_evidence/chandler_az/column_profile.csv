@@ -1,0 +1,34 @@
+column,dtype,null_count,null_pct,n_unique,uniqueness_ratio,avg_string_length,max_string_length,taxonomy_name_score,taxonomy_name_reasons,profile_status
+id,Int64,0,0.0,160444,1.0,,,0,"",profiled
+event_type,String,0,0.0,1,6.232704245718132e-6,15.0,15,5,type:5,profiled
+agency,String,0,0.0,1,6.232704245718132e-6,8.0,8,-100,excluded:agency,profiled
+report_id,Int64,0,0.0,160444,1.0,,,-100,excluded:report.*(?:id|number|num|no),profiled
+report_number,String,0,0.0,160444,1.0,19.0,19,-100,excluded:report.*(?:id|number|num|no),profiled
+report_year,String,0,0.0,6,0.00003739622547430879,4.0,4,-100,excluded:year,profiled
+reported_date,String,0,0.0,1819,0.011337289022961283,10.0,10,-100,excluded:date,profiled
+report_event_date,String,0,0.0,1819,0.011337289022961283,10.0,10,-100,excluded:date,profiled
+report_event_time,String,0,0.0,1440,0.00897509411383411,8.0,8,-100,excluded:time,profiled
+report_event_date_time,String,0,0.0,147841,0.9214492283912143,19.0,19,-100,excluded:date; excluded:time,profiled
+report_event_day,String,0,0.0,7,0.00004362892972002693,7.156777442596794,9,-100,excluded:day,profiled
+report_event_end_date,String,137826,85.90286953703473,1816,0.08029003448580777,10.0,10,-100,excluded:date,profiled
+report_event_end_time,String,137795,85.88354815387301,1421,0.06274007682458387,8.0,8,-100,excluded:time,profiled
+report_event_end_date_time,String,137826,85.90286953703473,21216,0.9380139711734017,19.0,19,-100,excluded:date; excluded:time,profiled
+report_place_name,String,139802,87.13445189598863,1687,0.08172657688208507,17.309030132739075,40,0,"",profiled
+report_address,String,0,0.0,14134,0.08809304180898007,19.342879758669692,61,-100,excluded:address,profiled
+report_city,String,473,0.2948069108224676,40,0.0002500453207143795,7.992911215157747,16,0,"",profiled
+report_district,String,2953,1.8405175637605644,7,0.00004444698427211714,1.0,1,-100,excluded:district,profiled
+report_beat,String,2283,1.4229263792974496,29,0.0001833574648617548,6.0,6,-100,excluded:beat,profiled
+report_location_type,String,1505,0.9380219889805789,47,0.0002957109331252871,22.17720005788384,45,-100,excluded:location,profiled
+report_latitude,Float64,25325,15.78432350228117,6516,0.04822415796446096,,,-100,excluded:latitude,profiled
+report_longitude,Float64,25325,15.78432350228117,6516,0.04822415796446096,,,-100,excluded:longitude,profiled
+report_status,String,0,0.0,18,0.00011218867642292638,30.53111989229887,59,0,"",profiled
+report_primary_offense_code,String,0,0.0,234,0.001458452793498043,6.0,6,20,offen[sc]e:15; code:5,profiled
+report_primary_offense_description,String,0,0.0,232,0.0014459873850066066,17.030752162748374,46,37,offen[sc]e:15; description:8; _desc:7; descr:7,profiled
+report_summary_offense_code,String,0,0.0,69,0.00043005659295455113,8.0,8,20,offen[sc]e:15; code:5,profiled
+report_summary_offense_description,String,160444,100.0,1,,,,37,offen[sc]e:15; description:8; _desc:7; descr:7,profiled
+source_city,String,0,0.0,1,6.232704245718132e-6,11.0,11,-100,ingestion_metadata,profiled
+source_file_uri,String,0,0.0,1,6.232704245718132e-6,69.0,69,-100,ingestion_metadata,profiled
+ingestion_run_id,String,0,0.0,1,6.232704245718132e-6,36.0,36,-100,ingestion_metadata,profiled
+ingested_at_utc,"Datetime(time_unit='us', time_zone='UTC')",0,0.0,1,6.232704245718132e-6,,,-100,ingestion_metadata,profiled
+snapshot_id,String,0,0.0,1,6.232704245718132e-6,36.0,36,-100,ingestion_metadata,profiled
+occurrence_year,Int64,0,0.0,6,0.00003739622547430879,,,-100,ingestion_metadata,profiled

@@ -5,11 +5,17 @@ from crimenet_data.assets.crime.sources.base import (
     SourceFormat,
     SourcePattern,
 )
-from crimenet_data.assets.crime.sources.registry import SOURCE_KEYS, SOURCES, get_source
+from crimenet_data.assets.crime.sources.registry import (
+    SILVER_SOURCE_KEYS,
+    SOURCE_KEYS,
+    SOURCES,
+    get_source,
+)
 
 __all__ = [
     "SOURCES",
     "SOURCE_KEYS",
+    "SILVER_SOURCE_KEYS",
     "AdapterContext",
     "CrimeSourceConfig",
     "SourceDefinition",

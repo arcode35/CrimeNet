@@ -46,7 +46,7 @@ SOURCE = SourceDefinition(
         source_system="seattle_open_data",
         patterns=PARQUET,
         timezone="America/Los_Angeles",
-        crosswalk_keys=("source_offense_category", "source_offense_description"),
+        crosswalk_keys=("source_offense_description",),
         coordinate_bounds=(47.49334795, 47.73569416, -122.4307931, -122.24213716),
         deduplication_keys=("offense_id",),
     ),

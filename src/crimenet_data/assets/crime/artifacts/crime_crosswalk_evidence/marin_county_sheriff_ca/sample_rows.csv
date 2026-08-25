@@ -1,0 +1,201 @@
+crime_class,crime,source_file_uri
+ASSAULT - OTHER,ASSAULT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+TRAFFIC INCIDENT,VEH CODE,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DRUGS / NARCOTICS VIOLATION,HS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,WARR ARR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+VANDALISM,VANDALISM,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,WARR ARR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+TRAFFIC INCIDENT,VEH CODE,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,WARR ARR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,WARR ARR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,ALAW,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,BODY,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY FROM MOTOR VEHICLE,BURG AUTO,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,MENTAL,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+TRAFFIC INCIDENT,VEH CODE,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,WARR ARR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,BODY,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY - RESIDENTIAL,BURG RES,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY - RESIDENTIAL,BURG RES,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,FOUND,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+VANDALISM,VANDALISM,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DRUGS / NARCOTICS VIOLATION,HS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,DV TRO,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DRUGS / NARCOTICS VIOLATION,DRUGS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ASSAULT - OTHER,ASSAULT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,WARR ARR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+FRAUD,FRAUD,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,WARR ARR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,BODY,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,WARR ARR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,BODY,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,WARR ARR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,FOUND,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,FOUND,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,WARR ARR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,SUS CIRC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+SEXUAL ASSAULT,RAPE,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DRUGS / NARCOTICS VIOLATION,HS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,MCSO,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,BODY,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+TRAFFIC INCIDENT,VTOW,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,FOUND,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,SUS CIRC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,DOM VIOL,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,WARR ARR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY - RESIDENTIAL,BURG RES,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,ACHP,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,MENTAL,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DRUGS / NARCOTICS VIOLATION,DRUNK,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY - RESIDENTIAL,BURG RES,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY - RESIDENTIAL,BURG RES,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DISORDERLY CONDUCT,DIST PEACE,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY - RESIDENTIAL,BURG RES,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,ADEATH,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,LOST,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DISORDERLY CONDUCT,DIST PEACE,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+THEFT,THEFT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,ALAW,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,ALAW,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,LOST,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,LOST,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,MISS PERS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+FRAUD,FRAUD,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,SUS CIRC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,MENTAL,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,VIO CT OR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,MCSO,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,LOST,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+THEFT,THEFT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+VANDALISM,VANDALISM,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,MISS PERS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DRUGS / NARCOTICS VIOLATION,HS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+TRAFFIC INCIDENT,VABT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+THEFT,THEFT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DRUGS / NARCOTICS VIOLATION,DRUGS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,VIO CT OR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+THEFT,THEFT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+THEFT,THEFT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,WARR ARR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,WARR ARR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,BODY,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+TRAFFIC INCIDENT,VEH CODE,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,MCSO,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,ALAW,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,SUS CIRC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY - RESIDENTIAL,BURG RES,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ASSAULT - OTHER,ASSAULT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+TRAFFIC INCIDENT,VEH CODE,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,LOST,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY - RESIDENTIAL,BURG RES,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,AOTH,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,ACIT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ASSAULT - OTHER,CHILD ABUS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ASSAULT - OTHER,BATTERY,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,AMED,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,AMED,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,MENTAL,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+FRAUD,FRAUD,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,THREATS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,MENTAL,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+THEFT,THEFT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+THEFT,THEFT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+FRAUD,FRAUD,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY - RESIDENTIAL,BURG RES,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+VANDALISM,VANDALISM,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY - COMMERCIAL,BURG COMM,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+THEFT,THEFT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+TRAFFIC INCIDENT,HIT & RUN,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+VANDALISM,VANDALISM,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY - RESIDENTIAL,BURG RES,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DRUGS / NARCOTICS VIOLATION,DRUNK,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DUI,DUI,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+MOTOR VEHICLE THEFT,VEH RECV,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,MAST,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,DOM VIOL,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+TRAFFIC INCIDENT,VTOW,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DRUGS / NARCOTICS VIOLATION,HS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DRUGS / NARCOTICS VIOLATION,HS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DRUGS / NARCOTICS VIOLATION,DRUNK,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,SUS CIRC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+TRAFFIC INCIDENT,VTOW,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+VANDALISM,VANDALISM,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,MISS PERS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ASSAULT - OTHER,ASSAULT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+FRAUD,IDENT THEF,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+TRAFFIC INCIDENT,VTOW,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+TRAFFIC INCIDENT,VTOW,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+THEFT,THEFT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY FROM MOTOR VEHICLE,BURG AUTO,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+TRAFFIC INCIDENT,VEH CODE,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,CIV,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+THEFT,THEFT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,ALAW,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY - RESIDENTIAL,BURG RES,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,SUS CIRC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,ALAW,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY - RESIDENTIAL,BURG RES,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ASSAULT - OTHER,BATTERY,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,ANML,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DRUGS / NARCOTICS VIOLATION,DRUNK,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DRUGS / NARCOTICS VIOLATION,DRUNK,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+FRAUD,FRAUD,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,AOTH,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+FRAUD,FRAUD,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+THEFT,THEFT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,SUS CIRC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,SUS CIRC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY - RESIDENTIAL,BURG RES,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+TRAFFIC INCIDENT,VTOW,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,MENTAL,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,WARR ARR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY FROM MOTOR VEHICLE,BURG AUTO,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,SUS CIRC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+WEAPONS VIOLATION,WEAPONS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,WARR ARR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+TRAFFIC INCIDENT,VABT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,SUS CIRC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY - RESIDENTIAL,BURG RES,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,MENTAL,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,DOM VIOL,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,DOM VIOL,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,MENTAL,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+FRAUD,FRAUD,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+TRAFFIC INCIDENT,VEH CODE,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+SEXUAL OFFENSE - OTHER,SEX,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY FROM MOTOR VEHICLE,BURG AUTO,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+TRAFFIC INCIDENT,VEH CODE,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DRUGS / NARCOTICS VIOLATION,HS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MISC PC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+VANDALISM,VANDALISM,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,ALAW,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,ALAW,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+THEFT,THEFT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY - RESIDENTIAL,BURG RES,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,MS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,SUS CIRC,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+FRAUD,FRAUD,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+BURGLARY - RESIDENTIAL,BURG RES,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ASSAULT - OTHER,ASSAULT,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,WARR ARR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - CRIMINAL,WARR ARR,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+DRUGS / NARCOTICS VIOLATION,HS,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv
+ALL OTHER - NON-CRIMINAL,ACHP,s3://crimenet-data/raw_files/landing/marin_county_sheriff_ca/part-00000.csv

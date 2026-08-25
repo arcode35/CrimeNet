@@ -49,6 +49,8 @@ def adapt_standard(
     location_type: pl.Expr,
     police_district: pl.Expr,
     local_area: pl.Expr,
+    source_auxiliary: pl.Expr | None = None,
+    source_severity: pl.Expr | None = None,
 ) -> pl.LazyFrame:
     return project_source_fields(
         lf,
@@ -58,6 +60,16 @@ def adapt_standard(
             "source_offense_code": source_offense_code,
             "source_offense_category": source_offense_category,
             "source_offense_description": source_offense_description,
+            "source_auxiliary": (
+                source_auxiliary
+                if source_auxiliary is not None
+                else nullable_string()
+            ),
+            "source_severity": (
+                source_severity
+                if source_severity is not None
+                else nullable_string()
+            ),
             "latitude": latitude,
             "longitude": longitude,
             "location_label": location_label,
