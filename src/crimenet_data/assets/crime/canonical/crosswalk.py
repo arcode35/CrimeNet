@@ -7,6 +7,9 @@ from crimenet_data.assets.crime.canonical.schema import (
     CANONICAL_CRIME_SCHEMA,
     CANONICAL_MAPPING_VERSION,
 )
+from crimenet_data.assets.crime.common.source_bounds import (
+    globally_valid_coordinate_expr,
+)
 
 SOURCE_TAXONOMY_COLUMNS = (
     "source_offense_code",
@@ -54,9 +57,7 @@ def normalize_crosswalk_nulls(crosswalk_lf: pl.LazyFrame) -> pl.LazyFrame:
     """Translate the legacy literal-null sentinel in source taxonomy fields."""
 
     available = set(crosswalk_lf.collect_schema().names())
-    columns = [
-        column for column in SOURCE_TAXONOMY_COLUMNS if column in available
-    ]
+    columns = [column for column in SOURCE_TAXONOMY_COLUMNS if column in available]
     return crosswalk_lf.with_columns(
         pl.when(pl.col(column) == "null")
         .then(pl.lit(None, dtype=pl.String))
@@ -106,13 +107,10 @@ def validate_canonical_crosswalk(
         missing_keys = set(keys) - available
         if missing_keys:
             raise ValueError(
-                f"Crosswalk keys for {source_key!r} are missing: "
-                f"{sorted(missing_keys)}"
+                f"Crosswalk keys for {source_key!r} are missing: {sorted(missing_keys)}"
             )
         duplicates = (
-            source_crosswalk.group_by(list(keys))
-            .len()
-            .filter(pl.col("len") > 1)
+            source_crosswalk.group_by(list(keys)).len().filter(pl.col("len") > 1)
         )
         if not duplicates.is_empty():
             raise ValueError(
@@ -174,9 +172,7 @@ def apply_canonical_crosswalk(
         validate="m:1",
         nulls_equal=True,
     ).with_columns(
-        pl.col("mapping_version")
-        .is_not_null()
-        .alias("canonical_mapping_found")
+        pl.col("mapping_version").is_not_null().alias("canonical_mapping_found")
     )
 
 
@@ -189,30 +185,16 @@ def cleanse_canonical_source(lf: pl.LazyFrame, source_key: str) -> pl.LazyFrame:
         pl.col("longitude").cast(pl.Float64, strict=False),
     )
     year_is_valid = pl.col("occurrence_year").is_between(2014, 2026).fill_null(False)
-    min_latitude, max_latitude, min_longitude, max_longitude = (
-        config.coordinate_bounds or (-90.0, 90.0, -180.0, 180.0)
-    )
-    coordinates_are_valid = (
-        pl.col("latitude").is_finite()
-        & pl.col("longitude").is_finite()
-        & pl.col("latitude").is_between(min_latitude, max_latitude)
-        & pl.col("longitude").is_between(min_longitude, max_longitude)
-        
-    ).fill_null(False)
+    coordinates_are_valid = globally_valid_coordinate_expr()
     coordinates_are_absent = (
         pl.col("latitude").is_null() & pl.col("longitude").is_null()
     )
-    coordinates_are_zero_zero = (
-        (pl.col("latitude") == 0.0) & (pl.col("longitude") == 0.0)
-    ).fill_null(False)
     location_is_valid = (
         coordinates_are_valid
         if config.coordinates_required
         else coordinates_are_absent | coordinates_are_valid
     )
-    return lf.filter(
-        year_is_valid & location_is_valid & ~coordinates_are_zero_zero
-    )
+    return lf.filter(year_is_valid & location_is_valid)
 
 
 def project_canonical_schema(lf: pl.LazyFrame, source_key: str) -> pl.LazyFrame:

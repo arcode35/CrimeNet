@@ -47,7 +47,6 @@ SOURCE = SourceDefinition(
         patterns=CSV,
         timezone="America/New_York",
         crosswalk_keys=("source_offense_description",),
-        coordinate_bounds=None,
     ),
     prepare_bronze=prepare_snake_case,
     occurrence_timestamp=occurrence,

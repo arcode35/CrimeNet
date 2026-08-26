@@ -16,6 +16,13 @@ from crimenet_data.assets.crime.canonical import (
     project_canonical_schema,
     validate_canonical_crosswalk,
 )
+from crimenet_data.assets.crime.common.source_bounds import (
+    SOURCE_COORDINATE_BOUNDS,
+    SOURCE_COORDINATE_BOUNDS_VALID_COLUMN,
+    apply_source_coordinate_bounds,
+    globally_valid_coordinate_expr,
+    source_coordinate_bounds_summary,
+)
 from crimenet_data.assets.crime.normalization import (
     normalization_requires_duckdb,
     normalize_source,
@@ -49,6 +56,7 @@ DUPLICATE_SEMANTIC_COLUMNS = (
     "police_district",
     "local_area",
 )
+
 
 def silver_duplicate_id_examples(
     lf: pl.LazyFrame,
@@ -108,53 +116,33 @@ def silver_duplicate_id_summary(
         )
         .agg(
             pl.len().alias("row_count"),
-            pl.struct(
-                list(DUPLICATE_SEMANTIC_COLUMNS)
-            )
+            pl.struct(list(DUPLICATE_SEMANTIC_COLUMNS))
             .n_unique()
             .alias("semantic_variants"),
         )
-        .filter(
-            pl.col("row_count") > 1
-        )
+        .filter(pl.col("row_count") > 1)
     )
 
     return duplicate_groups.select(
         pl.lit(source_key).alias("source_city"),
         pl.len().alias("duplicate_ids"),
+        (pl.col("row_count").sum() - pl.len()).alias("duplicate_surplus_rows"),
+        ((pl.col("semantic_variants") == 1).sum()).alias("exact_duplicate_ids"),
         (
-            pl.col("row_count").sum()
-            - pl.len()
-        ).alias("duplicate_surplus_rows"),
-        (
-            (pl.col("semantic_variants") == 1)
-            .sum()
-        ).alias("exact_duplicate_ids"),
-        (
-            pl.when(
-                pl.col("semantic_variants") == 1
-            )
-            .then(
-                pl.col("row_count") - 1
-            )
+            pl.when(pl.col("semantic_variants") == 1)
+            .then(pl.col("row_count") - 1)
             .otherwise(0)
             .sum()
         ).alias("exact_duplicate_surplus_rows"),
+        ((pl.col("semantic_variants") > 1).sum()).alias("identity_collision_ids"),
         (
-            (pl.col("semantic_variants") > 1)
-            .sum()
-        ).alias("identity_collision_ids"),
-        (
-            pl.when(
-                pl.col("semantic_variants") > 1
-            )
-            .then(
-                pl.col("row_count") - 1
-            )
+            pl.when(pl.col("semantic_variants") > 1)
+            .then(pl.col("row_count") - 1)
             .otherwise(0)
             .sum()
         ).alias("identity_collision_surplus_rows"),
     )
+
 
 def deduplicate_source(lf: pl.LazyFrame, source_key: str) -> pl.LazyFrame:
     """Apply the source contract's record identity before crosswalk expansion."""
@@ -215,15 +203,22 @@ def map_silver_source(
 
     cleansed = cleanse_canonical_source(adapted, source_key)
     mapped = apply_canonical_crosswalk(cleansed, crosswalk_lf, source_key)
+    if source_key in SOURCE_COORDINATE_BOUNDS:
+        mapped = apply_source_coordinate_bounds(mapped, source_key)
+    else:
+        # Registered archival/non-modeled adapters remain testable, but cannot
+        # become model eligible without first joining SILVER_SOURCE_KEYS and the
+        # exact bounds registry (which is validated at registry import time).
+        mapped = mapped.with_columns(
+            pl.lit(None, dtype=pl.Boolean).alias(SOURCE_COORDINATE_BOUNDS_VALID_COLUMN),
+            pl.lit(False).alias("include_in_model"),
+        )
     return project_canonical_schema(mapped, source_key)
 
 
 def zero_zero_coordinate_count(lf: pl.LazyFrame) -> pl.LazyFrame:
     return lf.select(
-        (
-            (pl.col("latitude") == 0.0)
-            & (pl.col("longitude") == 0.0)
-        )
+        ((pl.col("latitude") == 0.0) & (pl.col("longitude") == 0.0))
         .fill_null(False)
         .sum()
         .alias("zero_zero_coordinate_rows")
@@ -262,6 +257,8 @@ def silver_mapping_summary(lf: pl.LazyFrame, source_key: str) -> pl.LazyFrame:
 
     mapped = pl.col("canonical_mapping_found").fill_null(False)
     included = pl.col("include_in_model").fill_null(False)
+    bounds_valid = pl.col(SOURCE_COORDINATE_BOUNDS_VALID_COLUMN).fill_null(False)
+    globally_valid_coordinates = globally_valid_coordinate_expr()
     review = pl.col("review_required").fill_null(False)
     taxonomy_is_present = pl.any_horizontal(
         *(
@@ -278,14 +275,15 @@ def silver_mapping_summary(lf: pl.LazyFrame, source_key: str) -> pl.LazyFrame:
         pl.len().alias("output_rows"),
         mapped.sum().alias("mapped_rows"),
         (~mapped).sum().alias("unmapped_rows"),
-        ((~mapped) & taxonomy_is_present)
-        .sum()
-        .alias("unexpected_unmapped_rows"),
+        ((~mapped) & taxonomy_is_present).sum().alias("unexpected_unmapped_rows"),
         included.sum().alias("include_in_model_rows"),
-        (pl.col("mapping_action") == "drop")
-        .fill_null(False)
+        (globally_valid_coordinates & bounds_valid)
         .sum()
-        .alias("drop_rows"),
+        .alias("inside_source_bounds_rows"),
+        (globally_valid_coordinates & ~bounds_valid)
+        .sum()
+        .alias("outside_source_bounds_rows"),
+        (pl.col("mapping_action") == "drop").fill_null(False).sum().alias("drop_rows"),
         (pl.col("mapping_action") == "exclude_non_criminal")
         .fill_null(False)
         .sum()
@@ -315,8 +313,7 @@ def silver_unmapped_key_counts(
     )
     return (
         lf.filter(
-            ~pl.col("canonical_mapping_found").fill_null(False)
-            & taxonomy_is_present
+            ~pl.col("canonical_mapping_found").fill_null(False) & taxonomy_is_present
         )
         .group_by(keys)
         .agg(pl.len().alias("row_count"))
@@ -400,9 +397,7 @@ def silver_crime_offenses(
                 )
                 adapter_context = AdapterContext()
                 if normalization_requires_duckdb(source_key):
-                    connection = stack.enter_context(
-                        duckdb_resource.get_connection()
-                    )
+                    connection = stack.enter_context(duckdb_resource.get_connection())
                     adapter_context = AdapterContext(duckdb=connection)
                 adapted_frames[source_key] = adapt_silver_source(
                     bronze_frames[source_key],
@@ -416,9 +411,21 @@ def silver_crime_offenses(
                     for source_key in SILVER_SOURCE_KEYS
                 ]
             )
-            for source_key, count in zip(
+            coordinate_bounds_summaries = pl.collect_all(
+                [
+                    source_coordinate_bounds_summary(
+                        adapted_frames[source_key], source_key
+                    )
+                    for source_key in SILVER_SOURCE_KEYS
+                ]
+            )
+            coordinate_bounds_rows = [
+                summary.row(0, named=True) for summary in coordinate_bounds_summaries
+            ]
+            for source_key, count, bounds_summary in zip(
                 SILVER_SOURCE_KEYS,
                 zero_zero_counts,
+                coordinate_bounds_rows,
                 strict=True,
             ):
                 log.info(
@@ -427,11 +434,37 @@ def silver_crime_offenses(
                     bronze_snapshot_uri=snapshot_uris[source_key],
                     zero_zero_coordinate_rows=int(count.item()),
                 )
+                log.info(
+                    "silver_source_coordinate_bounds_summary",
+                    bronze_snapshot_uri=snapshot_uris[source_key],
+                    **bounds_summary,
+                )
                 source_frames[source_key] = map_silver_source(
                     adapted_frames[source_key],
                     crosswalk_lf,
                     source_key=source_key,
                 )
+
+            bounds_total_rows = sum(
+                int(row["input_rows"]) for row in coordinate_bounds_rows
+            )
+            bounds_inside_rows = sum(
+                int(row["inside_source_bounds_rows"]) for row in coordinate_bounds_rows
+            )
+            bounds_outside_rows = sum(
+                int(row["outside_source_bounds_rows"]) for row in coordinate_bounds_rows
+            )
+            log.info(
+                "silver_coordinate_bounds_summary",
+                total_rows=bounds_total_rows,
+                inside_source_bounds_rows=bounds_inside_rows,
+                outside_source_bounds_rows=bounds_outside_rows,
+                outside_source_bounds_pct=(
+                    100.0 * bounds_outside_rows / bounds_total_rows
+                    if bounds_total_rows
+                    else 0.0
+                ),
+            )
 
             summaries = pl.collect_all(
                 [
@@ -446,9 +479,7 @@ def silver_crime_offenses(
                 log.info(
                     "silver_source_mapping_summary",
                     bronze_snapshot_uri=snapshot_uris[source_key],
-                    crosswalk_keys=list(
-                        get_source(source_key).config.crosswalk_keys
-                    ),
+                    crosswalk_keys=list(get_source(source_key).config.crosswalk_keys),
                     mapping_version=CANONICAL_MAPPING_VERSION,
                     **summary,
                 )
@@ -512,9 +543,7 @@ def silver_crime_offenses(
                 )
 
             review_required = [
-                summary
-                for summary in summary_rows
-                if summary["review_required_rows"]
+                summary for summary in summary_rows if summary["review_required_rows"]
             ]
             if review_required:
                 raise RuntimeError(
@@ -532,8 +561,7 @@ def silver_crime_offenses(
             )
 
             duplicate_summary_rows = [
-                summary.row(0, named=True)
-                for summary in duplicate_summaries
+                summary.row(0, named=True) for summary in duplicate_summaries
             ]
 
             duplicate_sources: list[str] = []
@@ -558,15 +586,13 @@ def silver_crime_offenses(
                 lasd.group_by("crime_id")
                 .agg(
                     pl.len().alias("rows"),
-                    pl.struct([
-                        c for c in LASD_COMPARE_COLUMNS
-                        if c != "source_file_uri"
-                    ]).n_unique().alias("semantic_variants"),
+                    pl.struct(
+                        [c for c in LASD_COMPARE_COLUMNS if c != "source_file_uri"]
+                    )
+                    .n_unique()
+                    .alias("semantic_variants"),
                 )
-                .filter(
-                    (pl.col("rows") > 1)
-                    & (pl.col("semantic_variants") > 1)
-                )
+                .filter((pl.col("rows") > 1) & (pl.col("semantic_variants") > 1))
                 .select("crime_id")
             )
 
@@ -576,10 +602,7 @@ def silver_crime_offenses(
                     on="crime_id",
                     how="inner",
                 )
-                .select(
-                    ["crime_id", "source_record_id"]
-                    + LASD_COMPARE_COLUMNS
-                )
+                .select(["crime_id", "source_record_id"] + LASD_COMPARE_COLUMNS)
                 .sort(["crime_id", "source_file_uri"])
                 .head(50)
                 .collect(engine="streaming")
@@ -639,8 +662,7 @@ def silver_crime_offenses(
                 source_snapshots=snapshot_uris,
                 per_source=summary_rows,
                 git_commit_sha=(
-                    os.environ.get("GIT_COMMIT_SHA")
-                    or os.environ.get("GITHUB_SHA")
+                    os.environ.get("GIT_COMMIT_SHA") or os.environ.get("GITHUB_SHA")
                 ),
             )
             log.info(

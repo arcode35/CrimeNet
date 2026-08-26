@@ -50,7 +50,6 @@ CANONICAL_CRIME_SCHEMA = pl.Schema(
         "crime_id": pl.String,
         "source_city": pl.String,
         "source_record_id": pl.String,
-
         # ------------------------------------------------------------
         # Time
         # ------------------------------------------------------------
@@ -58,7 +57,6 @@ CANONICAL_CRIME_SCHEMA = pl.Schema(
         "report_timestamp": pl.Datetime("us"),
         "occurrence_year": pl.Int16,
         "source_timezone": pl.String,
-
         # ------------------------------------------------------------
         # Original source taxonomy
         # ------------------------------------------------------------
@@ -67,25 +65,19 @@ CANONICAL_CRIME_SCHEMA = pl.Schema(
         "source_offense_description": pl.String,
         "source_auxiliary": pl.String,
         "source_severity": pl.String,
-
         # ------------------------------------------------------------
         # Canonical mapping / taxonomy
         # ------------------------------------------------------------
         "mapping_version": pl.String,
-
         "canonical_family_code": pl.String,
         "canonical_offense_family": pl.String,
-
         "canonical_subtype_code": pl.String,
         "canonical_offense_subtype": pl.String,
-
         "canonical_domain": pl.String,
         "canonical_target": pl.String,
-
         "is_criminal_event": pl.Boolean,
         "is_violent": pl.Boolean,
         "is_property": pl.Boolean,
-
         # ------------------------------------------------------------
         # Mapping auditability
         # ------------------------------------------------------------
@@ -94,18 +86,16 @@ CANONICAL_CRIME_SCHEMA = pl.Schema(
         "review_required": pl.Boolean,
         "mapping_action": pl.String,
         "include_in_model": pl.Boolean,
-
         # ------------------------------------------------------------
         # Geography
         # ------------------------------------------------------------
+        "source_coordinate_bounds_valid": pl.Boolean,
         "latitude": pl.Float64,
         "longitude": pl.Float64,
-
         "location_label": pl.String,
         "location_type": pl.String,
         "police_district": pl.String,
         "local_area": pl.String,
-
         # ------------------------------------------------------------
         # Ingestion provenance
         # ------------------------------------------------------------

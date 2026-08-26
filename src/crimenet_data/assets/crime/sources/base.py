@@ -43,7 +43,6 @@ class CrimeSourceConfig:
     patterns: tuple[SourcePattern, ...]
     timezone: str
     crosswalk_keys: tuple[str, ...]
-    coordinate_bounds: tuple[float, float, float, float] | None
     coordinates_required: bool = True
     deduplication_keys: tuple[str, ...] = ()
 

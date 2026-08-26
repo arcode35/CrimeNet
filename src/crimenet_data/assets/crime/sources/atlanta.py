@@ -22,8 +22,7 @@ from crimenet_data.assets.crime.sources.base import (
     SourceDefinition,
 )
 
-
-CURRENT_ERA_START = datetime(2021, 1, 1)
+CURRENT_ERA_START = datetime(2021, 1, 1)  # noqa: DTZ001 - source-local wall time
 ATLANTA_TZ = "America/New_York"
 
 
@@ -102,10 +101,7 @@ def current_report_timestamp(lf: pl.LazyFrame) -> pl.Expr:
     )
 
     return (
-        pl.when(
-            (report >= pl.lit(CURRENT_ERA_START))
-            & (report <= ingested_local)
-        )
+        pl.when((report >= pl.lit(CURRENT_ERA_START)) & (report <= ingested_local))
         .then(report)
         .otherwise(pl.lit(None, dtype=pl.Datetime("us")))
     )
@@ -160,11 +156,7 @@ def adapt_legacy(
     )
 
     return (
-        adapted
-        .filter(
-            pl.col("occurrence_timestamp")
-            < pl.lit(CURRENT_ERA_START)
-        )
+        adapted.filter(pl.col("occurrence_timestamp") < pl.lit(CURRENT_ERA_START))
         .sort(
             [
                 "source_record_id",
@@ -224,7 +216,6 @@ def adapt_current(
             "latitude_2",
             "latitude",
         ),
-
         longitude=numeric_expr(
             lf,
             "geometry_x",
@@ -255,11 +246,7 @@ def adapt_current(
     # their differences are in APD fields CrimeNet does not model (for example
     # firearm/victim annotations), so one canonical offense row is correct.
     return (
-        adapted
-        .filter(
-            pl.col("occurrence_timestamp")
-            >= pl.lit(CURRENT_ERA_START)
-        )
+        adapted.filter(pl.col("occurrence_timestamp") >= pl.lit(CURRENT_ERA_START))
         .sort(
             [
                 "source_record_id",
@@ -295,15 +282,11 @@ def adapt(
     frames: list[pl.LazyFrame] = []
 
     if {"reportnumber", "ucrliteral"} <= names:
-        legacy = lf.filter(
-            pl.col("reportnumber").is_not_null()
-        )
+        legacy = lf.filter(pl.col("reportnumber").is_not_null())
         frames.append(adapt_legacy(legacy))
 
     if {"report_number", "nibrs_ucr_code"} <= names:
-        current = lf.filter(
-            pl.col("report_number").is_not_null()
-        )
+        current = lf.filter(pl.col("report_number").is_not_null())
         frames.append(adapt_current(current))
 
     if not frames:
@@ -328,15 +311,7 @@ SOURCE = SourceDefinition(
         source_system="atlanta_police_open_data",
         patterns=CSV + PARQUET,
         timezone=ATLANTA_TZ,
-        crosswalk_keys=(
-            "source_offense_description",
-        ),
-        coordinate_bounds=(
-            33.60,
-            33.95,
-            -84.60,
-            -84.20,
-        ),
+        crosswalk_keys=("source_offense_description",),
     ),
     prepare_bronze=prepare_snake_case,
     occurrence_timestamp=occurrence,

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
+from crimenet_data.assets.crime.common.source_bounds import (
+    validate_source_coordinate_bounds,
+)
 from crimenet_data.assets.crime.sources.atlanta import SOURCE as ATLANTA
 from crimenet_data.assets.crime.sources.baltimore import SOURCE as BALTIMORE
 from crimenet_data.assets.crime.sources.base import SourceDefinition
@@ -88,6 +91,8 @@ if _unknown_silver_sources:
         "Silver-enabled crime sources are not registered: "
         f"{sorted(_unknown_silver_sources)}"
     )
+
+validate_source_coordinate_bounds(SILVER_SOURCE_KEYS)
 
 
 def get_source(source_key: str) -> SourceDefinition:
