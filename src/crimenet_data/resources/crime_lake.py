@@ -181,24 +181,36 @@ class CrimeLakeResources(dg.ConfigurableResource):
         if not self.bucket.startswith("s3://"):
             return {}
 
-        environment = {
-            "B2_ENDPOINT_URL": os.environ.get("B2_ENDPOINT_URL"),
-            "B2_KEY_ID": os.environ.get("B2_KEY_ID"),
-            "B2_APPLICATION_KEY": os.environ.get("B2_APPLICATION_KEY"),
-            "B2_REGION": os.environ.get("B2_REGION", "us-east-005"),
-        }
-        missing = sorted(name for name, value in environment.items() if not value)
+        endpoint = os.environ.get("B2_ENDPOINT_URL")
+        key_id = os.environ.get("B2_KEY_ID")
+        app_key = os.environ.get("B2_APPLICATION_KEY")
+        region = os.environ.get("B2_REGION", "us-east-005")
+
+        missing = [
+            name
+            for name, value in (
+                ("B2_ENDPOINT_URL", endpoint),
+                ("B2_KEY_ID", key_id),
+                ("B2_APPLICATION_KEY", app_key),
+            )
+            if not value
+        ]
         if missing:
             raise RuntimeError(
                 "Missing Backblaze B2 configuration: " + ", ".join(missing)
             )
 
         return {
-            "aws_access_key_id": environment["B2_KEY_ID"],
-            "aws_secret_access_key": environment["B2_APPLICATION_KEY"],
-            "aws_region": environment["B2_REGION"],
-            "aws_endpoint_url": environment["B2_ENDPOINT_URL"],
-            "max_retries": 5,
+            "aws_access_key_id": key_id,
+            "aws_secret_access_key": app_key,
+            "aws_region": region,
+            "aws_endpoint_url": endpoint,
+            # Aggressive retries for B2 intermittent 500 "internal incident"
+            "max_retries": 15,
+            "retry_timeout_ms": 300_000,          # 5 min total budget
+            "retry_init_backoff_ms": 400,
+            "retry_max_backoff_ms": 20_000,
+            "retry_base_multiplier": 2.0,
         }
 
     def s3_client(self):
