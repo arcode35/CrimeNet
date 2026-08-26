@@ -7,14 +7,18 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from crimenet_data.resources.crime_lake import CrimeLakeResources
+from crimenet_data.assets.crime.canonical import (
+    CANONICAL_CRIME_SCHEMA,
+    CANONICAL_MAPPING_VERSION,
+)
+from crimenet_data.resources.crime_lake import (
+    CrimeLakeResources,
+    SilverSnapshotPointer,
+)
 
 
 def _lake(tmp_path: Path) -> CrimeLakeResources:
-    return CrimeLakeResources(
-        bucket=str(tmp_path / "object-store"),
-        delta_bucket=str(tmp_path / "delta-store"),
-    )
+    return CrimeLakeResources(bucket=str(tmp_path / "object-store"))
 
 
 def _frame(*years: int) -> pl.LazyFrame:
@@ -46,7 +50,12 @@ def test_bronze_snapshot_path_is_versioned_under_s3_root() -> None:
     assert lake.bronze_snapshot_uri("new_york", "abc123") == (
         "s3://crimenet-data/bronze/crime/new_york/snapshot_id=abc123"
     )
-    assert lake.resolve_source_path("new_york", "silver").startswith("b2://")
+    assert lake.silver_crime_offenses_uri == (
+        "s3://crimenet-data/silver/crime_offenses"
+    )
+    assert lake.silver_snapshot_uri("snapshot-1") == (
+        "s3://crimenet-data/silver/crime_offenses/snapshot_id=snapshot-1"
+    )
 
 
 def test_polars_s3_retries_are_centralized_in_storage_options(
@@ -61,7 +70,254 @@ def test_polars_s3_retries_are_centralized_in_storage_options(
 
     assert options["aws_endpoint_url"] == "https://s3.example.invalid"
     assert options["aws_region"] == "us-east-005"
-    assert options["max_retries"] == "5"
+    assert options["max_retries"] == 15
+    assert options["retry_timeout_ms"] == 300_000
+    assert options["retry_init_backoff_ms"] == 400
+    assert options["retry_max_backoff_ms"] == 20_000
+    assert options["retry_base_multiplier"] == 2.0
+
+
+def _silver_frame(
+    *records: tuple[str, int],
+    mapped: bool = True,
+) -> pl.LazyFrame:
+    rows: list[dict[str, object]] = []
+    for record_id, year in records:
+        row = {name: None for name in CANONICAL_CRIME_SCHEMA}
+        row.update(
+            {
+                "crime_id": f"new_york:{record_id}",
+                "source_city": "new_york",
+                "source_record_id": record_id,
+                "occurrence_timestamp": datetime(year, 1, 2, 3, 4),  # noqa: DTZ001 - source-local Silver time
+                "report_timestamp": datetime(year, 1, 3),  # noqa: DTZ001 - source-local Silver time
+                "occurrence_year": year,
+                "source_timezone": "America/New_York",
+                "source_offense_description": "ARSON",
+                "mapping_version": CANONICAL_MAPPING_VERSION if mapped else None,
+                "canonical_family_code": "F10" if mapped else None,
+                "canonical_offense_family": "arson" if mapped else None,
+                "canonical_subtype_code": "F10.01" if mapped else None,
+                "canonical_offense_subtype": "arson" if mapped else None,
+                "canonical_domain": "property" if mapped else None,
+                "canonical_target": "property" if mapped else None,
+                "is_criminal_event": True if mapped else None,
+                "is_violent": False if mapped else None,
+                "is_property": True if mapped else None,
+                "canonical_mapping_found": mapped,
+                "mapping_confidence": "high" if mapped else None,
+                "review_required": False,
+                "mapping_action": "map" if mapped else None,
+                "include_in_model": mapped,
+                "source_coordinate_bounds_valid": True,
+                "latitude": 40.71,
+                "longitude": -74.0,
+                "location_label": "Main",
+                "location_type": "Street",
+                "police_district": "1",
+                "local_area": "Manhattan",
+                "source_file_uri": "s3://example/source.parquet",
+                "ingestion_run_id": "bronze-run",
+                "ingested_at_utc": datetime(2026, 1, 1, tzinfo=UTC),
+            }
+        )
+        rows.append(row)
+    return pl.DataFrame(rows).cast(CANONICAL_CRIME_SCHEMA).lazy()
+
+
+def _publish_silver(
+    lake: CrimeLakeResources,
+    frame: pl.LazyFrame,
+    snapshot_id: str,
+) -> dict[str, object]:
+    return lake.publish_silver_snapshot(
+        frame,
+        snapshot_id=snapshot_id,
+        created_at_utc=datetime(2026, 8, 25, 12, tzinfo=UTC),
+        mapping_version=CANONICAL_MAPPING_VERSION,
+        schema_version="crime_silver_v1",
+        crosswalk_sha256="abc123",
+        source_snapshots={"new_york": "s3://bronze/new_york/snapshot_id=input"},
+        per_source=[
+            {
+                "source_city": "new_york",
+                "input_rows": len(frame.collect()),
+                "output_rows": len(frame.collect()),
+                "mapped_rows": len(frame.collect()),
+                "unmapped_rows": 0,
+                "unexpected_unmapped_rows": 0,
+                "include_in_model_rows": len(frame.collect()),
+                "drop_rows": 0,
+                "excluded_rows": 0,
+                "review_required_rows": 0,
+            }
+        ],
+    )
+
+
+def test_silver_snapshot_publication_and_exact_schema(tmp_path: Path) -> None:
+    lake = _lake(tmp_path)
+    frame = _silver_frame(("one", 2023), ("two", 2024))
+
+    manifest = _publish_silver(lake, frame, "silver-one")
+    snapshot = Path(lake.silver_snapshot_uri("silver-one"))
+
+    assert (snapshot / "source_city=new_york" / "occurrence_year=2023").is_dir()
+    assert not (snapshot / "source_city%3Dnew_york").exists()
+    assert (snapshot / "manifest.json").is_file()
+    assert (snapshot / "_SUCCESS").is_file()
+    assert Path(lake.silver_crime_offenses_root, "_latest.json").is_file()
+    assert manifest["partition_columns"] == ["source_city", "occurrence_year"]
+    assert manifest["parquet_file_count"] == 2
+    assert manifest["canonical_schema_sha256"] == lake.canonical_schema_sha256()
+    assert {
+        "snapshot_id",
+        "snapshot_uri",
+        "created_at_utc",
+        "schema_version",
+        "mapping_version",
+        "crosswalk_sha256",
+        "row_count",
+        "include_in_model_rows",
+        "source_count",
+        "partition_columns",
+        "parquet_file_count",
+        "min_occurrence_timestamp",
+        "max_occurrence_timestamp",
+        "unexpected_populated_unmapped_rows",
+        "review_required_rows",
+        "outside_source_bounds_rows",
+        "source_snapshots",
+        "per_source",
+        "canonical_schema",
+        "canonical_schema_sha256",
+    } <= set(manifest)
+    pointer = json.loads(
+        Path(lake.silver_crime_offenses_root, "_latest.json").read_text()
+    )
+    assert set(pointer) == {
+        "snapshot_id",
+        "snapshot_uri",
+        "created_at_utc",
+        "mapping_version",
+    }
+
+    resolved = lake.resolve_current_silver_snapshot()
+    assert resolved == str(snapshot)
+    result = lake.scan_silver_snapshot().collect().sort("source_record_id")
+    assert result.schema == CANONICAL_CRIME_SCHEMA
+    assert result.schema["occurrence_year"] == pl.Int16
+    assert result["occurrence_year"].to_list() == [2023, 2024]
+
+
+def test_silver_snapshot_retains_mapped_out_of_bounds_row(tmp_path: Path) -> None:
+    lake = _lake(tmp_path)
+    frame = _silver_frame(("outside", 2024)).with_columns(
+        pl.lit(False).alias("source_coordinate_bounds_valid"),
+        pl.lit(False).alias("include_in_model"),
+    )
+
+    manifest = _publish_silver(lake, frame, "outside-bounds")
+    result = lake.scan_silver_snapshot().collect()
+
+    assert manifest["row_count"] == 1
+    assert manifest["include_in_model_rows"] == 0
+    assert manifest["outside_source_bounds_rows"] == 1
+    assert result["crime_id"].to_list() == ["new_york:outside"]
+    assert result["source_coordinate_bounds_valid"].to_list() == [False]
+    assert result["include_in_model"].to_list() == [False]
+
+
+def test_silver_pointer_requires_success_marker(tmp_path: Path) -> None:
+    lake = _lake(tmp_path)
+    snapshot_uri = lake.silver_snapshot_uri("incomplete")
+    pointer = SilverSnapshotPointer(
+        snapshot_id="incomplete",
+        snapshot_uri=snapshot_uri,
+        created_at_utc=datetime(2026, 8, 25, 12, tzinfo=UTC),
+        mapping_version=CANONICAL_MAPPING_VERSION,
+    )
+    pointer_path = Path(lake.silver_crime_offenses_root, "_latest.json")
+    pointer_path.parent.mkdir(parents=True)
+    pointer_path.write_bytes(pointer.to_json())
+
+    with pytest.raises(RuntimeError, match="incomplete snapshot"):
+        lake.resolve_current_silver_snapshot()
+
+
+def test_silver_snapshot_reader_isolates_history_and_delta_garbage(
+    tmp_path: Path,
+) -> None:
+    lake = _lake(tmp_path)
+    _publish_silver(lake, _silver_frame(("old", 2023)), "old")
+    _publish_silver(lake, _silver_frame(("current", 2024)), "current")
+    garbage = Path(lake.silver_crime_offenses_root, "_delta_log")
+    garbage.mkdir(parents=True)
+    (garbage / "00000000000000000000.json").write_text("invalid legacy delta")
+
+    assert lake.resolve_current_silver_snapshot().endswith("snapshot_id=current")
+    result = lake.scan_silver_snapshot().collect()
+    assert result["source_record_id"].to_list() == ["current"]
+
+
+def test_failed_silver_quality_gate_does_not_advance_pointer(
+    tmp_path: Path,
+) -> None:
+    lake = _lake(tmp_path)
+    _publish_silver(lake, _silver_frame(("valid", 2024)), "valid")
+    current = lake.resolve_current_silver_snapshot()
+
+    with pytest.raises(RuntimeError, match="quality gate failed"):
+        _publish_silver(
+            lake,
+            _silver_frame(("unmapped", 2024), mapped=False),
+            "invalid-unmapped",
+        )
+    assert lake.resolve_current_silver_snapshot() == current
+    assert not Path(lake.silver_snapshot_uri("invalid-unmapped")).exists()
+
+
+def test_silver_quality_gate_rejects_included_out_of_bounds_row(
+    tmp_path: Path,
+) -> None:
+    lake = _lake(tmp_path)
+    _publish_silver(lake, _silver_frame(("valid", 2024)), "valid")
+    current = lake.resolve_current_silver_snapshot()
+    invalid = _silver_frame(("outside", 2024)).with_columns(
+        pl.lit(False).alias("source_coordinate_bounds_valid")
+    )
+
+    with pytest.raises(RuntimeError, match="included_outside_source_bounds_rows"):
+        _publish_silver(lake, invalid, "included-outside-bounds")
+
+    assert lake.resolve_current_silver_snapshot() == current
+    assert not Path(lake.silver_snapshot_uri("included-outside-bounds")).exists()
+
+
+def test_failed_silver_schema_gate_does_not_advance_pointer(
+    tmp_path: Path,
+) -> None:
+    lake = _lake(tmp_path)
+    _publish_silver(lake, _silver_frame(("valid", 2024)), "valid")
+    current = lake.resolve_current_silver_snapshot()
+
+    invalid = _silver_frame(("bad-schema", 2024)).drop("source_auxiliary")
+    with pytest.raises(ValueError, match="schema mismatch"):
+        _publish_silver(lake, invalid, "invalid-schema")
+    assert lake.resolve_current_silver_snapshot() == current
+    assert not Path(lake.silver_snapshot_uri("invalid-schema")).exists()
+
+
+def test_blank_taxonomy_unmapped_rows_remain_publishable(tmp_path: Path) -> None:
+    lake = _lake(tmp_path)
+    frame = _silver_frame(("blank", 2024), mapped=False).with_columns(
+        pl.lit(None, dtype=pl.String).alias("source_offense_description")
+    )
+
+    manifest = _publish_silver(lake, frame, "blank-taxonomy")
+
+    assert manifest["unexpected_populated_unmapped_rows"] == 0
+    assert lake.resolve_current_silver_snapshot().endswith("snapshot_id=blank-taxonomy")
 
 
 def test_bronze_parquet_snapshot_round_trip_is_hive_partitioned(

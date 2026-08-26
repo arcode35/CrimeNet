@@ -5,6 +5,7 @@ from typing import Literal
 import duckdb
 import polars as pl
 
+from crimenet_data.assets.crime.common.expressions import datetime_expr
 from crimenet_data.assets.crime.sources import get_source
 
 NormalizationType = Literal[
@@ -15,9 +16,10 @@ NormalizationType = Literal[
 ]
 
 _UNIX_MS_COLUMNS = {
-    "washington_dc": "occurred_at_raw",
     "baltimore": "crime_date_time",
 }
+_WASHINGTON_DC_SOURCE_KEY = "washington_dc"
+_WASHINGTON_DC_UNIX_MS_COLUMN = "occurred_at_raw"
 _SONOMA_SOURCE_KEY = "sonoma_county_sheriff_ca"
 _DALLAS_SOURCE_KEY = "dallas"
 
@@ -34,6 +36,33 @@ def normalize_unix_ms_timestamp(
         pl.col(source_column).cast(pl.Int64, strict=False),
         time_unit="ms",
     ).cast(pl.Datetime("us"))
+    return lf.with_columns(
+        occurrence_timestamp.alias("occurrence_timestamp"),
+        occurrence_timestamp.dt.year().cast(pl.Int16).alias("occurrence_year"),
+    )
+
+
+def normalize_washington_dc_timestamp(lf: pl.LazyFrame) -> pl.LazyFrame:
+    """Normalize either audited Washington DC timestamp representation."""
+
+    available = set(lf.collect_schema().names())
+    if _WASHINGTON_DC_UNIX_MS_COLUMN in available:
+        return normalize_unix_ms_timestamp(lf, _WASHINGTON_DC_UNIX_MS_COLUMN)
+
+    fallback_columns = tuple(
+        column
+        for column in ("occurrence_timestamp", "start_date")
+        if column in available
+    )
+    if not fallback_columns:
+        raise KeyError(
+            "Washington DC timestamp columns are missing: expected "
+            "'occurred_at_raw', 'occurrence_timestamp', or 'start_date'"
+        )
+
+    # These columns contain parsed datetimes or ordinary timestamp strings, not
+    # Unix milliseconds. Keep that parsing path separate from occurred_at_raw.
+    occurrence_timestamp = datetime_expr(lf, *fallback_columns)
     return lf.with_columns(
         occurrence_timestamp.alias("occurrence_timestamp"),
         occurrence_timestamp.dt.year().cast(pl.Int16).alias("occurrence_year"),
@@ -115,7 +144,7 @@ def normalization_type(source_key: str) -> NormalizationType:
     """Describe the configured pre-Silver representation correction."""
 
     get_source(source_key)
-    if source_key in _UNIX_MS_COLUMNS:
+    if source_key == _WASHINGTON_DC_SOURCE_KEY or source_key in _UNIX_MS_COLUMNS:
         return "unix_ms_timestamp"
     if source_key == _SONOMA_SOURCE_KEY:
         return "sonoma_location_coordinates"
@@ -137,6 +166,8 @@ def normalize_source(
     """Apply the one source-specific normalization boundary before Silver."""
 
     kind = normalization_type(source_key)
+    if source_key == _WASHINGTON_DC_SOURCE_KEY:
+        return normalize_washington_dc_timestamp(lf)
     if kind == "unix_ms_timestamp":
         return normalize_unix_ms_timestamp(lf, _UNIX_MS_COLUMNS[source_key])
     if kind == "sonoma_location_coordinates":
@@ -156,4 +187,5 @@ __all__ = [
     "normalize_sonoma_coordinates",
     "normalize_source",
     "normalize_unix_ms_timestamp",
+    "normalize_washington_dc_timestamp",
 ]

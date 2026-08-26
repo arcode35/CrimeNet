@@ -1,0 +1,1 @@
+crime_id,source_city,occurrence_timestamp,latitude,longitude,source_offense_code,source_offense_category,source_offense_description,lat_below_by,lat_above_by,lon_below_by,lon_above_by,max_bound_excess_degrees
