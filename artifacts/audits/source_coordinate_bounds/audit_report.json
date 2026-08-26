@@ -1,0 +1,11 @@
+{
+  "created_at_utc": "2026-08-26T00:11:12.501243+00:00",
+  "currently_model_eligible_rows": 15955507,
+  "estimated_model_eligible_rows_after": 15955257,
+  "newly_excluded_rows": 250,
+  "safety_threshold_pct": 5.0,
+  "silver_snapshot_uri": "s3://crimenet-data/silver/crime_offenses/snapshot_id=b10c7c05-210e-4646-ad7d-ef1f56c11b1e",
+  "source_count": 15,
+  "sources_exceeding_safety_threshold": [],
+  "total_rows": 16700480
+}

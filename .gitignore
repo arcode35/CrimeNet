@@ -217,6 +217,9 @@ src/machine_learning/experiments/log/
 
 # Generated data-pipeline diagnostics / temporary files
 src/crimenet_data/artifacts/
+!src/crimenet_data/artifacts/
+src/crimenet_data/artifacts/*
+!src/crimenet_data/artifacts/canonical_crime_crosswalk_v1_5.csv
 src/crimenet_data/tmp/
 # CrimeNet local scripts, downloads, repair data, and generated outputs
 src/crimenet_data/scripts/

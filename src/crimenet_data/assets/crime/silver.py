@@ -199,7 +199,7 @@ def map_silver_source(
     *,
     source_key: str,
 ) -> pl.LazyFrame:
-    """Apply generic validity filtering, v1.4 mapping, and canonical projection."""
+    """Apply generic validity filtering, v1.5 mapping, and canonical projection."""
 
     cleansed = cleanse_canonical_source(adapted, source_key)
     mapped = apply_canonical_crosswalk(cleansed, crosswalk_lf, source_key)
@@ -539,7 +539,7 @@ def silver_crime_offenses(
                     )
                 raise RuntimeError(
                     "Silver publication blocked by populated taxonomy values missing "
-                    f"from canonical crosswalk v1.4: {unexpected}"
+                    f"from canonical crosswalk v1.5: {unexpected}"
                 )
 
             review_required = [
