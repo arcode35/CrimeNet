@@ -57,7 +57,6 @@ SOURCE = SourceDefinition(
         patterns=GEOJSON,
         timezone="America/Denver",
         crosswalk_keys=("source_offense_description",),
-        coordinate_bounds=None,
     ),
     prepare_bronze=prepare,
     occurrence_timestamp=occurrence,

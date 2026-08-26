@@ -50,7 +50,6 @@ SOURCE = SourceDefinition(
         patterns=CSV,
         timezone="America/New_York",
         crosswalk_keys=("source_offense_code", "source_offense_description"),
-        coordinate_bounds=(42.20, 42.45, -71.25, -70.90),
     ),
     prepare_bronze=prepare_snake_case,
     occurrence_timestamp=occurrence,

@@ -32,9 +32,7 @@ def adapt(lf: pl.LazyFrame, _context: AdapterContext) -> pl.LazyFrame:
         # trims strings, which changes Fort Worth's whitespace-bearing labels.
         source_offense_code=pl.col("offense").cast(pl.String, strict=False),
         source_offense_category=nullable_string(),
-        source_offense_description=pl.col("offense_desc").cast(
-            pl.String, strict=False
-        ),
+        source_offense_description=pl.col("offense_desc").cast(pl.String, strict=False),
         latitude=numeric_expr(lf, "latitude"),
         longitude=numeric_expr(lf, "longitude"),
         location_label=text_expr(lf, "block_address", "address", "location_1"),
@@ -51,7 +49,6 @@ SOURCE = SourceDefinition(
         patterns=PARQUET,
         timezone="America/Chicago",
         crosswalk_keys=("source_offense_code", "source_offense_description"),
-        coordinate_bounds=(32.49684288, 33.04686194, -97.61320601, -96.95624817),
         deduplication_keys=("case_no_offense",),
     ),
     prepare_bronze=prepare_snake_case,

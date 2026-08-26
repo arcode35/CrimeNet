@@ -46,7 +46,6 @@ SOURCE = SourceDefinition(
         patterns=PARQUET,
         timezone="America/Chicago",
         crosswalk_keys=("source_offense_category", "source_offense_description"),
-        coordinate_bounds=(41.64614955, 42.02203444, -87.94227797, -87.52018407),
         deduplication_keys=("id",),
     ),
     prepare_bronze=prepare_snake_case,

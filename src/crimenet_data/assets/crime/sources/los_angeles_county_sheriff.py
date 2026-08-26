@@ -17,6 +17,8 @@ from crimenet_data.assets.crime.sources.base import (
     CrimeSourceConfig,
     SourceDefinition,
 )
+
+
 def deduplicate_exports(lf: pl.LazyFrame) -> pl.LazyFrame:
     return (
         lf.with_columns(
@@ -44,6 +46,7 @@ def deduplicate_exports(lf: pl.LazyFrame) -> pl.LazyFrame:
         )
         .drop("_export_year")
     )
+
 
 def occurrence(lf: pl.LazyFrame) -> pl.Expr:
     return datetime_expr(lf, "incident_date")
@@ -76,7 +79,6 @@ SOURCE = SourceDefinition(
         patterns=CSV,
         timezone="America/Los_Angeles",
         crosswalk_keys=("source_offense_description",),
-        coordinate_bounds=None,
     ),
     prepare_bronze=prepare_snake_case,
     occurrence_timestamp=occurrence,

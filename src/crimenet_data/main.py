@@ -893,7 +893,8 @@ def city_summary(
     return df.with_columns(
         (
             (
-                pl.col("max_event_utc") - pl.col("min_event_utc")
+                pl.col("max_event_utc").dt.date()
+                - pl.col("min_event_utc").dt.date()
             )
             .dt.total_days()
             + 1
@@ -911,7 +912,6 @@ def city_summary(
             / pl.col("calendar_span_days")
         ).alias("active_day_pct")
     )
-
 
 def city_year_summary(spine: pl.LazyFrame) -> pl.DataFrame:
     return (

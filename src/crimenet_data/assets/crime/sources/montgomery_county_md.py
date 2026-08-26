@@ -145,7 +145,6 @@ SOURCE = SourceDefinition(
             "source_offense_description",
             "source_auxiliary",
         ),
-        coordinate_bounds=None,
     ),
     prepare_bronze=prepare_snake_case,
     occurrence_timestamp=occurrence,

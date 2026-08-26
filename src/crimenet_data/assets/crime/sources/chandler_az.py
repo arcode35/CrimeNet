@@ -95,7 +95,6 @@ SOURCE = SourceDefinition(
         ),
         timezone="America/Phoenix",
         crosswalk_keys=("source_offense_code",),
-        coordinate_bounds=None,
     ),
     prepare_bronze=prepare,
     occurrence_timestamp=occurrence,

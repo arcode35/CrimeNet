@@ -13,9 +13,9 @@ from crimenet_data.assets.crime.sources.registry import (
 )
 
 __all__ = [
+    "SILVER_SOURCE_KEYS",
     "SOURCES",
     "SOURCE_KEYS",
-    "SILVER_SOURCE_KEYS",
     "AdapterContext",
     "CrimeSourceConfig",
     "SourceDefinition",

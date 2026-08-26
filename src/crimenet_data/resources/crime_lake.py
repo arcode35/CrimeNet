@@ -382,9 +382,7 @@ class CrimeLakeResources(dg.ConfigurableResource):
     def _parquet_file_count(self, snapshot_uri: str) -> int:
         if not snapshot_uri.startswith("s3://"):
             return sum(1 for _ in Path(snapshot_uri).rglob("*.parquet"))
-        bucket, prefix = self._s3_location(
-            f"{snapshot_uri.rstrip('/')}/placeholder"
-        )
+        bucket, prefix = self._s3_location(f"{snapshot_uri.rstrip('/')}/placeholder")
         paginator = self.s3_client().get_paginator("list_objects_v2")
         return sum(
             1
@@ -591,9 +589,7 @@ class CrimeLakeResources(dg.ConfigurableResource):
                 "Silver snapshot pointer URI mismatch: "
                 f"expected {expected_uri!r}, found {pointer.snapshot_uri!r}"
             )
-        if not self._object_exists(
-            f"{pointer.snapshot_uri}/{SILVER_SUCCESS_MARKER}"
-        ):
+        if not self._object_exists(f"{pointer.snapshot_uri}/{SILVER_SUCCESS_MARKER}"):
             raise RuntimeError(
                 "Silver snapshot pointer references an incomplete snapshot: "
                 f"{pointer.snapshot_uri}"
@@ -615,7 +611,9 @@ class CrimeLakeResources(dg.ConfigurableResource):
         if require_success and not self._object_exists(
             f"{snapshot_uri}/{SILVER_SUCCESS_MARKER}"
         ):
-            raise RuntimeError(f"Cannot scan incomplete Silver snapshot: {snapshot_uri}")
+            raise RuntimeError(
+                f"Cannot scan incomplete Silver snapshot: {snapshot_uri}"
+            )
         scanned = pl.scan_parquet(
             f"{snapshot_uri}/**/*.parquet",
             storage_options=self.storage_options,
@@ -653,9 +651,7 @@ class CrimeLakeResources(dg.ConfigurableResource):
         if not self._object_exists(f"{current_uri}/{SILVER_SUCCESS_MARKER}"):
             raise RuntimeError(f"Cannot read incomplete Silver snapshot: {current_uri}")
         try:
-            document = json.loads(
-                self._read_object(f"{current_uri}/{SILVER_MANIFEST}")
-            )
+            document = json.loads(self._read_object(f"{current_uri}/{SILVER_MANIFEST}"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ValueError(f"Malformed Silver manifest: {current_uri}") from error
         if not isinstance(document, dict):
@@ -724,9 +720,7 @@ class CrimeLakeResources(dg.ConfigurableResource):
         source_taxonomy_expressions: list[pl.Expr] = []
 
         for source_key in SOURCE_KEYS:
-            crosswalk_keys = tuple(
-                get_source(source_key).config.crosswalk_keys
-            )
+            crosswalk_keys = tuple(get_source(source_key).config.crosswalk_keys)
             if not crosswalk_keys:
                 continue
 
@@ -742,13 +736,11 @@ class CrimeLakeResources(dg.ConfigurableResource):
             )
 
             source_taxonomy_expressions.append(
-                (pl.col("source_city") == source_key)
-                & key_populated
+                (pl.col("source_city") == source_key) & key_populated
             )
 
         taxonomy_populated = (
-            pl.any_horizontal(*source_taxonomy_expressions)
-            .fill_null(False)
+            pl.any_horizontal(*source_taxonomy_expressions).fill_null(False)
             if source_taxonomy_expressions
             else pl.lit(False)
         )
@@ -759,17 +751,16 @@ class CrimeLakeResources(dg.ConfigurableResource):
                 pl.col("crime_id").n_unique().alias("unique_crime_ids"),
                 pl.col("crime_id").null_count().alias("null_crime_ids"),
                 pl.col("source_city").null_count().alias("null_source_cities"),
-                pl.col("source_record_id")
-                .null_count()
-                .alias("null_source_record_ids"),
+                pl.col("source_record_id").null_count().alias("null_source_record_ids"),
                 pl.col("occurrence_timestamp")
                 .null_count()
                 .alias("null_occurrence_timestamps"),
-                pl.col("occurrence_year")
-                .null_count()
-                .alias("null_occurrence_years"),
+                pl.col("occurrence_year").null_count().alias("null_occurrence_years"),
                 pl.col("latitude").null_count().alias("null_latitudes"),
                 pl.col("longitude").null_count().alias("null_longitudes"),
+                pl.col("source_coordinate_bounds_valid")
+                .null_count()
+                .alias("null_source_coordinate_bounds_valid"),
                 (~pl.col("latitude").is_finite())
                 .fill_null(False)
                 .sum()
@@ -785,10 +776,7 @@ class CrimeLakeResources(dg.ConfigurableResource):
                 .fill_null(False)
                 .sum()
                 .alias("world_bounds_violations"),
-                (
-                    (pl.col("latitude") == 0.0)
-                    & (pl.col("longitude") == 0.0)
-                )
+                ((pl.col("latitude") == 0.0) & (pl.col("longitude") == 0.0))
                 .fill_null(False)
                 .sum()
                 .alias("zero_zero_coordinates"),
@@ -814,10 +802,7 @@ class CrimeLakeResources(dg.ConfigurableResource):
                 .fill_null(False)
                 .sum()
                 .alias("include_in_model_rows"),
-                (
-                    mapped
-                    & (pl.col("mapping_version").fill_null("") != mapping_version)
-                )
+                (mapped & (pl.col("mapping_version").fill_null("") != mapping_version))
                 .sum()
                 .alias("wrong_mapping_version_rows"),
                 (
@@ -827,8 +812,18 @@ class CrimeLakeResources(dg.ConfigurableResource):
                 .sum()
                 .alias("included_but_not_map_rows"),
                 (
+                    pl.col("include_in_model").fill_null(False)
+                    & ~pl.col("source_coordinate_bounds_valid").fill_null(False)
+                )
+                .sum()
+                .alias("included_outside_source_bounds_rows"),
+                (~pl.col("source_coordinate_bounds_valid").fill_null(False))
+                .sum()
+                .alias("outside_source_bounds_rows"),
+                (
                     (pl.col("mapping_action").fill_null("") == "map")
                     & ~pl.col("include_in_model").fill_null(False)
+                    & pl.col("source_coordinate_bounds_valid").fill_null(False)
                 )
                 .sum()
                 .alias("map_but_not_included_rows"),
@@ -861,12 +856,8 @@ class CrimeLakeResources(dg.ConfigurableResource):
                 )
                 .sum()
                 .alias("unknown_mapping_action_rows"),
-                pl.col("occurrence_timestamp")
-                .min()
-                .alias("min_occurrence_timestamp"),
-                pl.col("occurrence_timestamp")
-                .max()
-                .alias("max_occurrence_timestamp"),
+                pl.col("occurrence_timestamp").min().alias("min_occurrence_timestamp"),
+                pl.col("occurrence_timestamp").max().alias("max_occurrence_timestamp"),
             )
             .collect(engine="streaming")
             .row(0, named=True)
@@ -884,6 +875,7 @@ class CrimeLakeResources(dg.ConfigurableResource):
                 "null_occurrence_years",
                 "null_latitudes",
                 "null_longitudes",
+                "null_source_coordinate_bounds_valid",
                 "nonfinite_latitudes",
                 "nonfinite_longitudes",
                 "world_bounds_violations",
@@ -894,6 +886,7 @@ class CrimeLakeResources(dg.ConfigurableResource):
                 "review_required_rows",
                 "wrong_mapping_version_rows",
                 "included_but_not_map_rows",
+                "included_outside_source_bounds_rows",
                 "map_but_not_included_rows",
                 "modeled_rows_missing_taxonomy",
                 "crime_id_contract_violations",
@@ -918,9 +911,7 @@ class CrimeLakeResources(dg.ConfigurableResource):
                 for path in Path(snapshot_uri).rglob("*")
                 if "%3D" in path.name
             ]
-        bucket, prefix = self._s3_location(
-            f"{snapshot_uri.rstrip('/')}/placeholder"
-        )
+        bucket, prefix = self._s3_location(f"{snapshot_uri.rstrip('/')}/placeholder")
         paginator = self.s3_client().get_paginator("list_objects_v2")
         return [
             str(item.get("Key", ""))
@@ -1022,6 +1013,7 @@ class CrimeLakeResources(dg.ConfigurableResource):
                 postwrite["unexpected_populated_unmapped_rows"]
             ),
             "review_required_rows": int(postwrite["review_required_rows"]),
+            "outside_source_bounds_rows": int(postwrite["outside_source_bounds_rows"]),
             "source_snapshots": dict(source_snapshots),
             "per_source": [dict(row) for row in per_source],
             "canonical_schema": self.canonical_schema_document(),
