@@ -1,0 +1,9 @@
+numpy>=2.0
+polars>=1.30
+pyarrow>=18
+rasterio>=1.4
+h3>=4.1
+pyproj>=3.7
+requests>=2.32
+pystac-client>=0.8
+planetary-computer>=1.0
