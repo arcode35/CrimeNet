@@ -9,7 +9,7 @@ ops:
       train_end_year: 2023
 
       # M_s = K * observed training events for source s.
-      samples_per_event: 5
+      samples_per_event: 10
 
       # Each source worker streams independent Parquet parts.
       chunk_rows: 1000000
@@ -26,4 +26,4 @@ ops:
 execution:
   config:
     # Start here. Raise to 8 if B2/network throughput remains healthy.
-    max_concurrent: 4
+    max_concurrent: 8

@@ -396,9 +396,12 @@ def build_query_rows(
 def prepare_lighting(
     lighting: pl.LazyFrame,
 ) -> pl.LazyFrame:
+    columns = set(lighting.collect_schema().names())
+    cell_column = "h3_cell_id" if "h3_cell_id" in columns else "weather_query_cell_id"
+    hour_column = "hour" if "hour" in columns else "solar_timestamp_hour"
     return lighting.select(
-        pl.col("weather_query_cell_id").cast(pl.Int64),
-        pl.col("solar_timestamp_hour").alias("weather_timestamp"),
+        pl.col(cell_column).cast(pl.Int64).alias("weather_query_cell_id"),
+        pl.col(hour_column).alias("weather_timestamp"),
         "solar_elevation_deg",
         "lighting_condition",
         "is_daylight",

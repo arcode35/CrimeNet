@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -287,6 +288,52 @@ class CrimeLakeResources(dg.ConfigurableResource):
         return f"{self.integration_reference_root}/source_temporal_coverage.csv"
 
     @property
+    def model_weather_v2_root(self) -> str:
+        return f"{self.landing_root}/weather/model_weather_v2/open_meteo"
+
+    @property
+    def model_weather_v2_best_match_root(self) -> str:
+        return f"{self.model_weather_v2_root}/best_match"
+
+    @property
+    def silver_environmental_root(self) -> str:
+        return f"{self.silver_root}/environmental"
+
+    @property
+    def silver_weather_root(self) -> str:
+        return f"{self.silver_environmental_root}/weather"
+
+    @property
+    def silver_weather_latest_pointer_uri(self) -> str:
+        return self.latest_pointer_uri(self.silver_weather_root)
+
+    def silver_weather_snapshot_uri(self, snapshot_id: str) -> str:
+        return self.snapshot_uri(self.silver_weather_root, snapshot_id)
+
+    def silver_weather_year_uri(self, snapshot_uri: str, year: int) -> str:
+        return f"{snapshot_uri.rstrip('/')}/year={int(year)}/part-00000.parquet"
+
+    def silver_weather_year_glob(self, snapshot_uri: str, year: int) -> str:
+        return f"{snapshot_uri.rstrip('/')}/year={int(year)}/*.parquet"
+
+    @property
+    def environmental_features_root(self) -> str:
+        return f"{self.gold_root}/environmental_features"
+
+    @property
+    def environmental_features_latest_pointer_uri(self) -> str:
+        return self.latest_pointer_uri(self.environmental_features_root)
+
+    def environmental_features_snapshot_uri(self, snapshot_id: str) -> str:
+        return self.snapshot_uri(self.environmental_features_root, snapshot_id)
+
+    def environmental_features_year_uri(self, snapshot_uri: str, year: int) -> str:
+        return f"{snapshot_uri.rstrip('/')}/year={int(year)}/part-00000.parquet"
+
+    def environmental_features_year_glob(self, snapshot_uri: str, year: int) -> str:
+        return f"{snapshot_uri.rstrip('/')}/year={int(year)}/*.parquet"
+
+    @property
     def national_feature_store_root(self) -> str:
         return f"{self.gold_root}/national_feature_store"
 
@@ -405,6 +452,41 @@ class CrimeLakeResources(dg.ConfigurableResource):
 
     def storage_options_for(self, uri: str) -> dict[str, object] | None:
         return self.storage_options if uri.startswith("s3://") else None
+
+    def list_object_uris(self, root_uri: str, *, suffix: str = "") -> list[str]:
+        """List objects below one CrimeLake root for local or S3-backed tests/jobs."""
+
+        root_uri = root_uri.rstrip("/")
+        if not root_uri.startswith("s3://"):
+            root = Path(root_uri)
+            if not root.exists():
+                return []
+            return sorted(
+                str(path)
+                for path in root.rglob("*")
+                if path.is_file() and (not suffix or path.name.endswith(suffix))
+            )
+        bucket, prefix = self._s3_location(f"{root_uri}/placeholder")
+        paginator = self.s3_client().get_paginator("list_objects_v2")
+        base_prefix = prefix.removesuffix("placeholder")
+        return sorted(
+            f"s3://{bucket}/{key}"
+            for page in paginator.paginate(Bucket=bucket, Prefix=base_prefix)
+            for item in page.get("Contents", [])
+            if isinstance((key := item.get("Key")), str)
+            and (not suffix or key.endswith(suffix))
+        )
+
+    def upload_local_file(self, local_path: Path, destination_uri: str) -> None:
+        """Publish a completed local staging file to one canonical object URI."""
+
+        if not destination_uri.startswith("s3://"):
+            destination = Path(destination_uri)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(local_path, destination)
+            return
+        bucket, key = self._s3_location(destination_uri)
+        self.s3_client().upload_file(str(local_path), bucket, key)
 
     def source_root(self, source_key: str) -> str:
         get_source(source_key)
@@ -571,6 +653,80 @@ class CrimeLakeResources(dg.ConfigurableResource):
                 f"selected={snapshot_uri!r}, manifest={manifest_snapshot_uri!r}"
             )
         return snapshot_uri, manifest
+
+    def _resolve_current_snapshot(
+        self,
+        *,
+        root_uri: str,
+        pointer_uri: str,
+        manifest_snapshot_field: str,
+        label: str,
+    ) -> tuple[str, dict[str, object]]:
+        try:
+            pointer = json.loads(self._read_object(pointer_uri))
+            snapshot_id = str(pointer["snapshot_id"])
+            snapshot_uri = str(pointer["snapshot_uri"]).rstrip("/")
+        except (
+            KeyError,
+            TypeError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ) as error:
+            raise RuntimeError(f"Malformed {label} latest pointer: {pointer_uri}") from error
+        if not snapshot_id or snapshot_uri != self.snapshot_uri(root_uri, snapshot_id):
+            raise ValueError(
+                f"{label} pointer snapshot identity is invalid: "
+                f"snapshot_id={snapshot_id!r}, snapshot_uri={snapshot_uri!r}"
+            )
+        if not self._object_exists(self.snapshot_success_uri(snapshot_uri)):
+            raise RuntimeError(f"{label} snapshot is not complete: {snapshot_uri}")
+        manifest_uri = self.snapshot_manifest_uri(snapshot_uri)
+        try:
+            manifest = json.loads(self._read_object(manifest_uri))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"Malformed {label} manifest: {manifest_uri}") from error
+        if not isinstance(manifest, dict):
+            raise RuntimeError(f"Malformed {label} manifest: {manifest_uri}")
+        recorded_uri = str(manifest.get(manifest_snapshot_field, "")).rstrip("/")
+        if recorded_uri != snapshot_uri:
+            raise RuntimeError(
+                f"{label} manifest snapshot URI mismatch: "
+                f"selected={snapshot_uri!r}, manifest={recorded_uri!r}"
+            )
+        if str(manifest.get("snapshot_id", "")) != snapshot_id:
+            raise RuntimeError(
+                f"{label} manifest snapshot ID mismatch: "
+                f"selected={snapshot_id!r}, manifest={manifest.get('snapshot_id')!r}"
+            )
+        if not self._snapshot_has_parquet(snapshot_uri):
+            raise RuntimeError(f"{label} snapshot contains no Parquet: {snapshot_uri}")
+        return snapshot_uri, manifest
+
+    def resolve_current_integration_snapshot(self) -> tuple[str, dict[str, object]]:
+        return self._resolve_current_snapshot(
+            root_uri=self.integration_root,
+            pointer_uri=self.integration_latest_pointer_uri,
+            manifest_snapshot_field="snapshot_root",
+            label="integration-sampling",
+        )
+
+    def resolve_current_silver_weather_snapshot(self) -> tuple[str, dict[str, object]]:
+        return self._resolve_current_snapshot(
+            root_uri=self.silver_weather_root,
+            pointer_uri=self.silver_weather_latest_pointer_uri,
+            manifest_snapshot_field="snapshot_uri",
+            label="Silver weather",
+        )
+
+    def resolve_current_environmental_features_snapshot(
+        self,
+    ) -> tuple[str, dict[str, object]]:
+        return self._resolve_current_snapshot(
+            root_uri=self.environmental_features_root,
+            pointer_uri=self.environmental_features_latest_pointer_uri,
+            manifest_snapshot_field="snapshot_uri",
+            label="Gold environmental features",
+        )
 
     def _snapshot_has_parquet(self, snapshot_uri: str) -> bool:
         if not snapshot_uri.startswith("s3://"):
