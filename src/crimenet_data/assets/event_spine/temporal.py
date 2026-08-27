@@ -9,7 +9,6 @@ import polars as pl
 from crimenet_data.assets.event_spine.schema import (
     COMPONENT_AVAILABILITY_COLUMNS,
     HISTORY_KEY_COLUMNS,
-    HISTORY_ROOT_SUFFIX,
     REQUIRED_HISTORY_COLUMNS,
     TEMPORAL_INDEX_BASE_COLUMNS,
 )
@@ -20,19 +19,16 @@ log = get_logger(__name__)
 
 
 def history_root(crime_lake: CrimeLakeResources) -> str:
-    """Return the exact temporal-history root used by the event spine."""
+    """Compatibility accessor for the CrimeLake-owned temporal-history root."""
 
-    return f"{crime_lake.gold_root.rstrip('/')}/{HISTORY_ROOT_SUFFIX}"
+    return crime_lake.national_temporal_history_root
 
 
 def scan_temporal_history(crime_lake: CrimeLakeResources) -> pl.LazyFrame:
     """Lazily scan history/, never the annual cache."""
 
     return pl.scan_parquet(
-        (
-            f"{history_root(crime_lake)}/"
-            "feature_available_date=*/version_id=*/part-*.parquet"
-        ),
+        crime_lake.national_temporal_history_glob,
         storage_options=crime_lake.storage_options,
         credential_provider=None,
         hive_partitioning=False,
@@ -181,7 +177,18 @@ def load_temporal_index(
         relevant_h3_cells=cells,
         columns=columns,
     ).collect(engine="streaming")
-    summary = validate_temporal_history(temporal_index)
+    if temporal_index.is_empty():
+        summary: dict[str, object] = {
+            "history_rows": 0,
+            "history_h3_cells": 0,
+            "history_feature_versions": 0,
+            "duplicate_history_rows": 0,
+            "min_feature_available_at": None,
+            "max_feature_available_at": None,
+            "component_availability_violations": {},
+        }
+    else:
+        summary = validate_temporal_history(temporal_index)
     summary.update(
         {
             "history_scope": "modeled_event_h3_footprint",
@@ -198,15 +205,16 @@ def load_temporal_index(
 
 
 def selected_history_keys(matched_event_keys: pl.DataFrame) -> pl.DataFrame:
-    """Return unique exact history keys selected by the as-of stage."""
+    """Return unique non-null history keys selected by the as-of stage."""
 
     missing = sorted(set(HISTORY_KEY_COLUMNS) - set(matched_event_keys.columns))
     if missing:
         raise RuntimeError(f"Matched events are missing history keys: {missing}")
-    keys = matched_event_keys.select(HISTORY_KEY_COLUMNS).unique()
-    if keys.is_empty():
-        raise RuntimeError("No temporal history keys were selected")
-    return keys
+    return (
+        matched_event_keys.select(HISTORY_KEY_COLUMNS)
+        .drop_nulls()
+        .unique()
+    )
 
 
 def load_selected_feature_rows(
@@ -227,7 +235,15 @@ def load_selected_feature_rows(
         pl.col("feature_available_at"),
     ).unique()
     if keys.is_empty():
-        raise RuntimeError("No selected temporal keys were available for retrieval")
+        full_features = history_lf.limit(0).collect(engine="streaming")
+        summary: dict[str, object] = {
+            "unique_selected_history_keys": 0,
+            "full_feature_rows_retrieved": 0,
+            "full_feature_column_count": len(full_features.columns),
+            "full_feature_retrieval_seconds": perf_counter() - started,
+        }
+        log.info("event_spine_full_features_retrieved", **summary)
+        return full_features, summary
 
     log.info(
         "event_spine_full_feature_retrieval_started",

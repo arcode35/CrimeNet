@@ -58,6 +58,32 @@ def test_bronze_snapshot_path_is_versioned_under_s3_root() -> None:
     )
 
 
+def test_crime_lake_owns_gold_and_integration_reference_topology() -> None:
+    lake = CrimeLakeResources()
+
+    assert lake.raw_root == "s3://crimenet-data/raw_files"
+    assert lake.reference_root == (
+        "s3://crimenet-data/raw_files/landing/reference"
+    )
+    assert lake.base_domain_uri == (
+        "s3://crimenet-data/raw_files/landing/reference/"
+        "integration_sampling/base_domain_h3.csv"
+    )
+    assert lake.temporal_coverage_uri == (
+        "s3://crimenet-data/raw_files/landing/reference/"
+        "integration_sampling/source_temporal_coverage.csv"
+    )
+    assert lake.national_temporal_history_root == (
+        "s3://crimenet-data/gold/national_feature_store/temporal/h3_r9/history"
+    )
+    assert lake.event_spine_snapshot_uri("spine-1") == (
+        "s3://crimenet-data/gold/event_spine/snapshot_id=spine-1"
+    )
+    assert lake.integration_snapshot_uri("run-1") == (
+        "s3://crimenet-data/gold/integration_sampling/snapshot_id=run-1"
+    )
+
+
 def test_polars_s3_retries_are_centralized_in_storage_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

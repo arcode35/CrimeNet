@@ -39,9 +39,8 @@ def scan_silver_source_for_audit(
 ) -> pl.LazyFrame:
     """Scan current or legacy Silver without requiring the future canonical schema."""
 
-    source_uri = f"{snapshot_uri}/source_city={source_city}"
     scanned = pl.scan_parquet(
-        f"{source_uri}/**/*.parquet",
+        crime_lake.silver_source_parquet_glob(snapshot_uri, source_city),
         storage_options=crime_lake.storage_options,
         credential_provider=None,
         hive_partitioning=True,

@@ -3,32 +3,21 @@
 from __future__ import annotations
 
 import csv
-import os
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-import boto3
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.fs as pafs
 import pyarrow.parquet as pq
 
+from crimenet_data.resources.crime_lake import CrimeLakeResources
+
 
 # =============================================================================
 # CONFIG
 # =============================================================================
-
-BUCKET = "crimenet-data"
-
-STATIC_PREFIX = (
-    "gold/national_feature_store/latest/h3_r9/"
-)
-
-ANNUAL_PREFIX = (
-    "gold/national_feature_store/"
-    "temporal/h3_r9/annual/"
-)
 
 OUTPUT_DIR = Path(
     "artifacts/national_feature_audit"
@@ -191,39 +180,15 @@ def normalize_state(
         return text
 
 
-def make_clients():
-    endpoint = os.environ[
-        "B2_ENDPOINT_URL"
-    ]
-
-    key_id = os.environ[
-        "B2_KEY_ID"
-    ]
-
-    application_key = os.environ[
-        "B2_APPLICATION_KEY"
-    ]
-
-    region = os.environ.get(
-        "B2_REGION",
-        "us-east-005",
-    )
-
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=key_id,
-        aws_secret_access_key=(
-            application_key
-        ),
-        region_name=region,
-    )
+def make_clients(crime_lake: CrimeLakeResources):
+    options = crime_lake.storage_options
+    s3 = crime_lake.s3_client()
 
     fs = pafs.S3FileSystem(
-        access_key=key_id,
-        secret_key=application_key,
-        region=region,
-        endpoint_override=endpoint,
+        access_key=options["aws_access_key_id"],
+        secret_key=options["aws_secret_access_key"],
+        region=options["aws_region"],
+        endpoint_override=options["aws_endpoint_url"],
         scheme="https",
     )
 
@@ -232,6 +197,7 @@ def make_clients():
 
 def list_parquet_keys(
     s3,
+    bucket: str,
     prefix: str,
 ) -> list[str]:
     paginator = s3.get_paginator(
@@ -241,7 +207,7 @@ def list_parquet_keys(
     keys = []
 
     for page in paginator.paginate(
-        Bucket=BUCKET,
+        Bucket=bucket,
         Prefix=prefix,
     ):
         for obj in page.get(
@@ -260,9 +226,10 @@ def list_parquet_keys(
 
 def parquet_schema(
     fs,
+    bucket: str,
     key: str,
 ) -> pa.Schema:
-    path = f"{BUCKET}/{key}"
+    path = f"{bucket}/{key}"
 
     with fs.open_input_file(
         path
@@ -372,24 +339,29 @@ def count_true(
 # =============================================================================
 
 def build_h3_state_map(
+    crime_lake: CrimeLakeResources,
     s3,
     fs,
 ):
+    bucket, static_prefix = crime_lake._s3_location(
+        crime_lake.national_feature_latest_h3_r9_root
+    )
     keys = list_parquet_keys(
         s3,
-        STATIC_PREFIX,
+        bucket,
+        f"{static_prefix.rstrip('/')}/",
     )
 
     if not keys:
         raise RuntimeError(
             f"No static feature shards "
             f"found under "
-            f"s3://{BUCKET}/"
-            f"{STATIC_PREFIX}"
+            f"{crime_lake.national_feature_latest_h3_r9_root}/"
         )
 
     schema = parquet_schema(
         fs,
+        bucket,
         keys[0],
     )
 
@@ -432,7 +404,7 @@ def build_h3_state_map(
         keys,
         start=1,
     ):
-        path = f"{BUCKET}/{key}"
+        path = f"{bucket}/{key}"
 
         with fs.open_input_file(
             path
@@ -550,6 +522,7 @@ def build_h3_state_map(
 # =============================================================================
 
 def audit_year(
+    crime_lake: CrimeLakeResources,
     s3,
     fs,
     year: int,
@@ -557,13 +530,17 @@ def audit_year(
     state_denominators: Counter,
     target_states: set[str] | None,
 ):
+    bucket, annual_prefix = crime_lake._s3_location(
+        crime_lake.national_temporal_annual_h3_r9_root
+    )
     prefix = (
-        f"{ANNUAL_PREFIX}"
+        f"{annual_prefix.rstrip('/')}/"
         f"as_of_year={year}/"
     )
 
     keys = list_parquet_keys(
         s3,
+        bucket,
         prefix,
     )
 
@@ -575,6 +552,7 @@ def audit_year(
 
     schema = parquet_schema(
         fs,
+        bucket,
         keys[0],
     )
 
@@ -663,7 +641,7 @@ def audit_year(
         keys,
         start=1,
     ):
-        path = f"{BUCKET}/{key}"
+        path = f"{bucket}/{key}"
 
         with fs.open_input_file(
             path
@@ -1253,12 +1231,14 @@ def export_incomplete_h3(
 # =============================================================================
 
 def main():
-    s3, fs = make_clients()
+    crime_lake = CrimeLakeResources()
+    s3, fs = make_clients(crime_lake)
 
     (
         h3_to_state,
         state_denominators,
     ) = build_h3_state_map(
+        crime_lake,
         s3,
         fs,
     )
@@ -1270,6 +1250,7 @@ def main():
     # -----------------------------------------------------------------
 
     results[2022] = audit_year(
+        crime_lake,
         s3,
         fs,
         2022,
@@ -1287,6 +1268,7 @@ def main():
     # -----------------------------------------------------------------
 
     results[2023] = audit_year(
+        crime_lake,
         s3,
         fs,
         2023,
@@ -1307,6 +1289,7 @@ def main():
     # -----------------------------------------------------------------
 
     results[2026] = audit_year(
+        crime_lake,
         s3,
         fs,
         2026,

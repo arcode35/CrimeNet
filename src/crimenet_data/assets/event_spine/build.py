@@ -142,10 +142,15 @@ def prepare_event_index(
         pl.col("occurrence_timestamp_utc").is_null()
         | pl.col("osm_h3_cell_id").is_null()
     ).height
-    event_index = events.filter(
-        pl.col("occurrence_timestamp_utc").is_not_null()
-        & pl.col("osm_h3_cell_id").is_not_null()
-    ).select(EVENT_INDEX_COLUMNS)
+    if unjoinable_rows:
+        raise RuntimeError(
+            "Modeled events contain invalid required event-spine keys: "
+            f"invalid_event_utc_rows={invalid_event_utc_rows:,}, "
+            f"null_h3_rows={null_h3_rows:,}, "
+            f"unjoinable_rows={unjoinable_rows:,}"
+        )
+
+    event_index = events.select(EVENT_INDEX_COLUMNS)
     relevant_h3_cells = event_index.select("osm_h3_cell_id").unique()
     unjoinable_pct = 100.0 * unjoinable_rows / input_rows
     summary: dict[str, object] = {
@@ -211,25 +216,28 @@ def select_temporal_matches(
         **dict(event_summary),
         "history_unmatched_rows": history_unmatched_rows,
         "no_legal_history_match_rows": history_unmatched_rows,
+        "retained_history_unmatched_rows": history_unmatched_rows,
         "selected_temporal_match_rows": matched_rows,
-        "output_rows": matched_rows,
-        "dropped_rows": input_rows - matched_rows,
+        "output_rows": input_rows,
+        "dropped_rows": 0,
         "coverage_pct": coverage_pct,
         "joinable_coverage_pct": joinable_coverage_pct,
-        "feature_versions_used": matched.get_column("feature_version_id").n_unique(),
-        "min_occurrence_timestamp_utc": matched.get_column(
+        "feature_versions_used": matched.get_column("feature_version_id")
+        .drop_nulls()
+        .n_unique(),
+        "min_occurrence_timestamp_utc": joined.get_column(
             "occurrence_timestamp_utc"
         ).min(),
-        "max_occurrence_timestamp_utc": matched.get_column(
+        "max_occurrence_timestamp_utc": joined.get_column(
             "occurrence_timestamp_utc"
         ).max(),
         "min_feature_available_at": matched.get_column("feature_available_at").min(),
         "max_feature_available_at": matched.get_column("feature_available_at").max(),
         "skinny_asof_seconds": perf_counter() - started,
     }
-    matched_event_keys = matched.select("crime_id", *HISTORY_KEY_COLUMNS)
+    event_history_keys = joined.select("crime_id", *HISTORY_KEY_COLUMNS)
     log.info("event_spine_skinny_asof_completed", **summary)
-    return matched_event_keys, summary
+    return event_history_keys, summary
 
 
 def attach_selected_features(
@@ -253,30 +261,33 @@ def attach_selected_features(
     event_features = matched_event_keys.join(
         full_feature_rows,
         on=HISTORY_KEY_COLUMNS,
-        how="inner",
+        how="left",
         validate="m:1",
     )
     if event_features.height != matched_event_keys.height:
         raise RuntimeError(
-            "Full-feature reattachment lost temporal matches: "
-            f"matches={matched_event_keys.height:,}, "
+            "Full-feature reattachment changed event-history grain: "
+            f"event_keys={matched_event_keys.height:,}, "
             f"reattached={event_features.height:,}"
         )
 
     spine = events.join(
         event_features.drop("osm_h3_cell_id"),
         on="crime_id",
-        how="inner",
+        how="left",
         validate="1:1",
     )
-    if spine.height != matched_event_keys.height:
+    if spine.height != events.height:
         raise RuntimeError(
             "Silver payload reattachment changed event grain: "
-            f"matches={matched_event_keys.height:,}, spine={spine.height:,}"
+            f"events={events.height:,}, spine={spine.height:,}"
         )
     log.info(
         "event_spine_full_payload_reattached",
-        selected_temporal_match_rows=matched_event_keys.height,
+        event_history_key_rows=matched_event_keys.height,
+        selected_temporal_match_rows=matched_event_keys.filter(
+            pl.col("feature_available_at").is_not_null()
+        ).height,
         full_feature_rows=full_feature_rows.height,
         final_spine_rows=spine.height,
         final_spine_columns=len(spine.columns),
@@ -307,7 +318,7 @@ def build_event_spine(
         temporal_index=temporal_index,
         event_summary=event_summary,
     )
-    selected_keys = matched.select(HISTORY_KEY_COLUMNS).unique()
+    selected_keys = matched.select(HISTORY_KEY_COLUMNS).drop_nulls().unique()
     full_features = history.join(
         selected_keys,
         on=HISTORY_KEY_COLUMNS,

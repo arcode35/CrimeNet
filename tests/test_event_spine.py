@@ -21,10 +21,7 @@ from crimenet_data.assets.event_spine.publishing import (
     event_spine_snapshot_uri,
     publish_event_spine_snapshot,
 )
-from crimenet_data.assets.event_spine.schema import (
-    EVENT_SPINE_LATEST_POINTER,
-    EVENT_SPINE_SCHEMA_VERSION,
-)
+from crimenet_data.assets.event_spine.schema import EVENT_SPINE_SCHEMA_VERSION
 from crimenet_data.assets.event_spine.temporal import (
     history_root,
     load_selected_feature_rows,
@@ -88,7 +85,7 @@ def _publication_history_summary() -> dict[str, object]:
 
 def _write_history(lake: CrimeLakeResources, history: pl.DataFrame) -> None:
     path = (
-        Path(history_root(lake))
+        Path(lake.national_temporal_history_root)
         / "feature_available_date=2024-01-01"
         / "version_id=test"
         / "part-0.parquet"
@@ -196,9 +193,8 @@ def test_localize_occurrence_times_uses_deterministic_dst_policy() -> None:
     ]
 
     indexed = localized.with_columns(pl.lit(10).alias("osm_h3_cell_id"))
-    event_index, _, summary = prepare_event_index(indexed)
-    assert event_index["crime_id"].to_list() == ["ambiguous"]
-    assert summary["invalid_event_utc_rows"] == 1
+    with pytest.raises(RuntimeError, match="invalid_event_utc_rows=1"):
+        prepare_event_index(indexed)
 
 
 def test_temporal_history_rejects_duplicate_logical_keys() -> None:
@@ -262,12 +258,15 @@ def test_skinny_asof_preserves_exact_temporal_and_h3_semantics() -> None:
         "city:latest": datetime(2024, 1, 3, tzinfo=UTC),
         "city:exact": datetime(2024, 1, 3, tzinfo=UTC),
         "city:future": datetime(2024, 1, 1, tzinfo=UTC),
+        "city:before": None,
+        "city:other-before": None,
         "city:other-match": datetime(2024, 1, 4, tzinfo=UTC),
     }
-    assert "city:before" not in selected
-    assert "city:other-before" not in selected
     assert summary["no_legal_history_match_rows"] == 2
+    assert summary["retained_history_unmatched_rows"] == 2
     assert summary["selected_temporal_match_rows"] == 4
+    assert summary["output_rows"] == 6
+    assert summary["dropped_rows"] == 0
 
 
 def test_full_feature_reattachment_preserves_key_and_event_grain() -> None:
@@ -301,11 +300,47 @@ def test_full_feature_reattachment_preserves_key_and_event_grain() -> None:
     assert spine["crime_id"].n_unique() == spine.height
     assert "feature_value" in spine.columns
     assert dict(spine.select("crime_id", "feature_value").iter_rows()) == {
+        "city:before": None,
         "city:exact": 2.0,
         "city:future": 1.0,
         "city:latest": 2.0,
+        "city:other-before": None,
         "city:other-match": 20.0,
     }
+
+
+def test_event_spine_retains_history_unmatched_events_with_null_features() -> None:
+    matched_rows = 999
+    events = pl.DataFrame(
+        {
+            "crime_id": [f"city:matched-{index}" for index in range(matched_rows)]
+            + ["city:before"],
+            "source_city": ["city"] * (matched_rows + 1),
+            "occurrence_year": pl.Series(
+                [2024] * matched_rows + [2023], dtype=pl.Int16
+            ),
+            "occurrence_timestamp_utc": [
+                datetime(2024, 1, 2, tzinfo=UTC)
+            ]
+            * matched_rows
+            + [datetime(2023, 1, 1, tzinfo=UTC)],
+            "osm_h3_cell_id": [10] * (matched_rows + 1),
+        }
+    )
+    spine, build_summary = build_event_spine(
+        events=events,
+        history=_temporal_edge_history(),
+    )
+    summary = validate_event_spine(spine, build_summary)
+
+    assert spine.height == events.height
+    assert summary["row_count"] == events.height
+    assert summary["dropped_rows"] == 0
+    assert summary["history_unmatched_rows"] == 1
+    assert summary["null_feature_available_at"] == 1
+    assert set(
+        spine.filter(pl.col("feature_available_at").is_null())["crime_id"].to_list()
+    ) == {"city:before"}
 
 
 def test_two_stage_history_loaders_prune_and_retrieve_exact_rows(
@@ -336,6 +371,53 @@ def test_two_stage_history_loaders_prune_and_retrieve_exact_rows(
     assert full_features["feature_value"].to_list() == [2.0]
     assert retrieval_summary["unique_selected_history_keys"] == 1
     assert retrieval_summary["full_feature_rows_retrieved"] == 1
+
+
+def test_two_stage_history_loaders_allow_no_relevant_feature_rows(
+    tmp_path: Path,
+) -> None:
+    lake = _lake(tmp_path)
+    _write_history(lake, _temporal_edge_history())
+    relevant = pl.DataFrame({"osm_h3_cell_id": [12345]})
+
+    temporal_index, history_summary = load_temporal_index(
+        lake,
+        relevant_h3_cells=relevant,
+    )
+    assert temporal_index.is_empty()
+    assert history_summary["filtered_history_h3_cells"] == 0
+
+    event_index, _, event_summary = prepare_event_index(
+        pl.DataFrame(
+            {
+                "crime_id": ["city:unmatched"],
+                "source_city": ["city"],
+                "occurrence_year": pl.Series([2024], dtype=pl.Int16),
+                "occurrence_timestamp_utc": [
+                    datetime(2024, 1, 2, tzinfo=UTC)
+                ],
+                "osm_h3_cell_id": [12345],
+            }
+        )
+    )
+    event_history_keys, summary = select_temporal_matches(
+        event_index=event_index,
+        temporal_index=temporal_index,
+        event_summary=event_summary,
+    )
+    selected_keys = selected_history_keys(event_history_keys)
+    assert selected_keys.is_empty()
+    assert summary["history_unmatched_rows"] == 1
+    assert summary["dropped_rows"] == 0
+
+    full_features, retrieval_summary = load_selected_feature_rows(
+        lake,
+        relevant_h3_cells=relevant,
+        selected_keys=selected_keys,
+    )
+    assert full_features.is_empty()
+    assert "feature_value" in full_features.columns
+    assert retrieval_summary["full_feature_rows_retrieved"] == 0
 
 
 def test_backward_asof_selects_latest_legal_feature_without_multiplication() -> None:
@@ -381,8 +463,8 @@ def test_event_spine_snapshot_publication_and_pointer_order(tmp_path: Path) -> N
         history_summary=_publication_history_summary(),
     )
 
-    snapshot = Path(event_spine_snapshot_uri(lake, "gold-one"))
-    pointer_path = Path(event_spine_root(lake), EVENT_SPINE_LATEST_POINTER)
+    snapshot = Path(lake.event_spine_snapshot_uri("gold-one"))
+    pointer_path = Path(lake.event_spine_latest_pointer_uri)
     assert (snapshot / "_SUCCESS").is_file()
     assert (snapshot / "manifest.json").is_file()
     assert (snapshot / "source_city=city" / "occurrence_year=2024").is_dir()
@@ -390,6 +472,10 @@ def test_event_spine_snapshot_publication_and_pointer_order(tmp_path: Path) -> N
     assert manifest["schema_version"] == EVENT_SPINE_SCHEMA_VERSION
     assert manifest["row_count"] == 2
     assert manifest["silver_snapshot_id"] == "silver-one"
+    assert manifest["dropped_rows"] == 0
+    assert manifest["unmatched_history_policy"] == (
+        "retain_event_with_null_features"
+    )
     assert manifest["history_root"].endswith(
         "/gold/national_feature_store/temporal/h3_r9/history"
     )
