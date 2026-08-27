@@ -192,7 +192,36 @@ def adapt_silver_source(
     deduplicated = deduplicate_source(normalized, source_key)
     return source.adapt_to_silver(deduplicated, adapter_context)
 
+def apply_occurrence_timestamp_validity(
+    lf: pl.LazyFrame,
+    source_key: str,
+) -> pl.LazyFrame:
+    timezone = get_source(source_key).config.timezone
 
+    return (
+        lf.with_columns(
+            pl.col("occurrence_timestamp")
+            .dt.replace_time_zone(
+                timezone,
+                ambiguous="earliest",
+                non_existent="null",
+            )
+            .dt.convert_time_zone("UTC")
+            .alias("_occurrence_timestamp_utc")
+        )
+        .with_columns(
+            pl.col("_occurrence_timestamp_utc")
+            .is_not_null()
+            .alias("occurrence_timestamp_valid")
+        )
+        .with_columns(
+            (
+                pl.col("include_in_model").fill_null(False)
+                & pl.col("occurrence_timestamp_valid")
+            ).alias("include_in_model")
+        )
+    )
+    
 def map_silver_source(
     adapted: pl.LazyFrame,
     crosswalk_lf: pl.LazyFrame,
@@ -206,13 +235,13 @@ def map_silver_source(
     if source_key in SOURCE_COORDINATE_BOUNDS:
         mapped = apply_source_coordinate_bounds(mapped, source_key)
     else:
-        # Registered archival/non-modeled adapters remain testable, but cannot
-        # become model eligible without first joining SILVER_SOURCE_KEYS and the
-        # exact bounds registry (which is validated at registry import time).
         mapped = mapped.with_columns(
             pl.lit(None, dtype=pl.Boolean).alias(SOURCE_COORDINATE_BOUNDS_VALID_COLUMN),
             pl.lit(False).alias("include_in_model"),
         )
+
+    mapped = apply_occurrence_timestamp_validity(mapped, source_key)
+
     return project_canonical_schema(mapped, source_key)
 
 

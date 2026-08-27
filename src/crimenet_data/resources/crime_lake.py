@@ -1047,6 +1047,7 @@ class CrimeLakeResources(dg.ConfigurableResource):
                     (pl.col("mapping_action").fill_null("") == "map")
                     & ~pl.col("include_in_model").fill_null(False)
                     & pl.col("source_coordinate_bounds_valid").fill_null(False)
+                    & pl.col("occurrence_timestamp_valid").fill_null(False)
                 )
                 .sum()
                 .alias("map_but_not_included_rows"),

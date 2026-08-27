@@ -54,6 +54,7 @@ CANONICAL_CRIME_SCHEMA = pl.Schema(
         # Time
         # ------------------------------------------------------------
         "occurrence_timestamp": pl.Datetime("us"),
+        "occurrence_timestamp_valid": pl.Boolean,
         "report_timestamp": pl.Datetime("us"),
         "occurrence_year": pl.Int16,
         "source_timezone": pl.String,
