@@ -1,0 +1,29 @@
+ops:
+  emit_integration_source_plans:
+    config:
+      # Optional canonical immutable snapshot override for forensic replay.
+      # Empty = resolve CrimeLake.event_spine_latest_pointer_uri once at start.
+      event_spine_snapshot_override_uri: ""
+
+      train_start_year: 2014
+      train_end_year: 2023
+
+      # M_s = K * observed training events for source s.
+      samples_per_event: 5
+
+      # Each source worker streams independent Parquet parts.
+      chunk_rows: 1000000
+
+      seed: 2026
+
+      # Empty = every source present in base_domain_h3.csv.
+      sources: []
+
+      # Keep this true. It prevents feature-store availability from silently
+      # shrinking the event-derived training support.
+      require_zero_dropped_spine_rows: true
+
+execution:
+  config:
+    # Start here. Raise to 8 if B2/network throughput remains healthy.
+    max_concurrent: 4

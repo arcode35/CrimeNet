@@ -11,11 +11,8 @@ from datetime import UTC, datetime
 import polars as pl
 
 from crimenet_data.assets.event_spine.schema import (
-    EVENT_SPINE_LATEST_POINTER,
-    EVENT_SPINE_MANIFEST,
-    EVENT_SPINE_ROOT_SUFFIX,
     EVENT_SPINE_SCHEMA_VERSION,
-    EVENT_SPINE_SUCCESS_MARKER,
+    EVENT_SPINE_UNMATCHED_HISTORY_POLICY,
     H3_RESOLUTION,
     PARTITION_COLUMNS,
 )
@@ -30,16 +27,16 @@ log = get_logger(__name__)
 
 
 def event_spine_root(crime_lake: CrimeLakeResources) -> str:
-    return f"{crime_lake.gold_root.rstrip('/')}/{EVENT_SPINE_ROOT_SUFFIX}"
+    """Compatibility accessor for the CrimeLake-owned event-spine root."""
+
+    return crime_lake.event_spine_root
 
 
 def event_spine_snapshot_uri(
     crime_lake: CrimeLakeResources,
     snapshot_id: str,
 ) -> str:
-    if not snapshot_id or "/" in snapshot_id or "\\" in snapshot_id:
-        raise ValueError(f"Invalid event-spine snapshot ID: {snapshot_id!r}")
-    return f"{event_spine_root(crime_lake)}/snapshot_id={snapshot_id}"
+    return crime_lake.event_spine_snapshot_uri(snapshot_id)
 
 
 def schema_document(schema: pl.Schema) -> dict[str, str]:
@@ -62,7 +59,7 @@ def scan_event_spine_snapshot(
     """Read a just-written snapshot and restore its partition columns."""
 
     scanned = pl.scan_parquet(
-        f"{snapshot_uri}/**/*.parquet",
+        crime_lake.event_spine_parquet_glob(snapshot_uri),
         storage_options=crime_lake.storage_options,
         credential_provider=None,
         hive_partitioning=True,
@@ -176,8 +173,8 @@ def publish_event_spine_snapshot(
         "join_strategy": "backward_asof",
         "allow_exact_matches": True,
         "ambiguous_local_time_policy": "earliest",
-        "nonexistent_local_time_policy": "drop",
-        "unmatched_history_policy": "drop",
+        "nonexistent_local_time_policy": "fail",
+        "unmatched_history_policy": EVENT_SPINE_UNMATCHED_HISTORY_POLICY,
         **dict(join_summary),
         "history_rows": history_summary["history_rows"],
         "history_h3_cells": history_summary["history_h3_cells"],
@@ -200,7 +197,7 @@ def publish_event_spine_snapshot(
         manifest["git_commit_sha"] = git_commit_sha
 
     crime_lake._write_object(
-        f"{snapshot_uri}/{EVENT_SPINE_MANIFEST}",
+        crime_lake.event_spine_manifest_uri(snapshot_uri),
         json.dumps(
             manifest,
             sort_keys=True,
@@ -210,7 +207,7 @@ def publish_event_spine_snapshot(
         content_type="application/json",
     )
     crime_lake._write_object(
-        f"{snapshot_uri}/{EVENT_SPINE_SUCCESS_MARKER}",
+        crime_lake.event_spine_success_uri(snapshot_uri),
         b"",
         content_type="application/octet-stream",
     )
@@ -223,7 +220,7 @@ def publish_event_spine_snapshot(
         "silver_snapshot_id": silver_manifest.get("snapshot_id"),
     }
     crime_lake._write_object(
-        f"{event_spine_root(crime_lake)}/{EVENT_SPINE_LATEST_POINTER}",
+        crime_lake.event_spine_latest_pointer_uri,
         json.dumps(pointer, sort_keys=True, separators=(",", ":")).encode("utf-8"),
         content_type="application/json",
     )

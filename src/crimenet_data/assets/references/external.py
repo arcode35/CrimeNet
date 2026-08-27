@@ -10,10 +10,7 @@ canonical_crime_crosswalk = dg.AssetSpec(
         "stored in the CrimeNet B2 lake."
     ),
     metadata={
-        "path": (
-            "s3://crimenet-data/raw_files/landing/reference/"
-            "canonical_crime_crosswalk_v1_5.csv"
-        ),
+        "crime_lake_property": "canonical_crosswalk_uri",
         "mapping_version": "crime_canonical_v1_5",
     },
     kinds={"s3", "csv"},

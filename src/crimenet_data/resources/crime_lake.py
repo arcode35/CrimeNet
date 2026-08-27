@@ -20,11 +20,18 @@ from crimenet_data.assets.crime.ingestion.readers import read_source_pattern
 from crimenet_data.assets.crime.sources import SOURCE_KEYS, get_source
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-BRONZE_SUCCESS_MARKER = "_SUCCESS"
-BRONZE_LATEST_POINTER = "_latest.json"
-SILVER_SUCCESS_MARKER = "_SUCCESS"
-SILVER_LATEST_POINTER = "_latest.json"
-SILVER_MANIFEST = "manifest.json"
+SUCCESS_MARKER = "_SUCCESS"
+LATEST_POINTER = "_latest.json"
+SNAPSHOT_MANIFEST = "manifest.json"
+
+# Compatibility names for the existing Bronze/Silver implementation. Canonical
+# object names are defined once because every immutable CrimeNet dataset uses
+# the same publication contract.
+BRONZE_SUCCESS_MARKER = SUCCESS_MARKER
+BRONZE_LATEST_POINTER = LATEST_POINTER
+SILVER_SUCCESS_MARKER = SUCCESS_MARKER
+SILVER_LATEST_POINTER = LATEST_POINTER
+SILVER_MANIFEST = SNAPSHOT_MANIFEST
 
 
 @dataclass(frozen=True)
@@ -234,8 +241,12 @@ class CrimeLakeResources(dg.ConfigurableResource):
         )
 
     @property
+    def raw_root(self) -> str:
+        return f"{self.bucket.rstrip('/')}/raw_files"
+
+    @property
     def landing_root(self) -> str:
-        return f"{self.bucket.rstrip('/')}/raw_files/landing"
+        return f"{self.raw_root}/landing"
 
     @property
     def bronze_root(self) -> str:
@@ -252,6 +263,148 @@ class CrimeLakeResources(dg.ConfigurableResource):
     @property
     def quality_root(self) -> str:
         return f"{self.bucket.rstrip('/')}/quality"
+
+    @property
+    def reference_root(self) -> str:
+        """Canonical CrimeNet-owned reference inputs in the landing layer."""
+
+        return f"{self.landing_root}/reference"
+
+    @property
+    def integration_reference_root(self) -> str:
+        return f"{self.reference_root}/integration_sampling"
+
+    @property
+    def base_domain_uri(self) -> str:
+        """Audited authoritative H3 reporting support used for integration."""
+
+        return f"{self.integration_reference_root}/base_domain_h3.csv"
+
+    @property
+    def temporal_coverage_uri(self) -> str:
+        """Audited, outcome-independent source temporal coverage catalog."""
+
+        return f"{self.integration_reference_root}/source_temporal_coverage.csv"
+
+    @property
+    def national_feature_store_root(self) -> str:
+        return f"{self.gold_root}/national_feature_store"
+
+    @property
+    def national_feature_latest_h3_r9_root(self) -> str:
+        return f"{self.national_feature_store_root}/latest/h3_r9"
+
+    @property
+    def national_temporal_annual_h3_r9_root(self) -> str:
+        return f"{self.national_feature_store_root}/temporal/h3_r9/annual"
+
+    @property
+    def national_temporal_history_root(self) -> str:
+        return f"{self.national_feature_store_root}/temporal/h3_r9/history"
+
+    @property
+    def national_temporal_history_glob(self) -> str:
+        return (
+            f"{self.national_temporal_history_root}/"
+            "feature_available_date=*/version_id=*/part-*.parquet"
+        )
+
+    @property
+    def event_spine_root(self) -> str:
+        return f"{self.gold_root}/event_spine"
+
+    @property
+    def event_spine_latest_pointer_uri(self) -> str:
+        return self.latest_pointer_uri(self.event_spine_root)
+
+    def event_spine_snapshot_uri(self, snapshot_id: str) -> str:
+        return self.snapshot_uri(self.event_spine_root, snapshot_id)
+
+    def event_spine_manifest_uri(self, snapshot_uri: str) -> str:
+        return self.snapshot_manifest_uri(snapshot_uri)
+
+    def event_spine_success_uri(self, snapshot_uri: str) -> str:
+        return self.snapshot_success_uri(snapshot_uri)
+
+    @staticmethod
+    def event_spine_parquet_glob(snapshot_uri: str) -> str:
+        return f"{snapshot_uri.rstrip('/')}/**/*.parquet"
+
+    def event_spine_source_year_glob(
+        self,
+        snapshot_uri: str,
+        *,
+        source_city: str,
+        occurrence_year: int,
+    ) -> str:
+        return (
+            f"{snapshot_uri.rstrip('/')}/source_city={source_city}/"
+            f"occurrence_year={occurrence_year}/**/*.parquet"
+        )
+
+    @property
+    def integration_root(self) -> str:
+        return f"{self.gold_root}/integration_sampling"
+
+    @property
+    def integration_latest_pointer_uri(self) -> str:
+        return self.latest_pointer_uri(self.integration_root)
+
+    def integration_snapshot_uri(self, snapshot_id: str) -> str:
+        return self.snapshot_uri(self.integration_root, snapshot_id)
+
+    def integration_manifest_uri(self, snapshot_uri: str) -> str:
+        return self.snapshot_manifest_uri(snapshot_uri)
+
+    def integration_success_uri(self, snapshot_uri: str) -> str:
+        return self.snapshot_success_uri(snapshot_uri)
+
+    def integration_domain_uri(self, snapshot_uri: str, source_city: str) -> str:
+        return (
+            f"{snapshot_uri.rstrip('/')}/domain/source_city={source_city}/"
+            "part-00000.parquet"
+        )
+
+    def integration_samples_prefix(self, snapshot_uri: str, source_city: str) -> str:
+        return f"{snapshot_uri.rstrip('/')}/samples/source_city={source_city}"
+
+    def integration_sample_part_uri(
+        self,
+        snapshot_uri: str,
+        source_city: str,
+        part_index: int,
+    ) -> str:
+        if part_index < 0:
+            raise ValueError("Integration sample part index must be non-negative")
+        return (
+            f"{self.integration_samples_prefix(snapshot_uri, source_city)}/"
+            f"part-{part_index:05d}.parquet"
+        )
+
+    @staticmethod
+    def _validate_snapshot_id(snapshot_id: str) -> None:
+        if not snapshot_id or "/" in snapshot_id or "\\" in snapshot_id:
+            raise ValueError(f"Invalid snapshot ID: {snapshot_id!r}")
+
+    @classmethod
+    def snapshot_uri(cls, root: str, snapshot_id: str) -> str:
+        cls._validate_snapshot_id(snapshot_id)
+        return f"{root.rstrip('/')}/snapshot_id={snapshot_id}"
+
+    @staticmethod
+    def latest_pointer_uri(root: str) -> str:
+        return f"{root.rstrip('/')}/{LATEST_POINTER}"
+
+    @staticmethod
+    def snapshot_manifest_uri(snapshot_uri: str) -> str:
+        return f"{snapshot_uri.rstrip('/')}/{SNAPSHOT_MANIFEST}"
+
+    @staticmethod
+    def snapshot_success_uri(snapshot_uri: str) -> str:
+        return f"{snapshot_uri.rstrip('/')}/{SUCCESS_MARKER}"
+
+    def storage_options_for(self, uri: str) -> dict[str, object] | None:
+        return self.storage_options if uri.startswith("s3://") else None
 
     def source_root(self, source_key: str) -> str:
         get_source(source_key)
@@ -293,9 +446,8 @@ class CrimeLakeResources(dg.ConfigurableResource):
         """Return the immutable path assigned to one Bronze materialization."""
 
         root = self.resolve_source_path(source_key, "bronze")
-        if not snapshot_id or "/" in snapshot_id or "\\" in snapshot_id:
-            raise ValueError(f"Invalid Bronze snapshot ID: {snapshot_id!r}")
-        return f"{root}/snapshot_id={snapshot_id}"
+        self._validate_snapshot_id(snapshot_id)
+        return self.snapshot_uri(root, snapshot_id)
 
     def _bronze_pointer_uri(self, source_key: str) -> str:
         root = self.resolve_source_path(source_key, "bronze")
@@ -365,6 +517,60 @@ class CrimeLakeResources(dg.ConfigurableResource):
             Body=payload,
             ContentType=content_type,
         )
+
+    def resolve_event_spine_snapshot(
+        self,
+        *,
+        snapshot_override_uri: str | None = None,
+    ) -> tuple[str, dict[str, object]]:
+        """Resolve and validate one complete immutable Gold event-spine snapshot."""
+
+        if snapshot_override_uri:
+            snapshot_uri = snapshot_override_uri.rstrip("/")
+        else:
+            pointer_uri = self.event_spine_latest_pointer_uri
+            try:
+                pointer = json.loads(self._read_object(pointer_uri))
+                snapshot_uri = str(pointer["snapshot_uri"]).rstrip("/")
+            except (
+                KeyError,
+                TypeError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+            ) as error:
+                raise RuntimeError(
+                    f"Malformed event-spine latest pointer: {pointer_uri}"
+                ) from error
+
+        expected_prefix = f"{self.event_spine_root}/snapshot_id="
+        if not snapshot_uri.startswith(expected_prefix):
+            raise ValueError(
+                "Event-spine snapshot is outside the canonical root: "
+                f"{snapshot_uri!r}"
+            )
+        if not self._object_exists(self.event_spine_success_uri(snapshot_uri)):
+            raise RuntimeError(
+                f"Event-spine snapshot is not complete: {snapshot_uri}"
+            )
+
+        manifest_uri = self.event_spine_manifest_uri(snapshot_uri)
+        try:
+            manifest = json.loads(self._read_object(manifest_uri))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise RuntimeError(
+                f"Malformed event-spine manifest: {manifest_uri}"
+            ) from error
+        if not isinstance(manifest, dict):
+            raise RuntimeError(
+                f"Malformed event-spine manifest: {manifest_uri}"
+            )
+        manifest_snapshot_uri = str(manifest.get("snapshot_uri", "")).rstrip("/")
+        if manifest_snapshot_uri and manifest_snapshot_uri != snapshot_uri:
+            raise RuntimeError(
+                "Event-spine manifest snapshot URI mismatch: "
+                f"selected={snapshot_uri!r}, manifest={manifest_snapshot_uri!r}"
+            )
+        return snapshot_uri, manifest
 
     def _snapshot_has_parquet(self, snapshot_uri: str) -> bool:
         if not snapshot_uri.startswith("s3://"):
@@ -533,7 +739,7 @@ class CrimeLakeResources(dg.ConfigurableResource):
     @property
     def canonical_crosswalk_uri(self) -> str:
         return self.crosswalk_path or (
-            f"{self.landing_root}/reference/canonical_crime_crosswalk_v1_5.csv"
+            f"{self.reference_root}/canonical_crime_crosswalk_v1_5.csv"
         )
 
     @property
@@ -547,9 +753,14 @@ class CrimeLakeResources(dg.ConfigurableResource):
         return self.silver_crime_offenses_root
 
     def silver_snapshot_uri(self, snapshot_id: str) -> str:
-        if not snapshot_id or "/" in snapshot_id or "\\" in snapshot_id:
-            raise ValueError(f"Invalid Silver snapshot ID: {snapshot_id!r}")
-        return f"{self.silver_crime_offenses_root}/snapshot_id={snapshot_id}"
+        self._validate_snapshot_id(snapshot_id)
+        return self.snapshot_uri(self.silver_crime_offenses_root, snapshot_id)
+
+    @staticmethod
+    def silver_source_parquet_glob(snapshot_uri: str, source_city: str) -> str:
+        return (
+            f"{snapshot_uri.rstrip('/')}/source_city={source_city}/**/*.parquet"
+        )
 
     def _silver_pointer_uri(self) -> str:
         return f"{self.silver_crime_offenses_root}/{SILVER_LATEST_POINTER}"

@@ -3,6 +3,7 @@ import dagster as dg
 from crimenet_data.assets.crime.bronze import crime_bronze_assets
 from crimenet_data.assets.crime.silver import crime_silver_assets
 from crimenet_data.assets.event_spine import event_spine_gold_assets
+from crimenet_data.assets.integration import integration_sampling_job
 from crimenet_data.assets.references.external import canonical_crime_crosswalk
 from crimenet_data.observability.config import configure_logging
 from crimenet_data.resources.crime_lake import CrimeLakeResources
@@ -36,7 +37,7 @@ defs = dg.Definitions(
         *crime_silver_assets,
         *event_spine_gold_assets,
     ],
-    jobs=[crime_bronze_job, crime_silver_job],
+    jobs=[crime_bronze_job, crime_silver_job, integration_sampling_job],
     resources={
         "crime_lake": CrimeLakeResources(),
         "duckdb_resource": DuckDBResource(

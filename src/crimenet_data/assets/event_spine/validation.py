@@ -66,7 +66,6 @@ def validate_event_spine(
         for name in (
             "null_occurrence_timestamp_utc",
             "null_osm_h3_cell_id",
-            "null_feature_available_at",
             "future_feature_leaks",
             "duplicate_crime_ids",
         )
@@ -113,7 +112,6 @@ def validate_event_spine_readback(
         for name in (
             "null_occurrence_timestamp_utc",
             "null_osm_h3_cell_id",
-            "null_feature_available_at",
             "future_feature_leaks",
             "duplicate_crime_ids",
         )
