@@ -317,6 +317,29 @@ class CrimeLakeResources(dg.ConfigurableResource):
         return f"{snapshot_uri.rstrip('/')}/year={int(year)}/*.parquet"
 
     @property
+    def final_model_table_root(self) -> str:
+        """Canonical immutable Gold final model-table dataset root."""
+
+        return f"{self.gold_root}/final_model_table"
+
+    @property
+    def final_model_table_latest_pointer_uri(self) -> str:
+        """Pointer to the currently published final model-table snapshot."""
+
+        return self.latest_pointer_uri(self.final_model_table_root)
+
+    def final_model_table_snapshot_uri(self, snapshot_id: str) -> str:
+        """Return the immutable URI for one final model-table snapshot."""
+
+        return self.snapshot_uri(self.final_model_table_root, snapshot_id)
+
+    @staticmethod
+    def final_model_table_parquet_glob(snapshot_uri: str) -> str:
+        """Parquet glob for one immutable final model-table snapshot."""
+
+        return f"{snapshot_uri.rstrip('/')}/**/*.parquet"
+
+    @property
     def environmental_features_root(self) -> str:
         return f"{self.gold_root}/environmental_features"
 
@@ -332,6 +355,12 @@ class CrimeLakeResources(dg.ConfigurableResource):
 
     def environmental_features_year_glob(self, snapshot_uri: str, year: int) -> str:
         return f"{snapshot_uri.rstrip('/')}/year={int(year)}/*.parquet"
+
+    @staticmethod
+    def environmental_features_parquet_glob(snapshot_uri: str) -> str:
+        """Parquet glob for one immutable Gold environmental-features snapshot."""
+
+        return f"{snapshot_uri.rstrip('/')}/**/*.parquet"
 
     @property
     def national_feature_store_root(self) -> str:
@@ -427,6 +456,86 @@ class CrimeLakeResources(dg.ConfigurableResource):
             f"{self.integration_samples_prefix(snapshot_uri, source_city)}/"
             f"part-{part_index:05d}.parquet"
         )
+
+    def integration_sample_uris_from_manifest(
+        self,
+        snapshot_uri: str,
+        manifest: Mapping[str, object],
+    ) -> list[str]:
+        """Resolve every immutable integration-sample Parquet part from its manifest.
+
+        The integration manifest is authoritative for the number of sample parts
+        written per source.  This avoids broad prefix scans and guarantees the
+        final model table reads exactly the published integration snapshot.
+        """
+
+        snapshot_uri = snapshot_uri.rstrip("/")
+        expected_root = str(
+            manifest.get("snapshot_root")
+            or manifest.get("snapshot_uri")
+            or ""
+        ).rstrip("/")
+        if expected_root and expected_root != snapshot_uri:
+            raise RuntimeError(
+                "Integration manifest snapshot URI mismatch: "
+                f"selected={snapshot_uri!r}, manifest={expected_root!r}"
+            )
+
+        sources = manifest.get("sources")
+        if not isinstance(sources, list) or not sources:
+            raise RuntimeError(
+                "Integration manifest contains no per-source sample metadata"
+            )
+
+        uris: list[str] = []
+        seen_sources: set[str] = set()
+
+        for source_info in sources:
+            if not isinstance(source_info, Mapping):
+                raise RuntimeError(
+                    "Integration manifest contains a malformed source record"
+                )
+
+            source_city = str(source_info.get("source_city", "")).strip()
+            if not source_city:
+                raise RuntimeError(
+                    "Integration manifest source record is missing source_city"
+                )
+            if source_city in seen_sources:
+                raise RuntimeError(
+                    f"Integration manifest contains duplicate source_city={source_city!r}"
+                )
+            seen_sources.add(source_city)
+
+            raw_part_count = source_info.get("sample_part_count")
+            try:
+                part_count = int(raw_part_count or 0)
+            except (TypeError, ValueError) as error:
+                raise RuntimeError(
+                    f"{source_city}: invalid sample_part_count={raw_part_count!r}"
+                ) from error
+
+            if part_count <= 0:
+                raise RuntimeError(
+                    f"{source_city}: integration manifest has invalid "
+                    f"sample_part_count={part_count}"
+                )
+
+            uris.extend(
+                self.integration_sample_part_uri(
+                    snapshot_uri,
+                    source_city,
+                    part_index,
+                )
+                for part_index in range(part_count)
+            )
+
+        if not uris:
+            raise RuntimeError(
+                "Integration manifest resolved no sample Parquet objects"
+            )
+
+        return uris
 
     @staticmethod
     def _validate_snapshot_id(snapshot_id: str) -> None:
@@ -717,6 +826,43 @@ class CrimeLakeResources(dg.ConfigurableResource):
             manifest_snapshot_field="snapshot_uri",
             label="Silver weather",
         )
+    def resolve_national_temporal_history_files(
+        self,
+    ) -> tuple[list[str], dict[str, object]]:
+        """Resolve and freeze the current national temporal-history object set.
+
+        The national temporal history is not published as a snapshot directory with
+        ``_latest.json``/``manifest.json``/``_SUCCESS``. It is an immutable
+        partitioned history rooted at ``national_temporal_history_root``.
+
+        For downstream lineage, this resolver lists the exact Parquet objects that
+        exist now and derives a deterministic object-set identity from their URIs.
+        The returned manifest is therefore a frozen lineage descriptor for the
+        precise history object set consumed by the caller.
+        """
+        root_uri = self.national_temporal_history_root.rstrip("/")
+        parquet_uris = self.list_object_uris(root_uri, suffix=".parquet")
+
+        if not parquet_uris:
+            raise RuntimeError(
+                "National temporal history contains no Parquet objects: "
+                f"{root_uri}"
+            )
+
+        # list_object_uris() is already sorted, but sort again here so the lineage
+        # identity remains deterministic even if that helper changes later.
+        parquet_uris = sorted(parquet_uris)
+        object_set_payload = "\n".join(parquet_uris).encode("utf-8")
+        object_set_sha256 = hashlib.sha256(object_set_payload).hexdigest()
+
+        manifest: dict[str, object] = {
+            "snapshot_id": f"objectset-{object_set_sha256[:24]}",
+            "root_uri": root_uri,
+            "object_count": len(parquet_uris),
+            "object_set_sha256": object_set_sha256,
+            "objects": parquet_uris,
+        }
+        return parquet_uris, manifest
 
     def resolve_current_environmental_features_snapshot(
         self,
@@ -726,6 +872,18 @@ class CrimeLakeResources(dg.ConfigurableResource):
             pointer_uri=self.environmental_features_latest_pointer_uri,
             manifest_snapshot_field="snapshot_uri",
             label="Gold environmental features",
+        )
+
+    def resolve_current_final_model_table_snapshot(
+        self,
+    ) -> tuple[str, dict[str, object]]:
+        """Resolve and validate the currently published final model-table snapshot."""
+
+        return self._resolve_current_snapshot(
+            root_uri=self.final_model_table_root,
+            pointer_uri=self.final_model_table_latest_pointer_uri,
+            manifest_snapshot_field="snapshot_uri",
+            label="Gold final model table",
         )
 
     def _snapshot_has_parquet(self, snapshot_uri: str) -> bool:

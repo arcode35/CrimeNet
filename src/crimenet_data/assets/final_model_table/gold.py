@@ -1,0 +1,669 @@
+"""Dagster orchestration and immutable publication for the final model table."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from pathlib import Path
+
+import dagster as dg
+import polars as pl
+
+from crimenet_data.assets.environmental.gold import (
+    environmental_features,
+    published_integration_sampling,
+)
+from crimenet_data.assets.event_spine.gold import gold_event_spine
+from crimenet_data.assets.final_model_table.transformations import (
+    FINAL_COLUMNS,
+    FINAL_MODEL_TABLE_SCHEMA_VERSION,
+    MODEL_SPLITS,
+    FinalModelContractError,
+    ModelSupportInterval,
+    audit_final_model_table,
+    build_final_model_table,
+)
+from crimenet_data.resources.crime_lake import CrimeLakeResources
+
+
+def _scan_parquet(lake: CrimeLakeResources, uris: str | list[str]) -> pl.LazyFrame:
+    probe = uris[0] if isinstance(uris, list) else uris
+    return pl.scan_parquet(
+        uris,
+        storage_options=lake.storage_options_for(probe),
+        credential_provider=None,
+        hive_partitioning=False,
+    )
+
+
+def _stable_snapshot_id(values: list[str]) -> str:
+    digest = hashlib.sha256("\n".join(sorted(values)).encode("utf-8")).hexdigest()
+    return f"final-model-v3-{digest[:24]}"
+
+
+def _write_json(
+    lake: CrimeLakeResources,
+    uri: str,
+    document: Mapping[str, object],
+) -> None:
+    lake._write_object(
+        uri,
+        json.dumps(
+            dict(document),
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8"),
+        content_type="application/json",
+    )
+
+
+def _snapshot_id(manifest: Mapping[str, object], *, label: str) -> str:
+    value = str(manifest.get("snapshot_id", "")).strip()
+    if not value:
+        raise FinalModelContractError(f"{label} manifest is missing snapshot_id")
+    return value
+
+
+def _parse_utc(value: object, *, label: str) -> datetime:
+    text = str(value).strip()
+    if not text:
+        raise FinalModelContractError(f"{label} is empty")
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise FinalModelContractError(
+            f"{label} is not an ISO-8601 timestamp: {text!r}"
+        ) from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise FinalModelContractError(f"{label} must include a UTC offset")
+    return parsed.astimezone(UTC)
+
+
+def _frozen_support_from_integration_manifest(
+    manifest: Mapping[str, object],
+) -> list[ModelSupportInterval]:
+    schema_version = str(manifest.get("schema_version", ""))
+    if schema_version != "crime_integration_samples_v4":
+        raise FinalModelContractError(
+            "final model table requires split-aware crime_integration_samples_v4; "
+            f"got {schema_version!r}"
+        )
+
+    raw_sources = manifest.get("sources")
+    if not isinstance(raw_sources, list) or not raw_sources:
+        raise FinalModelContractError("integration manifest contains no sources")
+
+    result: list[ModelSupportInterval] = []
+    for source_record in raw_sources:
+        if not isinstance(source_record, Mapping):
+            raise FinalModelContractError("malformed integration source record")
+        source = str(source_record.get("source_city", "")).strip()
+        if not source:
+            raise FinalModelContractError(
+                "integration source record is missing source_city"
+            )
+        split_support = source_record.get("split_support")
+        if not isinstance(split_support, Mapping):
+            raise FinalModelContractError(
+                f"{source}: integration manifest is missing split_support"
+            )
+
+        for split in MODEL_SPLITS:
+            support = split_support.get(split)
+            if not isinstance(support, Mapping):
+                raise FinalModelContractError(
+                    f"{source}: missing frozen {split} support"
+                )
+            raw_intervals = support.get("temporal_coverage_intervals")
+            if not isinstance(raw_intervals, list) or not raw_intervals:
+                raise FinalModelContractError(
+                    f"{source}/{split}: no frozen temporal intervals"
+                )
+            for index, record in enumerate(raw_intervals):
+                if not isinstance(record, Mapping):
+                    raise FinalModelContractError(
+                        f"{source}/{split}: malformed temporal interval"
+                    )
+                timezone = str(record.get("source_timezone", "")).strip()
+                basis = str(record.get("coverage_basis", "")).strip()
+                reference = str(record.get("coverage_reference", "")).strip()
+                if not timezone or not basis or not reference:
+                    raise FinalModelContractError(
+                        f"{source}/{split}: frozen interval lacks timezone/provenance"
+                    )
+                result.append(
+                    ModelSupportInterval(
+                        source_city=source,
+                        split=split,
+                        source_timezone=timezone,
+                        start_utc=_parse_utc(
+                            record.get("coverage_start_utc"),
+                            label=f"{source}/{split}/{index}/start",
+                        ),
+                        end_utc=_parse_utc(
+                            record.get("coverage_end_utc"),
+                            label=f"{source}/{split}/{index}/end",
+                        ),
+                        coverage_basis=basis,
+                        coverage_reference=reference,
+                    )
+                )
+    return result
+
+
+def _expected_integration_groups(
+    manifest: Mapping[str, object],
+) -> dict[tuple[str, str], dict[str, float | int]]:
+    result: dict[tuple[str, str], dict[str, float | int]] = {}
+    raw_sources = manifest.get("sources")
+    if not isinstance(raw_sources, list):
+        raise FinalModelContractError("integration manifest sources are malformed")
+    for source_record in raw_sources:
+        if not isinstance(source_record, Mapping):
+            raise FinalModelContractError("malformed integration source record")
+        source = str(source_record.get("source_city", "")).strip()
+        split_support = source_record.get("split_support")
+        if not source or not isinstance(split_support, Mapping):
+            raise FinalModelContractError(
+                "integration source record is missing source/split_support"
+            )
+        for split in MODEL_SPLITS:
+            support = split_support.get(split)
+            if not isinstance(support, Mapping):
+                raise FinalModelContractError(f"{source}/{split}: missing support")
+            result[(source, split)] = {
+                "rows": int(support["integration_sample_rows"]),
+                "weight_hours": float(support["mc_weight_cell_hours"]),
+            }
+    return result
+
+
+def _validate_integration_against_manifest(
+    integration: pl.LazyFrame,
+    manifest: Mapping[str, object],
+) -> dict[str, object]:
+    expected = _expected_integration_groups(manifest)
+    actual_rows = (
+        integration.group_by("source_city", "split")
+        .agg(
+            pl.len().alias("rows"),
+            pl.col("mc_weight_cell_hours").min().alias("weight_min"),
+            pl.col("mc_weight_cell_hours").max().alias("weight_max"),
+        )
+        .collect(engine="streaming")
+        .to_dicts()
+    )
+    actual = {
+        (str(row["source_city"]), str(row["split"])): row
+        for row in actual_rows
+    }
+    if set(actual) != set(expected):
+        raise FinalModelContractError(
+            "integration source/split groups disagree with manifest: "
+            f"expected={sorted(expected)}, actual={sorted(actual)}"
+        )
+
+    for key, contract in expected.items():
+        row = actual[key]
+        if int(row["rows"]) != int(contract["rows"]):
+            raise FinalModelContractError(
+                f"{key}: integration row-count mismatch: "
+                f"expected={contract['rows']}, actual={row['rows']}"
+            )
+        expected_weight = float(contract["weight_hours"])
+        actual_min = float(row["weight_min"])
+        actual_max = float(row["weight_max"])
+        tolerance = max(1e-12, abs(expected_weight) * 1e-12)
+        if (
+            abs(actual_min - expected_weight) > tolerance
+            or abs(actual_max - expected_weight) > tolerance
+        ):
+            raise FinalModelContractError(
+                f"{key}: integration weight differs from frozen manifest"
+            )
+
+    return {
+        "integration_manifest_group_count": len(expected),
+        "integration_manifest_rows_validated": sum(
+            int(value["rows"]) for value in expected.values()
+        ),
+    }
+
+
+def _validate_environmental_manifest(
+    environmental_manifest: Mapping[str, object],
+) -> None:
+    snapshot_id = str(environmental_manifest.get("snapshot_id", "")).strip()
+    schema_version = str(environmental_manifest.get("schema_version", "")).strip()
+
+    if not snapshot_id:
+        raise FinalModelContractError(
+            "environmental manifest is missing snapshot_id"
+        )
+
+    if not schema_version:
+        raise FinalModelContractError(
+            "environmental manifest is missing schema_version"
+        )
+
+def _global_audit(table: pl.LazyFrame) -> dict[str, object]:
+    summary = table.select(
+        pl.len().alias("row_count"),
+        (pl.col("row_type") == "event").sum().alias("event_rows"),
+        (pl.col("row_type") == "integration").sum().alias("integration_rows"),
+        pl.col("row_id").n_unique().alias("unique_row_ids"),
+        pl.col("osm_h3_cell_id").n_unique().alias("unique_h3_cells"),
+        pl.col("model_timestamp_utc").min().alias("min_timestamp_utc"),
+        pl.col("model_timestamp_utc").max().alias("max_timestamp_utc"),
+        pl.col("weather_available").sum().alias("weather_available_rows"),
+        (~pl.col("weather_available")).sum().alias("weather_unavailable_rows"),
+    ).collect(engine="streaming").row(0, named=True)
+    split_rows = (
+        table.group_by("split")
+        .agg(
+            pl.len().alias("row_count"),
+            pl.col("model_timestamp_utc").min().alias("min_timestamp_utc"),
+            pl.col("model_timestamp_utc").max().alias("max_timestamp_utc"),
+        )
+        .sort("split")
+        .collect(engine="streaming")
+        .to_dicts()
+    )
+    row_count = int(summary["row_count"])
+    available = int(summary["weather_available_rows"] or 0)
+    return {
+        **summary,
+        "duplicate_row_ids": row_count - int(summary["unique_row_ids"]),
+        "weather_coverage_pct": 100.0 * available / row_count if row_count else 100.0,
+        "split_ranges": split_rows,
+    }
+
+
+def _write_snapshot(
+    *,
+    lake: CrimeLakeResources,
+    table: pl.LazyFrame,
+    snapshot_uri: str,
+) -> None:
+    if lake._prefix_has_objects(snapshot_uri):
+        raise RuntimeError(f"Final model-table snapshot already exists: {snapshot_uri}")
+    table.sink_parquet(
+        pl.PartitionBy(
+            snapshot_uri,
+            key=["split", "source_city"],
+            include_key=False,
+        ),
+        compression="zstd",
+        compression_level=3,
+        statistics=True,
+        storage_options=lake.storage_options_for(snapshot_uri),
+        credential_provider=None,
+        mkdir=True,
+        engine="streaming",
+    )
+    if not lake._snapshot_has_parquet(snapshot_uri):
+        raise RuntimeError("Final model-table write produced no Parquet files")
+
+
+def _readback(
+    lake: CrimeLakeResources,
+    *,
+    snapshot_uri: str,
+    expected_rows: int,
+    expected_schema: pl.Schema,
+) -> dict[str, int]:
+    glob = lake.final_model_table_parquet_glob(snapshot_uri)
+    frame = pl.scan_parquet(
+        glob,
+        storage_options=lake.storage_options_for(glob),
+        credential_provider=None,
+        hive_partitioning=True,
+        hive_schema={
+            "snapshot_id": pl.String,
+            "split": pl.String,
+            "source_city": pl.String,
+        },
+    )
+    schema = frame.collect_schema()
+    missing = sorted(set(expected_schema.names()) - set(schema.names()))
+    if missing:
+        raise FinalModelContractError(
+            f"final model-table read-back is missing columns: {missing}"
+        )
+    frame = frame.select(
+        pl.col(name).cast(dtype, strict=False).alias(name)
+        for name, dtype in expected_schema.items()
+    )
+    if frame.collect_schema() != expected_schema:
+        raise FinalModelContractError("final model-table read-back schema mismatch")
+    summary = frame.select(
+        pl.len().alias("rows"),
+        pl.col("row_id").n_unique().alias("unique_row_ids"),
+        pl.any_horizontal(
+            pl.col("row_id").is_null(),
+            pl.col("split").is_null(),
+            pl.col("source_city").is_null(),
+            pl.col("model_timestamp_utc").is_null(),
+        ).sum().alias("null_structural_rows"),
+    ).collect(engine="streaming").row(0, named=True)
+    result = {key: int(value) for key, value in summary.items()}
+    if result != {
+        "rows": expected_rows,
+        "unique_row_ids": expected_rows,
+        "null_structural_rows": 0,
+    }:
+        raise FinalModelContractError(
+            f"final model-table read-back validation failed: {result}"
+        )
+    return result
+
+def _materialize_final_model_snapshot(
+    *,
+    lake: CrimeLakeResources,
+    snapshot_uri: str,
+    event_snapshot_uri: str,
+    integration_snapshot_uri: str,
+    integration_manifest: Mapping[str, object],
+    environmental_snapshot_uri: str,
+    history_uris: list[str],
+    support_intervals: list[ModelSupportInterval],
+) -> tuple[dict[str, object], list[dict[str, object]], pl.Schema]:
+    event_glob = lake.event_spine_parquet_glob(event_snapshot_uri)
+    events = pl.scan_parquet(
+        event_glob,
+        storage_options=lake.storage_options_for(event_glob),
+        credential_provider=None,
+        hive_partitioning=True,
+    )
+    integration_uris = lake.integration_sample_uris_from_manifest(
+        integration_snapshot_uri,
+        integration_manifest,
+    )
+    integration = _scan_parquet(lake, integration_uris)
+    required_integration = {
+        "source_city",
+        "split",
+        "sample_index",
+        "integration_timestamp_utc",
+        "osm_h3_cell_id",
+        "mc_weight_cell_hours",
+    }
+    missing = required_integration - set(integration.collect_schema().names())
+    if missing:
+        raise FinalModelContractError(
+            "split-aware integration snapshot missing columns: "
+            f"{sorted(missing)}"
+        )
+    integration_audit = _validate_integration_against_manifest(
+        integration,
+        integration_manifest,
+    )
+
+    environmental_glob = lake.environmental_features_parquet_glob(
+        environmental_snapshot_uri
+    )
+    environmental = pl.scan_parquet(
+        environmental_glob,
+        storage_options=lake.storage_options_for(environmental_glob),
+        credential_provider=None,
+        hive_partitioning=True,
+    )
+    temporal_history = _scan_parquet(lake, history_uris)
+
+    table, validation = build_final_model_table(
+        events=events,
+        integration=integration,
+        environmental=environmental,
+        temporal_history=temporal_history,
+        support_intervals=support_intervals,
+    )
+    expected_schema = table.collect_schema()
+    global_audit = {
+        **integration_audit,
+        **validation,
+        **_global_audit(table),
+    }
+    grouped_audit = audit_final_model_table(table)
+    _write_snapshot(lake=lake, table=table, snapshot_uri=snapshot_uri)
+    _readback(
+        lake,
+        snapshot_uri=snapshot_uri,
+        expected_rows=int(global_audit["row_count"]),
+        expected_schema=expected_schema,
+    )
+    return (
+        {
+            **global_audit,
+            "source_count": len(
+                {interval.source_city for interval in support_intervals}
+            ),
+        },
+        grouped_audit,
+        expected_schema,
+    )
+
+
+@dg.asset(
+    name="final_model_table",
+    group_name="gold_model",
+    deps=[gold_event_spine, published_integration_sampling, environmental_features],
+    required_resource_keys={"crime_lake"},
+    compute_kind="polars",
+    description=(
+        "Canonical leakage-safe event and integration table for ML training and "
+        "evaluation, published as an immutable split/source-partitioned snapshot."
+    ),
+)
+def final_model_table(context) -> dg.MaterializeResult:
+    lake: CrimeLakeResources = context.resources.crime_lake
+
+    integration_uri, integration_manifest = lake.resolve_current_integration_snapshot()
+    support_intervals = _frozen_support_from_integration_manifest(
+        integration_manifest
+    )
+
+    frozen_event_uri = str(integration_manifest.get("event_spine_snapshot_uri", ""))
+    if not frozen_event_uri:
+        raise FinalModelContractError(
+            "integration manifest is missing event_spine_snapshot_uri"
+        )
+    event_uri, event_manifest = lake.resolve_event_spine_snapshot(
+        snapshot_override_uri=frozen_event_uri
+    )
+    expected_event_id = str(
+        integration_manifest.get("event_spine_snapshot_id", "")
+    ).strip()
+    actual_event_id = _snapshot_id(event_manifest, label="event spine")
+    if not expected_event_id or actual_event_id != expected_event_id:
+        raise FinalModelContractError(
+            "integration/event-spine lineage mismatch: "
+            f"integration={expected_event_id!r}, resolved={actual_event_id!r}"
+        )
+
+    environmental_uri, environmental_manifest = (
+        lake.resolve_current_environmental_features_snapshot()
+    )
+    _validate_environmental_manifest(environmental_manifest)
+
+    history_uris, history_manifest = lake.resolve_national_temporal_history_files()
+    input_ids = {
+        "event_spine_snapshot_id": actual_event_id,
+        "integration_snapshot_id": _snapshot_id(
+            integration_manifest,
+            label="integration",
+        ),
+        "environmental_snapshot_id": _snapshot_id(
+            environmental_manifest,
+            label="environmental",
+        ),
+        "temporal_history_snapshot_id": _snapshot_id(
+            history_manifest,
+            label="temporal history",
+        ),
+    }
+
+    support_contract = [
+        {
+            "source_city": interval.source_city,
+            "split": interval.split,
+            "source_timezone": interval.source_timezone,
+            "start_utc": interval.start_utc.isoformat(),
+            "end_utc": interval.end_utc.isoformat(),
+            "coverage_basis": interval.coverage_basis,
+            "coverage_reference": interval.coverage_reference,
+        }
+        for interval in sorted(
+            support_intervals,
+            key=lambda value: (value.source_city, value.start_utc, value.split),
+        )
+    ]
+    support_json = json.dumps(
+        support_contract,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    support_sha256 = hashlib.sha256(support_json.encode("utf-8")).hexdigest()
+
+    snapshot_id = _stable_snapshot_id(
+        [*input_ids.values(), FINAL_MODEL_TABLE_SCHEMA_VERSION, support_sha256]
+    )
+    snapshot_uri = lake.final_model_table_snapshot_uri(snapshot_id)
+    success_uri = lake.snapshot_success_uri(snapshot_uri)
+
+    if lake._object_exists(success_uri):
+        manifest = json.loads(
+            lake._read_object(lake.snapshot_manifest_uri(snapshot_uri))
+        )
+    else:
+        audit, grouped_audit, schema = _materialize_final_model_snapshot(
+            lake=lake,
+            snapshot_uri=snapshot_uri,
+            event_snapshot_uri=event_uri,
+            integration_snapshot_uri=integration_uri,
+            integration_manifest=integration_manifest,
+            environmental_snapshot_uri=environmental_uri,
+            history_uris=history_uris,
+            support_intervals=support_intervals,
+        )
+        manifest = {
+            "snapshot_id": snapshot_id,
+            "snapshot_uri": snapshot_uri,
+            "created_at_utc": datetime.now(UTC).isoformat(),
+            "schema_version": FINAL_MODEL_TABLE_SCHEMA_VERSION,
+            **input_ids,
+            "event_spine_snapshot_uri": event_uri,
+            "integration_snapshot_uri": integration_uri,
+            "environmental_snapshot_uri": environmental_uri,
+            "temporal_history_root_uri": history_manifest["root_uri"],
+            "temporal_history_object_count": history_manifest["object_count"],
+            "temporal_history_object_set_sha256": history_manifest[
+                "object_set_sha256"
+            ],
+            "model_support_contract_sha256": support_sha256,
+            "model_support_intervals": support_contract,
+            "split_contract": {
+                "authority": "frozen_integration_manifest",
+                "interval_semantics": "half_open",
+                "source_specific": True,
+            },
+            "feature_enrichment_contract": {
+                "event_national_h3": "preserve_event_spine_frozen_features",
+                "integration_national_h3": "backward_asof_national_temporal_history",
+                "national_h3_match_rule": "feature_available_at <= model_timestamp_utc",
+                "national_h3_unmatched_policy": "retain_row_with_null_features",
+                "environmental": "exact_h3_r6_utc_hour_left_join",
+                "weather_unmatched_policy": "retain_row_with_null_weather",
+                "lighting_policy": "deterministic_required",
+            },
+            "partition_columns": ["split", "source_city"],
+            "schema": {name: str(dtype) for name, dtype in schema.items()},
+            "columns": FINAL_COLUMNS,
+            **audit,
+            "grouped_audit": grouped_audit,
+            "parquet_file_count": lake._parquet_file_count(snapshot_uri),
+        }
+        if not snapshot_uri.startswith("s3://"):
+            manifest["parquet_size_bytes"] = sum(
+                path.stat().st_size
+                for path in Path(snapshot_uri).rglob("*.parquet")
+            )
+        _write_json(lake, lake.snapshot_manifest_uri(snapshot_uri), manifest)
+        lake._write_object(
+            success_uri,
+            b"",
+            content_type="application/octet-stream",
+        )
+
+    if str(manifest.get("snapshot_id", "")) != snapshot_id:
+        raise RuntimeError("Final model-table manifest identity mismatch")
+
+    _write_json(
+        lake,
+        lake.final_model_table_latest_pointer_uri,
+        {
+            "snapshot_id": snapshot_id,
+            "snapshot_uri": snapshot_uri,
+            "created_at_utc": manifest["created_at_utc"],
+            "schema_version": FINAL_MODEL_TABLE_SCHEMA_VERSION,
+        },
+    )
+    return dg.MaterializeResult(
+        metadata={
+            "snapshot_id": snapshot_id,
+            "snapshot_uri": snapshot_uri,
+            "row_count": int(manifest["row_count"]),
+            "event_rows": int(manifest["event_rows"]),
+            "integration_rows": int(manifest["integration_rows"]),
+            "weather_coverage_pct": float(manifest["weather_coverage_pct"]),
+            "duplicate_row_ids": int(manifest["duplicate_row_ids"]),
+            "lighting_missing_rows": int(manifest.get("lighting_missing_rows", 0)),
+            "future_feature_rows": int(manifest.get("future_feature_rows", 0)),
+            "event_h3_feature_missing_rows": int(
+                manifest.get("event_h3_feature_missing_rows", 0)
+            ),
+            "integration_h3_feature_missing_rows": int(
+                manifest.get("integration_h3_feature_missing_rows", 0)
+            ),
+            **input_ids,
+        }
+    )
+
+
+@dg.asset_check(
+    asset=final_model_table,
+    name="published_contract",
+    blocking=True,
+    required_resource_keys={"crime_lake"},
+)
+def final_model_table_published_contract_check(context) -> dg.AssetCheckResult:
+    lake: CrimeLakeResources = context.resources.crime_lake
+    _, manifest = lake.resolve_current_final_model_table_snapshot()
+    failures = {
+        name: int(manifest.get(name, -1))
+        for name in (
+            "duplicate_row_ids",
+            "structural_environmental_missing_rows",
+            "lighting_missing_rows",
+            "future_feature_rows",
+            "rows_outside_frozen_model_support",
+        )
+    }
+    return dg.AssetCheckResult(
+        passed=int(manifest.get("row_count", 0)) > 0
+        and all(value == 0 for value in failures.values()),
+        metadata={"row_count": int(manifest.get("row_count", 0)), **failures},
+    )
+
+
+final_model_table_assets = [final_model_table]
+final_model_table_asset_checks = [final_model_table_published_contract_check]
+
+__all__ = [
+    "final_model_table",
+    "final_model_table_asset_checks",
+    "final_model_table_assets",
+    "final_model_table_published_contract_check",
+]
