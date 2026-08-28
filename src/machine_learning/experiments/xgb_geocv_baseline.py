@@ -54,13 +54,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rounds",
         type=int,
-        default=300,
+        default=4000,
     )
 
     parser.add_argument(
         "--early-stop",
         type=int,
-        default=50,
+        default=150,
     )
 
     parser.add_argument(
