@@ -23,9 +23,17 @@ import polars as pl
 
 EARTH_RADIUS_M = 6_371_008.8
 
+# Canonical half-open model split boundaries. Integration sampling owns this
+# temporal contract; downstream model-table code imports these values rather
+# than defining parallel dates.
+TRAIN_SPLIT_END_UTC = datetime(2024, 1, 1, tzinfo=UTC)
+VALIDATION_SPLIT_END_UTC = datetime(2025, 1, 1, tzinfo=UTC)
+MODEL_SPLITS = ("train", "validation", "test")
+
 INTEGRATION_SAMPLE_SCHEMA = pl.Schema(
     {
         "source_city": pl.String,
+        "split": pl.String,
         "sample_index": pl.Int64,
         "integration_timestamp_utc": pl.Datetime("us", time_zone="UTC"),
         "osm_h3_cell_id": pl.Int64,
@@ -143,11 +151,13 @@ def resolve_temporal_coverage(
     start_year: int,
     end_year: int,
 ) -> tuple[list[TemporalCoverageInterval], np.ndarray, np.ndarray]:
-    """Validate and clip declared source coverage to the local training window.
+    """Validate and clip audited source coverage to a source-local year window.
 
-    Coverage comes only from the supplied catalog. Crime timestamps are never
-    inspected to create or extend an interval. Multiple non-overlapping rows
-    permit explicit gaps and source-era changes.
+    Coverage comes only from the supplied full frozen provenance catalog. Crime
+    timestamps are never inspected to create or extend an interval. Multiple
+    non-overlapping rows preserve explicit gaps and source-era changes. Every
+    modeled split is required to intersect declared support; an empty intersection
+    is treated as a provenance/catalog error rather than silently as zero exposure.
     """
     if start_year > end_year:
         raise ValueError("start_year must be <= end_year")
@@ -223,7 +233,7 @@ def resolve_temporal_coverage(
     if not intervals:
         raise RuntimeError(
             f"{source}: declared temporal coverage does not intersect the "
-            f"{start_year}-{end_year} training window"
+            f"{start_year}-{end_year} source-local window"
         )
 
     for previous, current in zip(intervals, intervals[1:], strict=False):
@@ -682,6 +692,7 @@ def sample_latlon_within_h3(
 def sample_integration_chunk(
     *,
     source: str,
+    split: str,
     start_row: int,
     n: int,
     domain_cells: np.ndarray,
@@ -691,13 +702,22 @@ def sample_integration_chunk(
     mc_weight_cell_hours: float,
     rng: np.random.Generator,
 ) -> pl.DataFrame:
-    """Draw time first, then H3, then a sub-cell lat/lon coordinate."""
+    """Draw time first, then H3, then an auxiliary sub-cell coordinate."""
+
+    if split not in MODEL_SPLITS:
+        raise ValueError(f"unknown model split: {split!r}")
+
     if n <= 0:
         raise ValueError("n must be positive")
+
     if domain_cells.size == 0:
         raise ValueError("domain_cells must be non-empty")
+
     if starts_us.size == 0 or starts_us.size != durations_us.size:
-        raise ValueError("starts_us and durations_us must be non-empty and aligned")
+        raise ValueError(
+            "starts_us and durations_us must be non-empty and aligned"
+        )
+
     if np.any(durations_us <= 0):
         raise ValueError("durations_us must be positive")
 
@@ -705,42 +725,46 @@ def sample_integration_chunk(
         durations_us,
         dtype=np.int64,
     )
+
     previous_cumulative = np.concatenate(
         [
             np.asarray([0], dtype=np.int64),
             cumulative_us[:-1],
         ]
     )
+
     total_duration_us = int(cumulative_us[-1])
 
-    # 1) TIME FIRST.
+    # Uniform over the union of effective temporal intervals.
     time_offsets = rng.integers(
         0,
         total_duration_us,
         size=n,
         dtype=np.int64,
     )
+
     interval_idx = np.searchsorted(
         cumulative_us,
         time_offsets,
         side="right",
     )
+
     sampled_timestamp_us = (
         starts_us[interval_idx]
         + time_offsets
         - previous_cumulative[interval_idx]
     )
 
-    # 2) H3 conditional on t. Frozen-domain policy => same domain for all t.
+    # Frozen TRAINING domain for every split.
     selected_cell_indices = rng.integers(
         0,
         domain_cells.size,
         size=n,
         dtype=np.int64,
     )
+
     sampled_h3 = domain_cells[selected_cell_indices]
 
-    # 3) Random sub-cell coordinate, not centroid.
     latitude, longitude = sample_latlon_within_h3(
         selected_cell_indices=selected_cell_indices,
         geometry=geometry,
@@ -765,6 +789,7 @@ def sample_integration_chunk(
         )
         .with_columns(
             pl.lit(source).alias("source_city"),
+            pl.lit(split).alias("split"),
             pl.col("_timestamp_us")
             .cast(pl.Datetime("us", time_zone="UTC"))
             .alias("integration_timestamp_utc"),
@@ -775,6 +800,7 @@ def sample_integration_chunk(
         )
         .select(
             "source_city",
+            "split",
             "sample_index",
             "integration_timestamp_utc",
             "osm_h3_cell_id",
@@ -790,8 +816,11 @@ __all__ = [
     "H3SamplingGeometry",
     "INTEGRATION_DOMAIN_SCHEMA",
     "INTEGRATION_SAMPLE_SCHEMA",
+    "MODEL_SPLITS",
     "TEMPORAL_COVERAGE_COLUMNS",
+    "TRAIN_SPLIT_END_UTC",
     "TemporalCoverageInterval",
+    "VALIDATION_SPLIT_END_UTC",
     "build_frozen_source_domain",
     "effective_coverage_local_years",
     "integration_sample_count",
