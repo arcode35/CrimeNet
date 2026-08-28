@@ -8,16 +8,31 @@ import polars as pl
 import pytest
 
 from machine_learning.data.cache import cache_identity
-from machine_learning.data.features import resolve_feature_contract
+from machine_learning.data.features import (
+    DEFAULT_TRANSFERABLE_CATEGORICAL,
+    DEFAULT_TRANSFERABLE_NUMERIC,
+    LOCAL_HISTORY_ABLATION,
+    resolve_feature_contract,
+)
 from machine_learning.data.geography import geographic_frames
 from machine_learning.data.metrics import geographic_point_process_metrics
 from machine_learning.data.model_table import (
     ResolvedModelTable,
     resolve_model_table,
+    resolve_model_table_from_config,
 )
 from machine_learning.data.point_process import prepare_target_exposure
-from machine_learning.models.xgboost.model import train as train_intensity
-from machine_learning.experiments.xgb_hpo import build_space, objective_metric
+from machine_learning.models.xgboost.model import (
+    _point_process_eval_values,
+    train as train_intensity,
+)
+from machine_learning.experiments.xgb_hpo import (
+    Stage,
+    build_space,
+    enqueue_trial_params,
+    objective_metric,
+    prepared_xy_cache_enabled,
+)
 from crimenet_data.resources.crime_lake import CrimeLakeResources
 
 
@@ -107,6 +122,45 @@ def test_current_snapshot_is_resolved_once() -> None:
     assert lake.calls == 1
 
 
+def test_configured_snapshot_uri_and_id_are_both_enforced() -> None:
+    uri = "s3://bucket/gold/final_model_table/snapshot_id=pinned"
+
+    class Lake:
+        seen_override = None
+
+        def resolve_final_model_table_snapshot(self, *, snapshot_override_uri=None):
+            self.seen_override = snapshot_override_uri
+            return uri, {
+                "snapshot_id": "pinned",
+                "snapshot_uri": uri,
+                "schema_version": "v1",
+                "columns": [
+                    "model_row_id", "row_type", "event_indicator",
+                    "is_observed_event", "event_count",
+                    "integration_weight_cell_seconds", "source_city", "split",
+                ],
+            }
+
+    lake = Lake()
+    resolved = resolve_model_table_from_config(
+        {
+            "final_model_snapshot_uri": uri,
+            "final_model_snapshot_id": "pinned",
+        },
+        lake=lake,  # type: ignore[arg-type]
+    )
+    assert resolved.snapshot_id == "pinned"
+    assert lake.seen_override == uri
+    with pytest.raises(RuntimeError, match="differs from pinned config"):
+        resolve_model_table_from_config(
+            {
+                "final_model_snapshot_uri": uri,
+                "final_model_snapshot_id": "other",
+            },
+            lake=Lake(),  # type: ignore[arg-type]
+        )
+
+
 def test_explicit_canonical_snapshot_override_is_identity_checked(tmp_path: Path) -> None:
     lake = CrimeLakeResources(bucket=str(tmp_path / "lake"))
     snapshot_uri = lake.final_model_table_snapshot_uri("fixed")
@@ -194,6 +248,25 @@ def test_feature_contract_order_hash_duplicates_and_missing() -> None:
         )
 
 
+def test_transferable_defaults_are_zero_shot_safe_and_guard_is_centralized() -> None:
+    available = [*DEFAULT_TRANSFERABLE_NUMERIC, *DEFAULT_TRANSFERABLE_CATEGORICAL]
+    contract = resolve_feature_contract(
+        {"feature_set": "transferable_v2", "zero_shot_geography": True},
+        available_columns=available,
+    )
+    assert not (set(contract.numeric) & set(LOCAL_HISTORY_ABLATION))
+    with pytest.raises(ValueError, match="Zero-shot feature contract violation"):
+        resolve_feature_contract(
+            {
+                "feature_set": "unsafe",
+                "zero_shot_geography": True,
+                "numeric": ["cell_crime_count_24h"],
+                "categorical": [],
+            },
+            available_columns=["cell_crime_count_24h"],
+        )
+
+
 def test_event_null_exposure_becomes_zero_and_integration_is_preserved() -> None:
     y, exposure = prepare_target_exposure(_rows("train", "alpha"))
     np.testing.assert_array_equal(y, [1.0, 0.0])
@@ -258,6 +331,51 @@ def test_transfer_hpo_uses_macro_city_objective_and_reset_depth_space() -> None:
     assert (space["depth_low"], space["depth_high"]) == (4, 12)
     assert space["max_bin_choices"] == [128, 256, 512]
     assert objective_metric("intensity") == "geocv_macro_nll_per_event"
+
+
+def test_intensity_gamma_is_preserved_when_enqueueing_refinement_seed() -> None:
+    class Study:
+        enqueued = None
+
+        def enqueue_trial(self, params):
+            self.enqueued = params
+
+    study = Study()
+    enqueue_trial_params(
+        study,  # type: ignore[arg-type]
+        {"max_depth": 8, "reg_alpha": 0.0, "gamma": 2.75},
+        family="intensity",
+    )
+    assert study.enqueued["use_gamma"] is True
+    assert study.enqueued["gamma_nonzero"] == pytest.approx(2.75)
+    assert "gamma" not in study.enqueued
+
+
+def test_prepared_xy_cache_is_disabled_if_either_stage_fraction_is_full() -> None:
+    assert prepared_xy_cache_enabled(
+        requested=True, stage=Stage("explore", 0.25, 0.25, 10, 2)
+    )
+    assert not prepared_xy_cache_enabled(
+        requested=True, stage=Stage("refine", 1.0, 0.25, 10, 2)
+    )
+    assert not prepared_xy_cache_enabled(
+        requested=True, stage=Stage("tournament", 1.0, 1.0, 10, 2)
+    )
+
+
+def test_macro_city_early_stopping_metric_is_equal_city_not_pooled() -> None:
+    pooled, macro = _point_process_eval_values(
+        y=np.asarray([1.0, 0.0, 1.0, 1.0, 0.0]),
+        exposure=np.asarray([0.0, 1.0, 0.0, 0.0, 10.0]),
+        margin=np.zeros(5),
+        city_codes=np.asarray([0, 0, 1, 1, 1]),
+        city_count=2,
+        min_log_intensity=-30.0,
+        max_log_intensity=15.0,
+    )
+    assert pooled == pytest.approx(11.0 / 3.0)
+    assert macro == pytest.approx((1.0 + 5.0) / 2.0)
+    assert macro != pytest.approx(pooled)
 
 
 def test_geographic_metrics_are_unweighted_city_means() -> None:
@@ -340,6 +458,7 @@ def test_tiny_intensity_training_smoke_never_reads_test(
     assert result["metrics"]["geographic_macro_nll_per_event"] == pytest.approx(
         result["metrics"]["sample_validation_nll_per_event"]
     )
+    assert "macro_city_pp_nll_per_event" in result["history"]["validation"]
     assert (
         tmp_path / "artifacts" / "tiny" / "run" / "geographic_validation_by_city.csv"
     ).is_file()

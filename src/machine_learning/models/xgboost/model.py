@@ -25,7 +25,7 @@ from machine_learning.data.geographic_cv import (
     validate_exact_modeling_cities,
 )
 from machine_learning.data.metrics import geographic_point_process_metrics
-from machine_learning.data.model_table import resolve_model_table
+from machine_learning.data.model_table import resolve_model_table_from_config
 from machine_learning.data.point_process import prepare_target_exposure
 from machine_learning.experiments.experiment_logging import git_commit, git_dirty
 
@@ -62,6 +62,46 @@ def _safe_margin(
         min_log_intensity,
         max_log_intensity,
     )
+
+
+def _point_process_eval_values(
+    *,
+    y: np.ndarray,
+    exposure: np.ndarray,
+    margin: np.ndarray,
+    city_codes: np.ndarray,
+    city_count: int,
+    min_log_intensity: float,
+    max_log_intensity: float,
+) -> tuple[float, float]:
+    """Return pooled and equal-city point-process NLL/event."""
+
+    safe_margin = _safe_margin(
+        margin,
+        min_log_intensity=min_log_intensity,
+        max_log_intensity=max_log_intensity,
+    )
+    row_nll = exposure * np.exp(safe_margin) - y * safe_margin
+    observed_by_city = np.bincount(
+        city_codes, weights=y, minlength=city_count
+    ).astype(np.float64, copy=False)
+    if city_count <= 0 or (observed_by_city <= 0).any():
+        raise ValueError("Macro-city early stopping requires observed events in every city")
+    nll_by_city = np.bincount(
+        city_codes, weights=row_nll, minlength=city_count
+    ).astype(np.float64, copy=False)
+    total_observed = float(observed_by_city.sum())
+    pooled = float(row_nll.sum() / total_observed)
+    macro = float(np.mean(nll_by_city / observed_by_city))
+    if not np.isfinite(pooled) or not np.isfinite(macro):
+        raise ValueError("Point-process evaluation metric is non-finite")
+    return pooled, macro
+
+
+def _city_metric_index(frame: pl.DataFrame) -> tuple[np.ndarray, int]:
+    cities = frame["source_city"].cast(pl.String).to_numpy()
+    _, city_codes = np.unique(cities, return_inverse=True)
+    return city_codes.astype(np.int64, copy=False), int(city_codes.max()) + 1
 
 
 def _resolve_feature_columns(
@@ -579,11 +619,7 @@ def train(
         )
     )
 
-    table_ref = resolve_model_table(
-        snapshot_override_uri=data_config.get("final_model_snapshot_uri")
-        or data_config.get("snapshot_override_uri"),
-        local_root=data_config.get("local_snapshot_root"),
-    )
+    table_ref = resolve_model_table_from_config(data_config)
     data_config.update(table_ref.lineage)
     data_config["test_split_used"] = False
     train_table = table_ref.scan_split(str(data_config.get("train_split", "train")))
@@ -773,6 +809,16 @@ def train(
             categorical_columns=categorical_columns,
             category_levels=categories,
         )
+
+    train_city_codes, train_city_count = _city_metric_index(train_frame)
+    validation_city_codes, validation_city_count = _city_metric_index(validation_frame)
+    in_domain_city_metric_index = (
+        _city_metric_index(in_domain_frame)
+        if in_domain_table is not None
+        and "in_domain_frame" in locals()
+        and in_domain_frame.height
+        else None
+    )
 
     del train_frame
     gc.collect()
@@ -964,6 +1010,13 @@ def train(
     if din_domain is not None and exposure_in_domain is not None:
         exposure_lookup[id(din_domain)] = exposure_in_domain
 
+    city_metric_lookup = {
+        id(dtrain): (train_city_codes, train_city_count),
+        id(dvalidation): (validation_city_codes, validation_city_count),
+    }
+    if din_domain is not None and in_domain_city_metric_index is not None:
+        city_metric_lookup[id(din_domain)] = in_domain_city_metric_index
+
     def point_process_nll(
         predt: np.ndarray,
         dmatrix: xgb.DMatrix,
@@ -983,37 +1036,23 @@ def train(
             ]
         )
 
-        f_safe = _safe_margin(
-            predt,
-            min_log_intensity=
-                min_log_intensity,
-            max_log_intensity=
-                max_log_intensity,
+        city_codes, city_count = city_metric_lookup[id(dmatrix)]
+        pooled_nll, macro_city_nll = _point_process_eval_values(
+            y=y,
+            exposure=exposure,
+            margin=predt,
+            city_codes=city_codes,
+            city_count=city_count,
+            min_log_intensity=min_log_intensity,
+            max_log_intensity=max_log_intensity,
         )
 
-        nll = np.sum(
-            exposure
-            * np.exp(
-                f_safe
-            )
-            -
-            y
-            * f_safe
-        )
-
-        return (
-            "pp_nll_per_event",
-            float(
-                nll
-                /
-                max(
-                    float(
-                        y.sum()
-                    ),
-                    1.0,
-                )
-            ),
-        )
+        # XGBoost early stopping uses the final metric on the final eval set.
+        # Preserve pooled NLL for diagnostics and place equal-city macro NLL last.
+        return [
+            ("pp_nll_per_event", pooled_nll),
+            ("macro_city_pp_nll_per_event", macro_city_nll),
+        ]
 
     params = {
         "tree_method":
@@ -1147,6 +1186,19 @@ def train(
     ] = {}
 
     fixed_rounds = bool(training_config.get("fixed_num_boost_round", False))
+    early_stopping_callbacks = (
+        []
+        if fixed_rounds
+        else [
+            xgb.callback.EarlyStopping(
+                rounds=int(training_config["early_stopping_rounds"]),
+                metric_name="macro_city_pp_nll_per_event",
+                data_name="validation",
+                maximize=False,
+                save_best=False,
+            )
+        ]
+    )
     booster = xgb.train(
         params=params,
 
@@ -1175,11 +1227,9 @@ def train(
         custom_metric=
             point_process_nll,
 
-        early_stopping_rounds=(
-            None
-            if fixed_rounds
-            else int(training_config["early_stopping_rounds"])
-        ),
+        early_stopping_rounds=None,
+
+        callbacks=early_stopping_callbacks,
 
         evals_result=
             evals_result,
@@ -1459,6 +1509,11 @@ def train(
             "optimization": optimization_config,
             "num_boost_round": int(training_config["num_boost_round"]),
             "fixed_num_boost_round": fixed_rounds,
+            "early_stopping_metric": (
+                None
+                if fixed_rounds
+                else "validation-macro_city_pp_nll_per_event"
+            ),
         },
 
         "hpo": config.get("hpo"),

@@ -6,7 +6,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from machine_learning.data.features import resolve_feature_contract
+from machine_learning.data.features import (
+    resolve_feature_contract,
+    validate_zero_shot_feature_contract,
+)
 from machine_learning.data.geographic_cv import (
     CANONICAL_GEOCV_VERSION,
     resolve_geographic_folds,
@@ -409,101 +412,6 @@ def params_from_config(
     }
 
 
-def validate_zero_shot_contract(
-    numeric: list[str],
-    categorical: list[str],
-) -> None:
-    """
-    Fail closed if the supposedly transferable model includes any
-    target-geography crime-history predictor.
-    """
-
-    history_prefixes = (
-        "cell_crime_",
-        "cell_violent_",
-        "cell_property_",
-        "city_crime_",
-        "k1_crime_",
-    )
-
-    history_exact = {
-        "has_crime_cell_28d",
-        "has_crime_city_28d",
-        "hours_since_last_crime_cell_capped_28d",
-        "hours_since_last_crime_city_capped_28d",
-        "cell_crime_24h_vs_28d_ratio",
-        "cell_share_of_k1_crime_24h",
-    }
-
-    forbidden_geographic_identity = {
-        "source_city",
-        "latitude",
-        "longitude",
-        "osm_h3_cell_id",
-        "weather_query_cell_id",
-    }
-
-    forbidden_target_columns = {
-        "row_type",
-        "event_indicator",
-        "is_observed_event",
-        "event_count",
-        "integration_weight_cell_seconds",
-        "crime_id",
-        "canonical_family_code",
-        "canonical_offense_family",
-        "canonical_subtype_code",
-        "canonical_offense_subtype",
-    }
-
-    forbidden_temporal_identity = {
-        "row_year",
-        "model_timestamp_utc",
-        "row_timestamp_utc",
-        "feature_available_at",
-    }
-
-    resolved = [
-        *numeric,
-        *categorical,
-    ]
-
-    bad_history = sorted(
-        feature
-        for feature in resolved
-        if feature.startswith(history_prefixes)
-        or feature in history_exact
-    )
-
-    bad_direct = sorted(
-        feature
-        for feature in resolved
-        if feature in forbidden_geographic_identity
-        or feature in forbidden_target_columns
-        or feature in forbidden_temporal_identity
-    )
-
-    failures: list[str] = []
-
-    if bad_history:
-        failures.append(
-            "crime-history predictors: "
-            + ", ".join(bad_history)
-        )
-
-    if bad_direct:
-        failures.append(
-            "direct identity/target predictors: "
-            + ", ".join(bad_direct)
-        )
-
-    if failures:
-        raise RuntimeError(
-            "Zero-shot feature contract violation: "
-            + " | ".join(failures)
-        )
-
-
 def main() -> None:
     args = parse_args()
 
@@ -663,7 +571,7 @@ def main() -> None:
     # 5. Fail closed on the zero-shot feature contract.
     # ----------------------------------------------------------------------
 
-    validate_zero_shot_contract(
+    validate_zero_shot_feature_contract(
         numeric=list(
             contract.numeric
         ),

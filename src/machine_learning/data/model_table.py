@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -140,6 +141,44 @@ def resolve_model_table(
     )
 
 
+def resolve_model_table_from_config(
+    data_config: Mapping[str, Any],
+    *,
+    lake: CrimeLakeResources | None = None,
+) -> ResolvedModelTable:
+    """Resolve and verify the immutable identity declared by an ML config."""
+
+    lake = lake or CrimeLakeResources()
+    final_uri = str(data_config.get("final_model_snapshot_uri") or "").rstrip("/")
+    override_uri = str(data_config.get("snapshot_override_uri") or "").rstrip("/")
+    if final_uri and override_uri and final_uri != override_uri:
+        raise ValueError(
+            "Conflicting final-model snapshot URIs: "
+            f"final_model_snapshot_uri={final_uri!r}, snapshot_override_uri={override_uri!r}"
+        )
+    expected_id = str(data_config.get("final_model_snapshot_id") or "")
+    explicit_uri = final_uri or override_uri
+    local_root = data_config.get("local_snapshot_root")
+    if expected_id and not explicit_uri and not local_root:
+        explicit_uri = lake.final_model_table_snapshot_uri(expected_id)
+    table = resolve_model_table(
+        lake=lake,
+        snapshot_override_uri=explicit_uri or None,
+        local_root=str(local_root) if local_root else None,
+    )
+    if expected_id and table.snapshot_id != expected_id:
+        raise RuntimeError(
+            "Resolved final-model snapshot ID differs from pinned config: "
+            f"resolved={table.snapshot_id!r}, expected={expected_id!r}"
+        )
+    if final_uri and table.snapshot_uri.rstrip("/") != final_uri:
+        raise RuntimeError(
+            "Resolved final-model snapshot URI differs from pinned config: "
+            f"resolved={table.snapshot_uri!r}, expected={final_uri!r}"
+        )
+    return table
+
+
 def enrich_config_with_lineage(
     config: dict[str, Any], table: ResolvedModelTable
 ) -> dict[str, Any]:
@@ -155,4 +194,5 @@ __all__ = [
     "ResolvedModelTable",
     "enrich_config_with_lineage",
     "resolve_model_table",
+    "resolve_model_table_from_config",
 ]
