@@ -286,9 +286,10 @@ def _scan_written_snapshot(
         glob,
         hive_partitioning=True,
         hive_schema={
+            "snapshot_id": pl.String,
             "split": pl.String,
             "source_city": pl.String,
-        },
+        }
     )
 
 
