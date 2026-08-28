@@ -19,7 +19,18 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import optuna
+import numpy as np
 import yaml
+
+from machine_learning.data.cache import cache_identity as immutable_cache_identity
+from machine_learning.data.features import resolve_feature_contract
+from machine_learning.data.geography import geographic_frames
+from machine_learning.data.geographic_cv import (
+    CANONICAL_GEOCV_VERSION,
+    aggregate_intensity_oof,
+    resolve_geographic_folds,
+)
+from machine_learning.data.model_table import enrich_config_with_lineage, resolve_model_table
 
 
 # ---------------------------------------------------------------------------
@@ -27,14 +38,14 @@ import yaml
 #
 # Purpose:
 #   Aggressively optimize the final XGBoost baseline for:
-#     1) point-process intensity: validation NLL/event
-#     2) conditional 87-way mark classifier: validation multiclass log loss
+#     1) point-process intensity: 15-city macro geographic OOF NLL/event
+#     2) conditional mark classifier: macro geographic OOF log loss
 #
 # Protocol:
 #   Stage 1 (explore): broad TPE search on deterministic fractions.
 #   Stage 2 (refine):  full training data, larger validation fraction.
-#   Stage 3 (tournament): top K configs, full train + full validation,
-#                         repeated over multiple seeds.
+#   Every candidate/seed runs five fixed folds sequentially on its assigned GPU.
+#   Stage 3 (tournament): top K configs, full fractions, multiple seeds.
 #
 # Parallel execution:
 #   One OS process per GPU. Each process sees exactly one GPU through
@@ -60,7 +71,7 @@ class Stage:
     early_stopping_rounds: int
 
 
-INTENSITY_METRIC = "sample_validation_nll_per_event"
+INTENSITY_METRIC = "geocv_macro_nll_per_event"
 MARK_METRIC = "sample_validation_log_loss"
 
 
@@ -156,12 +167,11 @@ def parse_args() -> argparse.Namespace:
         help="Abort one worker after this many consecutive failed trials.",
     )
     parser.add_argument(
-        "--hpo-model-table-root",
+        "--hpo-snapshot-source",
         default=None,
         help=(
-            "Optional model-table override used only by HPO workers. Stage the Delta "
-            "table to local NVMe and pass its local path to avoid 8 workers repeatedly "
-            "scanning GCS. The exported final YAML keeps the original table root."
+            "Optional immutable Parquet snapshot used only by HPO workers. Pass a "
+            "canonical snapshot URI or a local staged root with manifest.json."
         ),
     )
 
@@ -178,8 +188,7 @@ def parse_args() -> argparse.Namespace:
         "--disable-stage-cache",
         action="store_true",
         help=(
-            "Disable the sampled-data cache and use the model trainer's normal "
-            "Delta scan/sampling path for every trial."
+            "Disable sampled-data caching and use partition-pruned Parquet scans."
         ),
     )
     parser.add_argument(
@@ -419,7 +428,7 @@ def build_space(config: dict[str, Any], family: str) -> dict[str, Any]:
 
     max_bin_choices = categorical_choices_with_base(
         int(arch["max_bin"]),
-        (128, 256, 512, 1024),
+        (128, 256, 512),
     )
     cat_onehot_choices = categorical_choices_with_base(
         int(arch["max_cat_to_onehot"]),
@@ -427,9 +436,7 @@ def build_space(config: dict[str, Any], family: str) -> dict[str, Any]:
     )
 
     if family == "intensity":
-        # D18 won the depth sweep at the upper boundary, so deliberately search
-        # beyond it. Cap 24 to avoid absurd exponential tree growth.
-        depth_low, depth_high = 8, 24
+        depth_low, depth_high = 4, 12
     else:
         # D12 won while D14 regressed, but joint regularization can shift the
         # optimum, so search a broad neighborhood.
@@ -466,18 +473,18 @@ def suggest_params(
         ),
         "learning_rate": trial.suggest_float(
             "learning_rate",
-            0.003,
-            0.20,
+            0.005,
+            0.15,
             log=True,
         ),
         "subsample": trial.suggest_float(
             "subsample",
-            0.45,
+            0.55,
             1.0,
         ),
         "colsample_bytree": trial.suggest_float(
             "colsample_bytree",
-            0.40,
+            0.50,
             1.0,
         ),
         "min_child_weight": trial.suggest_float(
@@ -488,7 +495,7 @@ def suggest_params(
         ),
         "reg_lambda": trial.suggest_float(
             "reg_lambda",
-            1e-6,
+            1e-4,
             1e4,
             log=True,
         ),
@@ -517,14 +524,13 @@ def suggest_params(
             0.0,
             12.0,
         )
-    else:
-        # Include exact gamma=0 as a real branch; otherwise explore log-scale.
-        use_gamma = trial.suggest_categorical("use_gamma", [False, True])
-        params["gamma"] = (
-            trial.suggest_float("gamma_nonzero", 1e-8, 100.0, log=True)
-            if use_gamma
-            else 0.0
-        )
+    # Include exact gamma=0 as a real branch; otherwise explore log-scale.
+    use_gamma = trial.suggest_categorical("use_gamma", [False, True])
+    params["gamma"] = (
+        trial.suggest_float("gamma_nonzero", 1e-6, 100.0, log=True)
+        if use_gamma
+        else 0.0
+    )
 
     return params
 
@@ -565,11 +571,10 @@ def params_for_enqueue(
 
     if family == "intensity":
         p["max_delta_step"] = float(opt["max_delta_step"])
-    else:
-        gamma = float(opt.get("gamma", 0.0))
-        p["use_gamma"] = gamma > 0.0
-        if gamma > 0.0:
-            p["gamma_nonzero"] = gamma
+    gamma = float(opt.get("gamma", 0.0))
+    p["use_gamma"] = gamma > 0.0
+    if gamma > 0.0:
+        p["gamma_nonzero"] = gamma
 
     return p
 
@@ -590,10 +595,9 @@ def normalized_params_from_trial(
         else 0.0
     )
 
-    if family == "mark":
-        use_gamma = bool(out.pop("use_gamma", False))
-        gamma_nonzero = out.pop("gamma_nonzero", None)
-        out["gamma"] = float(gamma_nonzero) if use_gamma else 0.0
+    use_gamma = bool(out.pop("use_gamma", False))
+    gamma_nonzero = out.pop("gamma_nonzero", None)
+    out["gamma"] = float(gamma_nonzero) if use_gamma else 0.0
 
     return out
 
@@ -620,8 +624,7 @@ def apply_params(
 
     if family == "intensity":
         opt["max_delta_step"] = float(params["max_delta_step"])
-    else:
-        opt["gamma"] = float(params["gamma"])
+    opt["gamma"] = float(params["gamma"])
 
 
 def configure_stage(
@@ -630,7 +633,7 @@ def configure_stage(
     stage: Stage,
     device: str,
     seed: int | None = None,
-    model_table_root: str | None = None,
+    snapshot_source: str | None = None,
 ) -> None:
     config["architecture"]["device"] = device
     config["data"]["train_fraction"] = float(stage.train_fraction)
@@ -640,20 +643,76 @@ def configure_stage(
 
     # Silence per-round logs during hundreds of trials.
     config["training"]["verbose_eval"] = False
+    # HPO scores the geographic frame only; avoid materializing the optional
+    # in-domain diagnostic in every trial.
+    config.setdefault("validation", {})["report_in_domain_validation"] = False
+    # HPO fits are 12-city fold models. The exported winner flips this back to
+    # the one-model, all-15-city final production strategy.
+    config.setdefault("final_training", {})["use_all_cities"] = False
+    config["training"]["fixed_num_boost_round"] = False
 
     if seed is not None:
         config["data"]["seed"] = int(seed)
 
-    if model_table_root is not None:
-        config["data"]["model_table_root"] = str(model_table_root)
+    if snapshot_source is not None:
+        if str(snapshot_source).startswith("s3://"):
+            config["data"]["final_model_snapshot_uri"] = str(snapshot_source)
+            config["data"].pop("local_snapshot_root", None)
+        else:
+            config["data"]["local_snapshot_root"] = str(snapshot_source)
+
+
+def build_final_production_config(
+    *,
+    base_config: dict[str, Any],
+    best_params: dict[str, Any],
+    family: str,
+    device: str,
+    seed: int,
+    winning_rounds: int,
+    hpo_metadata: dict[str, Any],
+    model_name_override: str | None = None,
+) -> dict[str, Any]:
+    """Convert a geographic-CV winner into one all-city production fit."""
+
+    final_cfg = copy.deepcopy(base_config)
+    apply_params(final_cfg, best_params, family=family)
+    final_cfg.pop("hpo_runtime", None)
+    final_cfg["data"].pop("local_snapshot_root", None)
+    final_cfg["data"].pop("snapshot_override_uri", None)
+    final_cfg["data"].update(
+        {"train_fraction": 1.0, "validation_fraction": 1.0, "seed": int(seed)}
+    )
+    final_cfg["architecture"]["device"] = device
+    final_cfg.setdefault("validation", {}).pop("geographic_holdout_cities", None)
+    final_cfg["validation"].update(
+        {
+            "final_in_domain_validation": True,
+            "report_global": True,
+            "report_macro_city": True,
+            "report_per_city": True,
+            "report_in_domain_validation": False,
+        }
+    )
+    final_cfg["final_training"] = {
+        "use_all_cities": True,
+        "train_fraction": 1.0,
+    }
+    final_cfg["training"]["num_boost_round"] = int(winning_rounds)
+    final_cfg["training"]["fixed_num_boost_round"] = True
+    final_cfg["model"]["name"] = final_model_name(
+        str(base_config["model"]["name"]), model_name_override
+    )
+    final_cfg["hpo"] = copy.deepcopy(hpo_metadata)
+    return final_cfg
 
 
 
 # ---------------------------------------------------------------------------
 # Stage data cache
 # ---------------------------------------------------------------------------
-# The model trainers were written for standalone runs and therefore scan/filter
-# the Delta table and convert Polars -> Pandas/NumPy inside every train() call.
+# Standalone trainers scan/filter immutable partitioned Parquet and convert
+# Polars -> Pandas/NumPy inside every train() call.
 # HPO reuses the same deterministic sample for many trials, so doing that work
 # hundreds of times wastes CPU/I/O and leaves fast GPUs idle.
 #
@@ -675,30 +734,23 @@ def _canonical_sampling_seed(fraction: float, seed: int) -> int:
     return 0 if abs(float(fraction) - 1.0) <= 1e-12 else int(seed)
 
 
-def _sample_lookup_key(*, split: str, fraction: float, seed: int) -> str:
+def _sample_lookup_key(
+    *, fold_name: str, split: str, fraction: float, seed: int
+) -> str:
     canonical_seed = _canonical_sampling_seed(fraction, seed)
-    return f"{split}|{_fraction_token(fraction)}|{canonical_seed}"
+    return f"{fold_name}|{split}|{_fraction_token(fraction)}|{canonical_seed}"
 
 
 def _hpo_table_root(base_config: dict[str, Any], override: str | None) -> str:
     if override is not None:
         return str(override)
-    return str(base_config["data"]["model_table_root"])
+    return str(base_config["data"]["final_model_snapshot_uri"])
 
 
-def _scan_delta_for_cache(model_table_root: str):
-    # Import Polars lazily so the coordinator remains lightweight until a cache
-    # actually has to be built.
-    import polars as pl
-
-    if str(model_table_root).startswith("gs://"):
-        return pl.scan_delta(
-            model_table_root,
-            credential_provider=pl.CredentialProviderGCP(),
-        )
-
-    # Local/NVMe Delta tables must not request GCP ADC.
-    return pl.scan_delta(model_table_root)
+def _resolve_table_for_cache(snapshot_source: str):
+    if str(snapshot_source).startswith("s3://"):
+        return resolve_model_table(snapshot_override_uri=snapshot_source)
+    return resolve_model_table(local_root=snapshot_source)
 
 
 def _mark_target_column(module, config: dict[str, Any]) -> str:
@@ -712,29 +764,31 @@ def _cache_identity(
     module_name: str,
     base_config: dict[str, Any],
     family: str,
-    model_table_root: str,
+    snapshot_source: str,
     split: str,
+    fold_name: str,
+    held_out_cities: list[str],
     fraction: float,
     seed: int,
     feature_columns: list[str],
     target_column: str | None,
 ) -> str:
-    payload = {
-        "version": 2,
-        "module": module_name,
-        "family": family,
-        "model_table_root": str(model_table_root),
-        "split": str(split),
-        "fraction": float(fraction),
-        "sampling_seed": _canonical_sampling_seed(fraction, seed),
-        "feature_columns": list(feature_columns),
-        "target_column": target_column,
-        # Feature config changes can alter resolved feature semantics even if a
-        # future resolver happens to emit columns in the same order.
-        "features_config": base_config.get("features", {}),
-    }
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+    data = base_config["data"]
+    feature_hash = str(base_config["features"]["feature_contract_hash"])
+    return immutable_cache_identity(
+        cache_version="4",
+        snapshot_id=str(data["final_model_snapshot_id"]),
+        schema_version=str(data["final_model_schema_version"]),
+        feature_contract_hash=feature_hash,
+        model_family=family,
+        model_module=module_name,
+        split=str(split),
+        fold_name=fold_name,
+        holdout_cities=held_out_cities,
+        fraction=float(fraction),
+        seed=_canonical_sampling_seed(fraction, seed),
+        target_column=target_column,
+    )[:20]
 
 
 def _atomic_write_text(path: Path, value: str) -> None:
@@ -750,14 +804,27 @@ def _build_sample_cache_entry(
     module_name: str,
     base_config: dict[str, Any],
     family: str,
-    model_table_root: str,
+    snapshot_source: str,
     cache_dir: Path,
     split: str,
+    fold_name: str,
+    held_out_cities: list[str],
     fraction: float,
     seed: int,
     rebuild: bool,
 ) -> tuple[str, str]:
-    feature_columns, _ = module._resolve_feature_columns(base_config)
+    table_ref = _resolve_table_for_cache(snapshot_source)
+    table = table_ref.scan_split(split)
+    train_table, validation_table, _ = geographic_frames(
+        train=table,
+        validation=table,
+        holdout_cities=held_out_cities,
+        report_in_domain=False,
+    )
+    table = train_table if split == "train" else validation_table
+    feature_columns, _ = module._resolve_feature_columns(
+        base_config, available_columns=table.collect_schema().names()
+    )
     target_column = _mark_target_column(module, base_config) if family == "mark" else None
     canonical_seed = _canonical_sampling_seed(fraction, seed)
 
@@ -765,8 +832,10 @@ def _build_sample_cache_entry(
         module_name=module_name,
         base_config=base_config,
         family=family,
-        model_table_root=model_table_root,
+        snapshot_source=snapshot_source,
         split=split,
+        fold_name=fold_name,
+        held_out_cities=held_out_cities,
         fraction=fraction,
         seed=canonical_seed,
         feature_columns=feature_columns,
@@ -774,24 +843,31 @@ def _build_sample_cache_entry(
     )
 
     safe_split = sanitize_name(split)
-    stem = f"{family}_{safe_split}_f{_fraction_token(fraction)}_{identity}"
+    stem = (
+        f"{family}_{sanitize_name(fold_name)}_{safe_split}_"
+        f"f{_fraction_token(fraction)}_{identity}"
+    )
     ipc_path = (cache_dir / f"{stem}.arrow").resolve()
     manifest_path = ipc_path.with_suffix(".json")
-    lookup_key = _sample_lookup_key(split=split, fraction=fraction, seed=canonical_seed)
+    lookup_key = _sample_lookup_key(
+        fold_name=fold_name,
+        split=split,
+        fraction=fraction,
+        seed=canonical_seed,
+    )
 
     if not rebuild and ipc_path.exists() and manifest_path.exists():
         print(
-            f"[cache] reuse {split} fraction={fraction:g}: {ipc_path} "
+            f"[cache] reuse {fold_name}/{split} fraction={fraction:g}: {ipc_path} "
             f"({ipc_path.stat().st_size / (1024 ** 3):.2f} GiB)"
         )
         return lookup_key, str(ipc_path)
 
     print(
-        f"[cache] BUILD {family} split={split} fraction={fraction:g} "
-        f"seed={canonical_seed} from {model_table_root}"
+        f"[cache] BUILD {family} fold={fold_name} split={split} fraction={fraction:g} "
+        f"seed={canonical_seed} from {snapshot_source}"
     )
 
-    table = _scan_delta_for_cache(model_table_root)
     if family == "intensity":
         sample_fn = getattr(module, "_deterministic_split_sample")
         frame = sample_fn(
@@ -822,11 +898,15 @@ def _build_sample_cache_entry(
     temp_path.replace(ipc_path)
 
     manifest = {
-        "version": 2,
+        "version": 4,
         "family": family,
         "module": module_name,
-        "model_table_root": model_table_root,
+        "final_model_snapshot_id": table_ref.snapshot_id,
+        "final_model_schema_version": table_ref.schema_version,
+        "feature_contract_hash": base_config["features"]["feature_contract_hash"],
         "split": split,
+        "fold_name": fold_name,
+        "held_out_cities": sorted(held_out_cities),
         "fraction": float(fraction),
         "sampling_seed": int(canonical_seed),
         "rows": int(frame.height),
@@ -856,7 +936,7 @@ def prepare_stage_sample_cache(
     base_config: dict[str, Any],
     family: str,
     stage: Stage,
-    model_table_root: str,
+    snapshot_source: str,
     cache_dir: Path,
     rebuild: bool,
 ) -> dict[str, str]:
@@ -864,51 +944,30 @@ def prepare_stage_sample_cache(
     data_cfg = base_config["data"]
     base_seed = int(data_cfg["seed"])
 
-    specs = [
-        (
-            str(data_cfg["train_split"]),
-            float(stage.train_fraction),
-        ),
-        (
-            str(data_cfg["validation_split"]),
-            float(stage.validation_fraction),
-        ),
-    ]
-
     entries: dict[str, str] = {}
-    for split, fraction in specs:
-        key, path = _build_sample_cache_entry(
-            module=module,
-            module_name=module_name,
-            base_config=base_config,
-            family=family,
-            model_table_root=model_table_root,
-            cache_dir=cache_dir,
-            split=split,
-            fraction=fraction,
-            seed=base_seed,
-            rebuild=rebuild,
-        )
-        entries[key] = path
+    for fold_name, held_out_cities in resolve_geographic_folds(base_config).items():
+        specs = [
+            (str(data_cfg["train_split"]), float(stage.train_fraction)),
+            (str(data_cfg["validation_split"]), float(stage.validation_fraction)),
+        ]
+        for split, fraction in specs:
+            key, path = _build_sample_cache_entry(
+                module=module,
+                module_name=module_name,
+                base_config=base_config,
+                family=family,
+                snapshot_source=snapshot_source,
+                cache_dir=cache_dir,
+                split=split,
+                fold_name=fold_name,
+                held_out_cities=list(held_out_cities),
+                fraction=fraction,
+                seed=base_seed,
+                rebuild=rebuild,
+            )
+            entries[key] = path
 
     return entries
-
-
-class _NoDeltaScanPolarsProxy:
-    """Forward Polars APIs except source access already replaced by stage cache."""
-
-    def __init__(self, real_polars):
-        self._real = real_polars
-
-    def __getattr__(self, name: str):
-        return getattr(self._real, name)
-
-    def CredentialProviderGCP(self, *args, **kwargs):  # noqa: N802
-        return None
-
-    def scan_delta(self, *args, **kwargs):
-        # The patched deterministic sample helper ignores the table argument.
-        return None
 
 
 def _memo_token(value: Any) -> Any:
@@ -944,10 +1003,15 @@ def install_worker_stage_cache(
     loaded_frames: dict[str, Any] = {}
 
     def cached_sample(*args, **kwargs):
+        fold_name = str(getattr(module, "_hpo_active_fold_name", ""))
+        if not fold_name:
+            raise RuntimeError("HPO cache access requires an active geographic fold")
         split = str(kwargs["split"])
         fraction = float(kwargs["fraction"])
         seed = int(kwargs["seed"])
-        key = _sample_lookup_key(split=split, fraction=fraction, seed=seed)
+        key = _sample_lookup_key(
+            fold_name=fold_name, split=split, fraction=fraction, seed=seed
+        )
         path = sample_cache_entries.get(key)
         if path is None:
             # Defensive fallback for a future trainer/sample shape not prepared
@@ -965,12 +1029,23 @@ def install_worker_stage_cache(
 
     setattr(module, sample_fn_name, cached_sample)
 
-    # train() still constructs a credential provider and a LazyFrame before it
-    # calls the deterministic sampling helper. Replace only those source APIs in
-    # this worker process: after coordinator cache preparation, train() should
-    # not touch Delta/GCS/local source data at all.
-    if hasattr(module, "pl"):
-        module.pl = _NoDeltaScanPolarsProxy(real_pl)
+    class CachedModelTable:
+        lineage: dict[str, object] = {}
+
+        def scan_split(self, split: str):
+            fold_name = str(getattr(module, "_hpo_active_fold_name", ""))
+            candidates = [
+                path
+                for key, path in sample_cache_entries.items()
+                if key.startswith(f"{fold_name}|{split}|")
+            ]
+            if not candidates:
+                raise RuntimeError(f"No prepared HPO cache for split={split}")
+            return real_pl.scan_ipc(sorted(candidates)[0])
+
+    # Schema checks remain active, but cached workers cannot fall through to a
+    # remote model-table rescan.
+    module.resolve_model_table = lambda **_: CachedModelTable()
 
     if not cache_prepared_xy:
         return
@@ -1120,8 +1195,8 @@ def run_train_once(
     run_label: str,
     seed: int | None,
     keep_artifacts: bool,
-    model_table_root: str | None = None,
-) -> tuple[float, dict[str, float], int]:
+    snapshot_source: str | None = None,
+) -> tuple[float, dict[str, Any], int]:
     cfg = copy.deepcopy(base_config)
     apply_params(cfg, params, family=family)
     configure_stage(
@@ -1129,44 +1204,123 @@ def run_train_once(
         stage=stage,
         device=device,
         seed=seed,
-        model_table_root=model_table_root,
+        snapshot_source=snapshot_source,
     )
 
-    cfg["model"]["name"] = f"hpo_{sanitize_name(run_label)}"
+    folds = resolve_geographic_folds(cfg)
+    fold_reports: dict[str, dict[str, Any]] = {}
+    fold_best_iterations: list[int] = []
+    mark_city_rows: list[dict[str, Any]] = []
 
-    run_id = uuid.uuid4().hex
-    cfg_hash = stable_config_hash(cfg)
-
-    result: dict[str, Any] | None = None
-    try:
-        result = module.train(
-            cfg,
-            run_id=run_id,
-            config_hash=cfg_hash,
+    for fold_name, held_out_cities in folds.items():
+        fold_cfg = copy.deepcopy(cfg)
+        fold_cfg.setdefault("validation", {})["geographic_holdout_cities"] = list(
+            held_out_cities
         )
+        fold_cfg["validation"]["report_in_domain_validation"] = False
+        fold_cfg["model"]["name"] = (
+            f"hpo_{sanitize_name(run_label)}__fold_{sanitize_name(fold_name)}"
+        )
+        run_id = uuid.uuid4().hex
+        cfg_hash = stable_config_hash(fold_cfg)
+        result: dict[str, Any] | None = None
+        setattr(module, "_hpo_active_fold_name", fold_name)
+        try:
+            result = module.train(fold_cfg, run_id=run_id, config_hash=cfg_hash)
+            report = result.get("geographic_validation")
+            if not isinstance(report, dict):
+                raise RuntimeError("Trainer did not return structured geographic metrics")
+            actual_cities = {
+                str(row["source_city"]) for row in report.get("per_city", [])
+            }
+            if actual_cities != set(held_out_cities):
+                raise RuntimeError(
+                    f"validation cities={sorted(actual_cities)}; "
+                    f"expected={sorted(held_out_cities)}"
+                )
+            fold_reports[fold_name] = report
+            fold_best_iterations.append(
+                int(float(result["metrics"].get("best_iteration", -1)))
+            )
+            if family == "mark":
+                for raw in report["per_city"]:
+                    row = dict(raw)
+                    row["fold_name"] = fold_name
+                    mark_city_rows.append(row)
+        except Exception as error:
+            raise RuntimeError(
+                f"Geographic CV trial failed in fold {fold_name!r} "
+                f"with held-out cities {list(held_out_cities)}"
+            ) from error
+        finally:
+            if result is not None and not keep_artifacts:
+                cleanup_result_artifacts(result)
+            setattr(module, "_hpo_active_fold_name", "")
+            del result
+            gc.collect()
 
-        metrics = result["metrics"]
-        metric_key = objective_metric(family)
-        score = float(metrics[metric_key])
-
-        if not (score == score and abs(score) != float("inf")):
-            raise ValueError(f"Non-finite objective {metric_key}={score}")
-
-        best_iteration = int(float(metrics.get("best_iteration", -1)))
-
-        compact_metrics: dict[str, float] = {
-            key: float(value)
-            for key, value in metrics.items()
-            if isinstance(value, (int, float))
+    if family == "intensity":
+        structured = aggregate_intensity_oof(fold_reports)
+        compact_metrics: dict[str, Any] = {
+            key: float(value) for key, value in structured["metrics"].items()
+        }
+        for fold in structured["folds"]:
+            fold_name = str(fold["fold_name"])
+            for key in (
+                "macro_nll_per_event",
+                "pooled_nll_per_event",
+                "macro_bits_per_event",
+                "expected_observed_ratio",
+                "calibration_error_pct",
+                "validation_city_count",
+                "observed_events",
+                "exposure",
+            ):
+                compact_metrics[f"geocv_fold.{fold_name}.{key}"] = float(fold[key])
+        score = float(compact_metrics["geocv_macro_nll_per_event"])
+    else:
+        if len(mark_city_rows) != 15:
+            raise RuntimeError("Mark geographic CV did not evaluate exactly 15 cities")
+        city_losses = [float(row["log_loss"]) for row in mark_city_rows]
+        if not all(np.isfinite(value) for value in city_losses):
+            raise ValueError("Mark geographic CV contains non-finite city log loss")
+        score = float(sum(city_losses) / len(city_losses))
+        compact_metrics = {
+            "sample_validation_log_loss": score,
+            "geocv_macro_mark_log_loss": score,
+        }
+        structured = {
+            "metrics": compact_metrics,
+            "folds": [
+                {
+                    "fold_name": name,
+                    **report["global"],
+                    **{
+                        f"macro_{key}": value
+                        for key, value in report["macro_city"].items()
+                    },
+                }
+                for name, report in fold_reports.items()
+            ],
+            "cities": mark_city_rows,
         }
 
-        return score, compact_metrics, best_iteration
-
-    finally:
-        if result is not None and not keep_artifacts:
-            cleanup_result_artifacts(result)
-
-        gc.collect()
+    if not np.isfinite(score):
+        raise ValueError(f"Non-finite geographic-CV objective={score}")
+    best_iteration = int(round(float(np.median(fold_best_iterations))))
+    structured["fold_best_iterations"] = fold_best_iterations
+    structured["fold_version"] = CANONICAL_GEOCV_VERSION
+    structured["run_label"] = run_label
+    report_root = Path(
+        cfg.get("hpo_runtime", {}).get(
+            "report_root", Path("hpo") / "geocv_trial_reports"
+        )
+    )
+    report_path = report_root / f"{sanitize_name(run_label)}.json"
+    _atomic_write_json(report_path, structured)
+    compact_metrics["geocv_report_path"] = str(report_path)
+    compact_metrics["best_iteration"] = float(best_iteration)
+    return score, compact_metrics, best_iteration
 
 
 def trial_objective(
@@ -1179,7 +1333,7 @@ def trial_objective(
     device: str,
     study_tag: str,
     keep_artifacts: bool,
-    model_table_root: str | None = None,
+    snapshot_source: str | None = None,
 ):
     def objective(trial: optuna.Trial) -> float:
         params = suggest_params(
@@ -1201,7 +1355,7 @@ def trial_objective(
                 run_label=label,
                 seed=None,
                 keep_artifacts=keep_artifacts,
-                model_table_root=model_table_root,
+                snapshot_source=snapshot_source,
             )
         except Exception:
             trial.set_user_attr("traceback", traceback.format_exc()[-12000:])
@@ -1210,14 +1364,10 @@ def trial_objective(
         trial.set_user_attr("best_iteration", best_iteration)
 
         if family == "intensity":
-            for key in (
-                "sample_validation_expected_observed",
-                "sample_validation_calibration_error_pct",
-                "sample_validation_nll_gain_per_event",
-                "sample_validation_bits_per_event",
-            ):
-                if key in metrics:
-                    trial.set_user_attr(key, metrics[key])
+            for key, value in metrics.items():
+                if key.startswith("geocv_") and key != "geocv_report_path":
+                    trial.set_user_attr(key, value)
+            trial.set_user_attr("geocv_report_path", metrics["geocv_report_path"])
         else:
             for key in (
                 "sample_validation_accuracy",
@@ -1379,7 +1529,7 @@ def _optuna_worker(
     device: str,
     study_tag: str,
     keep_artifacts: bool,
-    model_table_root: str | None,
+    snapshot_source: str | None,
     study_name: str,
     journal_path: str,
     target_complete_trials: int,
@@ -1421,7 +1571,7 @@ def _optuna_worker(
         device=device,
         study_tag=study_tag,
         keep_artifacts=keep_artifacts,
-        model_table_root=model_table_root,
+        snapshot_source=snapshot_source,
     )
 
     consecutive_failures = 0
@@ -1468,7 +1618,7 @@ def run_parallel_study(
     device: str,
     study_tag: str,
     keep_artifacts: bool,
-    model_table_root: str | None,
+    snapshot_source: str | None,
     target_complete_trials: int,
     sampler_seed: int,
     enqueued: Iterable[dict[str, Any]],
@@ -1527,7 +1677,7 @@ def run_parallel_study(
                 "device": device,
                 "study_tag": study_tag,
                 "keep_artifacts": keep_artifacts,
-                "model_table_root": model_table_root,
+                "snapshot_source": snapshot_source,
                 "study_name": name,
                 "journal_path": str(journal_path),
                 "target_complete_trials": target_complete_trials,
@@ -1616,7 +1766,7 @@ def _tournament_worker(
     device: str,
     study_tag: str,
     keep_artifacts: bool,
-    model_table_root: str | None,
+    snapshot_source: str | None,
     sample_cache_entries: dict[str, str] | None,
     cache_prepared_xy: bool,
     task_queue,
@@ -1655,7 +1805,7 @@ def _tournament_worker(
                 run_label=task["run_label"],
                 seed=int(task["seed"]),
                 keep_artifacts=keep_artifacts,
-                model_table_root=model_table_root,
+                snapshot_source=snapshot_source,
             )
             result_queue.put(
                 {
@@ -1692,6 +1842,36 @@ def _atomic_write_json(path: Path, value: Any) -> None:
     temp.replace(path)
 
 
+def aggregate_tournament_geocv_metrics(
+    seed_records: list[dict[str, Any]],
+) -> dict[str, float]:
+    """Equal-seed mean for every numeric geographic-CV tournament metric."""
+
+    if not seed_records:
+        raise ValueError("Tournament metric aggregation requires at least one seed")
+    common_keys: set[str] | None = None
+    for record in seed_records:
+        metrics = record.get("metrics", {})
+        numeric_keys = {
+            str(key)
+            for key, value in metrics.items()
+            if str(key).startswith("geocv_")
+            and str(key) != "geocv_report_path"
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+        }
+        common_keys = numeric_keys if common_keys is None else common_keys & numeric_keys
+    if not common_keys:
+        raise ValueError("Tournament seeds share no numeric geographic-CV metrics")
+    aggregated = {
+        key: float(np.mean([float(record["metrics"][key]) for record in seed_records]))
+        for key in sorted(common_keys)
+    }
+    if not all(np.isfinite(value) for value in aggregated.values()):
+        raise ValueError("Tournament geographic-CV aggregate contains non-finite values")
+    return aggregated
+
+
 def run_parallel_tournament(
     *,
     base_config: dict[str, Any],
@@ -1702,7 +1882,7 @@ def run_parallel_tournament(
     device: str,
     study_tag: str,
     keep_artifacts: bool,
-    model_table_root: str | None,
+    snapshot_source: str | None,
     gpus: list[str],
     worker_count: int,
     threads_per_worker: int,
@@ -1775,7 +1955,7 @@ def run_parallel_tournament(
                     "device": device,
                     "study_tag": study_tag,
                     "keep_artifacts": keep_artifacts,
-                    "model_table_root": model_table_root,
+                    "snapshot_source": snapshot_source,
                     "sample_cache_entries": sample_cache_entries,
                     "cache_prepared_xy": cache_prepared_xy,
                     "task_queue": task_queue,
@@ -1850,6 +2030,7 @@ def run_parallel_tournament(
                 "params": params,
                 "mean_score": mean_score,
                 "std_score": variance ** 0.5,
+                "mean_geocv_metrics": aggregate_tournament_geocv_metrics(seed_records),
                 "seed_results": [
                     {
                         "seed": int(item["seed"]),
@@ -1894,7 +2075,35 @@ def main() -> None:
     family: str = args.family
     seeds = parse_seeds(args.tournament_seeds)
     gpus = parse_gpus(args.gpus)
-    study_tag = sanitize_name(args.study_name)
+
+    if args.hpo_snapshot_source:
+        if str(args.hpo_snapshot_source).startswith("s3://"):
+            table_ref = resolve_model_table(
+                snapshot_override_uri=str(args.hpo_snapshot_source)
+            )
+        else:
+            table_ref = resolve_model_table(local_root=str(args.hpo_snapshot_source))
+    else:
+        data_cfg = base_config.get("data", {})
+        table_ref = resolve_model_table(
+            snapshot_override_uri=data_cfg.get("snapshot_override_uri"),
+            local_root=data_cfg.get("local_snapshot_root"),
+        )
+    base_config = enrich_config_with_lineage(base_config, table_ref)
+    contract = resolve_feature_contract(
+        base_config["features"],
+        available_columns=table_ref.scan_split(
+            str(base_config["data"].get("train_split", "train"))
+        ).collect_schema().names(),
+    )
+    base_config["features"]["resolved_numeric"] = list(contract.numeric)
+    base_config["features"]["resolved_categorical"] = list(contract.categorical)
+    base_config["features"]["feature_contract_hash"] = contract.contract_hash
+    frozen_folds = resolve_geographic_folds(base_config)
+    study_tag = sanitize_name(
+        f"{args.study_name}_{CANONICAL_GEOCV_VERSION}_transfer_v2_"
+        f"{table_ref.snapshot_id[:10]}_{contract.contract_hash[:10]}"
+    )
 
     explore_workers = resolved_worker_count(args.explore_workers, gpus)
     refine_workers = resolved_worker_count(args.refine_workers, gpus)
@@ -1914,6 +2123,9 @@ def main() -> None:
 
     root = args.output_dir / study_tag
     root.mkdir(parents=True, exist_ok=True)
+    base_config["hpo_runtime"] = {
+        "report_root": str((root / "geocv_trial_reports").resolve())
+    }
 
     stage_cache_dir = (
         args.stage_cache_dir
@@ -1921,7 +2133,7 @@ def main() -> None:
         else root / "stage_cache"
     )
     stage_cache_dir = stage_cache_dir.resolve()
-    hpo_table_root = _hpo_table_root(base_config, args.hpo_model_table_root)
+    hpo_table_root = _hpo_table_root(base_config, args.hpo_snapshot_source)
     cache_prepared_xy = not args.no_prepared_xy_cache
 
     explore_stage = Stage(
@@ -1951,6 +2163,7 @@ def main() -> None:
     print(f"Base model:          {base_config['model']['name']}")
     print(f"Training module:     {module_name}")
     print(f"Objective:           {objective_metric(family)}")
+    print(f"Geographic CV:       {CANONICAL_GEOCV_VERSION} ({len(frozen_folds)} folds)")
     print(f"Device:              {args.device}")
     print(f"Physical GPUs:       {gpus}")
     print(f"Explore workers:     {explore_workers}")
@@ -1958,7 +2171,7 @@ def main() -> None:
     print(f"Tournament workers:  {tournament_workers}")
     print(f"Threads/worker:      {'auto' if args.threads_per_worker <= 0 else args.threads_per_worker}")
     print(f"Study output:        {root.resolve()}")
-    print(f"HPO table override:  {args.hpo_model_table_root or 'none (base config)'}")
+    print(f"HPO table override:  {args.hpo_snapshot_source or 'none (base config)'}")
     print(f"HPO source table:    {hpo_table_root}")
     print(f"Stage cache:         {'disabled' if args.disable_stage_cache else stage_cache_dir}")
     print(f"Prepared XY cache:   {cache_prepared_xy and not args.disable_stage_cache}")
@@ -1993,7 +2206,7 @@ def main() -> None:
             base_config=base_config,
             family=family,
             stage=explore_stage,
-            model_table_root=hpo_table_root,
+            snapshot_source=hpo_table_root,
             cache_dir=stage_cache_dir,
             rebuild=args.rebuild_stage_cache,
         )
@@ -2009,7 +2222,7 @@ def main() -> None:
         device=args.device,
         study_tag=study_tag,
         keep_artifacts=args.keep_trial_artifacts,
-        model_table_root=args.hpo_model_table_root,
+        snapshot_source=args.hpo_snapshot_source,
         target_complete_trials=args.explore_trials,
         sampler_seed=42,
         enqueued=initial_enqueue,
@@ -2048,7 +2261,7 @@ def main() -> None:
             base_config=base_config,
             family=family,
             stage=refine_stage,
-            model_table_root=hpo_table_root,
+            snapshot_source=hpo_table_root,
             cache_dir=stage_cache_dir,
             rebuild=args.rebuild_stage_cache,
         )
@@ -2064,7 +2277,7 @@ def main() -> None:
         device=args.device,
         study_tag=study_tag,
         keep_artifacts=args.keep_trial_artifacts,
-        model_table_root=args.hpo_model_table_root,
+        snapshot_source=args.hpo_snapshot_source,
         target_complete_trials=args.refine_trials,
         sampler_seed=1337,
         enqueued=top_explore,
@@ -2103,7 +2316,7 @@ def main() -> None:
             base_config=base_config,
             family=family,
             stage=tournament_stage,
-            model_table_root=hpo_table_root,
+            snapshot_source=hpo_table_root,
             cache_dir=stage_cache_dir,
             rebuild=args.rebuild_stage_cache,
         )
@@ -2118,7 +2331,7 @@ def main() -> None:
         device=args.device,
         study_tag=study_tag,
         keep_artifacts=args.keep_trial_artifacts,
-        model_table_root=args.hpo_model_table_root,
+        snapshot_source=args.hpo_snapshot_source,
         gpus=gpus,
         worker_count=tournament_workers,
         threads_per_worker=args.threads_per_worker,
@@ -2131,28 +2344,42 @@ def main() -> None:
 
     best = tournament[0]
     best_params = best["params"]
-
-    # Export the final official config. Crucially, do NOT preserve an HPO-only
-    # local model-table override: the canonical base config path is restored.
-    final_cfg = copy.deepcopy(base_config)
-    apply_params(final_cfg, best_params, family=family)
-    configure_stage(
-        final_cfg,
-        stage=tournament_stage,
-        device=args.device,
-        seed=seeds[0],
-        model_table_root=None,
+    matching_refine_trials = [
+        trial
+        for trial in refine_complete
+        if normalized_params_from_trial(trial.params, family=family) == best_params
+    ]
+    winning_refine_trial_number = (
+        int(matching_refine_trials[0].number) if matching_refine_trials else None
+    )
+    winning_rounds = max(
+        1,
+        int(
+            round(
+                float(
+                    np.median(
+                        [
+                            int(seed_result["best_iteration"]) + 1
+                            for seed_result in best["seed_results"]
+                        ]
+                    )
+                )
+            )
+        ),
     )
 
-    final_cfg["model"]["name"] = final_model_name(
-        str(base_config["model"]["name"]),
-        args.final_model_name,
-    )
-
-    final_cfg["hpo"] = {
+    hpo_metadata = {
         "study_name": args.study_name,
         "family": family,
         "selection_metric": objective_metric(family),
+        "fold_version": CANONICAL_GEOCV_VERSION,
+        "fold_count": len(frozen_folds),
+        "folds": {name: list(cities) for name, cities in frozen_folds.items()},
+        "winning_refine_study": f"{study_tag}__refine",
+        "winning_refine_trial_number": winning_refine_trial_number,
+        "winning_tournament_rank": int(best["rank"]),
+        "winning_num_boost_round": winning_rounds,
+        "geographic_oof_validation": best,
         "tournament_mean_score": best["mean_score"],
         "tournament_std_score": best["std_score"],
         "tournament_seeds": seeds,
@@ -2163,12 +2390,24 @@ def main() -> None:
         "refine_workers": refine_workers,
         "tournament_workers": tournament_workers,
         "optuna_storage": "JournalStorage/JournalFileBackend",
-        "hpo_model_table_root": args.hpo_model_table_root,
+        "hpo_snapshot_source": args.hpo_snapshot_source,
         "stage_cache_enabled": not args.disable_stage_cache,
         "stage_cache_dir": str(stage_cache_dir) if not args.disable_stage_cache else None,
         "prepared_xy_cache": cache_prepared_xy and not args.disable_stage_cache,
         "test_split_used": False,
     }
+    # Export a directly runnable one-model/all-city fit. The local HPO cache
+    # source and all fold exclusions are deliberately absent.
+    final_cfg = build_final_production_config(
+        base_config=base_config,
+        best_params=best_params,
+        family=family,
+        device=args.device,
+        seed=seeds[0],
+        winning_rounds=winning_rounds,
+        hpo_metadata=hpo_metadata,
+        model_name_override=args.final_model_name,
+    )
 
     best_yaml = root / "best_config.yaml"
     tournament_json = root / "tournament_results.json"
@@ -2190,6 +2429,10 @@ def main() -> None:
         "tournament_best_mean": float(best["mean_score"]),
         "tournament_best_std": float(best["std_score"]),
         "best_params": best_params,
+        "winning_refine_trial_number": winning_refine_trial_number,
+        "winning_num_boost_round": winning_rounds,
+        "fold_version": CANONICAL_GEOCV_VERSION,
+        "folds": {name: list(cities) for name, cities in frozen_folds.items()},
         "best_config": str(best_yaml),
         "gpus": gpus,
         "stage_cache_enabled": not args.disable_stage_cache,
@@ -2213,11 +2456,11 @@ def main() -> None:
     print(
         "\nNext: run the exported YAML once through the normal "
         "machine_learning.experiments.orchestrator to create the official "
-        "MLflow baseline run, then run full validation and finally the frozen test."
+        "all-city production model and its in-domain temporal validation. "
+        "The test split remains sealed; any future test evaluation needs a "
+        "distinct explicit entrypoint."
     )
 
 
 if __name__ == "__main__":
     main()
-
-    

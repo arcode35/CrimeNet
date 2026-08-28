@@ -9,6 +9,8 @@ import torch
 import yaml
 from torch.utils.data import DataLoader
 
+from machine_learning.data.model_table import resolve_model_table
+
 from machine_learning.models.crimenet_omega.data import (
     Omega0Dataset,
     fit_preprocessor,
@@ -102,19 +104,12 @@ def _validate_cross_config(
     training_cfg = cfg["training"]
 
     splits = data_cfg["splits"]
-    split_values = {
-        str(splits["train"]),
-        str(splits["validation"]),
-        str(splits["test"]),
-    }
-    if len(split_values) != 3:
+    if "test" in splits:
+        raise ValueError("Omega training config must not expose the sealed test split")
+    split_values = {str(splits["train"]), str(splits["validation"])}
+    if len(split_values) != 2:
         raise ValueError(
-            "train, validation, and test split names must be distinct."
-        )
-
-    if bool(data_cfg.get("allow_test_access", False)):
-        raise ValueError(
-            "Omega-0 training requires data.allow_test_access=false."
+            "train and validation split names must be distinct."
         )
 
     mark_target = str(model_cfg["mark"]["target"])
@@ -359,7 +354,11 @@ def main() -> None:
     numeric_features = list(features_cfg["numeric"])
     columns_cfg = dict(data_cfg["columns"])
 
-    table_root = str(data_cfg["model_table_root"])
+    snapshot_source = str(data_cfg["snapshot_source"])
+    if snapshot_source == "current_final_model_snapshot":
+        # Freeze the moving pointer once; downstream loaders receive only the
+        # exact immutable URI for the remainder of this run.
+        snapshot_source = resolve_model_table().snapshot_uri
     train_split = str(data_cfg["splits"]["train"])
     validation_split = str(data_cfg["splits"]["validation"])
 
@@ -428,7 +427,7 @@ def main() -> None:
         f"Autocast dtype: "
         f"{autocast_dtype if autocast_dtype else 'float32'}"
     )
-    print(f"Model table: {table_root}")
+    print(f"Model table: {snapshot_source}")
     print(f"Train split: {train_split}")
     print(f"Validation split: {validation_split}")
     print(f"Train fraction: {train_fraction:g}")
@@ -441,7 +440,7 @@ def main() -> None:
 
     print("\nLoading full-training categorical vocabulary...")
     vocabulary = load_training_vocabulary(
-        table_root,
+        snapshot_source,
         train_split,
         columns=columns_cfg,
     )
@@ -453,7 +452,7 @@ def main() -> None:
 
     print("\nLoading training sample...")
     train_frame = load_split(
-        table_root,
+        snapshot_source,
         train_split,
         numeric_features=numeric_features,
         columns=columns_cfg,

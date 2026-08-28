@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 import mlflow
+import polars as pl
+import xgboost as xgb
 import yaml
 
 
@@ -146,6 +148,7 @@ def log_mlflow_result(
     model = config[
         "model"
     ]
+    data = config.get("data", {})
 
     mlflow.set_tags(
         {
@@ -172,6 +175,41 @@ def log_mlflow_result(
 
             "run_status":
                 "completed",
+
+            "final_model_snapshot_id": str(
+                config.get("data", {}).get("final_model_snapshot_id", "unknown")
+            ),
+
+            "final_model_schema_version": str(
+                config.get("data", {}).get("final_model_schema_version", "unknown")
+            ),
+
+            "feature_contract_hash": str(
+                config.get("features", {}).get("feature_contract_hash", "unknown")
+            ),
+
+            "test_split_used": "false",
+
+            "training_strategy": (
+                "final_all_city_train"
+                if config.get("final_training", {}).get("use_all_cities", False)
+                else "geographic_holdout_fit"
+            ),
+
+            "geographic_cv_version": str(
+                config.get("geographic_cv", {}).get("version", "disabled")
+            ),
+
+            **{
+                key: str(data.get(key, "unknown"))
+                for key in (
+                    "final_model_snapshot_uri",
+                    "event_spine_snapshot_id",
+                    "integration_snapshot_id",
+                    "environmental_snapshot_id",
+                    "temporal_history_snapshot_id",
+                )
+            },
         }
     )
 
@@ -188,6 +226,10 @@ def log_mlflow_result(
 
             "runtime.platform":
                 platform.platform(),
+
+            "runtime.xgboost": xgb.__version__,
+
+            "runtime.polars": pl.__version__,
         }
     )
 

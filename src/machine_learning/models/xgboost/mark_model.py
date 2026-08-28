@@ -10,11 +10,18 @@ import pandas as pd
 import polars as pl
 import xgboost as xgb
 
-from crimenet_data.assets.model_table.transformations import (
-    CONTEXT_FEATURE_COLUMNS,
-    HISTORY_FEATURE_COLUMNS,
-    LIGHTING_FEATURE_COLUMNS,
+from machine_learning.data.features import resolve_feature_contract
+from machine_learning.data.geography import (
+    deterministic_sample,
+    geographic_frames,
+    validate_holdout_membership,
 )
+from machine_learning.data.geographic_cv import (
+    CANONICAL_MODELING_CITIES,
+    resolve_geographic_folds,
+)
+from machine_learning.data.metrics import geographic_mark_metrics
+from machine_learning.data.model_table import resolve_model_table
 
 
 MACHINE_LEARNING_ROOT = (
@@ -24,16 +31,6 @@ MACHINE_LEARNING_ROOT = (
 )
 
 
-CALENDAR_FEATURE_COLUMNS = [
-    "local_hour",
-    "local_day_of_week",
-    "local_hour_sin",
-    "local_hour_cos",
-    "local_day_of_week_sin",
-    "local_day_of_week_cos",
-]
-
-
 DEFAULT_TARGET_COLUMN = (
     "canonical_subtype_code"
 )
@@ -41,70 +38,16 @@ DEFAULT_TARGET_COLUMN = (
 
 def _resolve_feature_columns(
     config: dict[str, Any],
+    *,
+    available_columns: list[str],
 ) -> tuple[list[str], list[str]]:
-    feature_config = config["features"]
-
-    feature_columns: list[str] = []
-
-    if feature_config.get(
-        "include_source_city",
-        True,
-    ):
-        feature_columns.append(
-            "source_city"
-        )
-
-    if feature_config.get(
-        "include_calendar",
-        True,
-    ):
-        feature_columns.extend(
-            CALENDAR_FEATURE_COLUMNS
-        )
-
-    if feature_config.get(
-        "include_context",
-        True,
-    ):
-        feature_columns.extend(
-            CONTEXT_FEATURE_COLUMNS
-        )
-
-    if feature_config.get(
-        "include_lighting",
-        True,
-    ):
-        feature_columns.extend(
-            LIGHTING_FEATURE_COLUMNS
-        )
-
-    if feature_config.get(
-        "include_history",
-        True,
-    ):
-        feature_columns.extend(
-            HISTORY_FEATURE_COLUMNS
-        )
-
-    feature_columns = list(
-        dict.fromkeys(
-            feature_columns
-        )
+    contract = resolve_feature_contract(
+        config["features"], available_columns=available_columns
     )
-
-    categorical_columns = [
-        column
-        for column in (
-            "source_city",
-            "lighting_condition",
-        )
-        if column in feature_columns
-    ]
-
-    return (
-        feature_columns,
-        categorical_columns,
-    )
+    config["features"]["resolved_numeric"] = list(contract.numeric)
+    config["features"]["resolved_categorical"] = list(contract.categorical)
+    config["features"]["feature_contract_hash"] = contract.contract_hash
+    return list(contract.all_features), list(contract.categorical)
 
 
 def _deterministic_observed_sample(
@@ -126,20 +69,8 @@ def _deterministic_observed_sample(
             f"(0, 1], got {fraction}."
         )
 
-    buckets = 1_000_000
-
-    threshold = int(
-        fraction
-        * buckets
-    )
-
     return (
-        table
-
-        .filter(
-            pl.col("split")
-            == split
-        )
+        deterministic_sample(table, fraction=fraction, seed=seed)
 
         # Mark probabilities are conditioned on
         # an event actually occurring.
@@ -161,22 +92,10 @@ def _deterministic_observed_sample(
             .is_not_null()
         )
 
-        .filter(
-            (
-                pl.col(
-                    "model_row_id"
-                )
-                .hash(
-                    seed=seed
-                )
-                % buckets
-            )
-            < threshold
-        )
-
         .select(
             [
                 *feature_columns,
+                "source_city",
                 target_column,
             ]
         )
@@ -925,11 +844,37 @@ def train(
         ]
     )
 
+    table_ref = resolve_model_table(
+        snapshot_override_uri=data_config.get("final_model_snapshot_uri")
+        or data_config.get("snapshot_override_uri"),
+        local_root=data_config.get("local_snapshot_root"),
+    )
+    data_config.update(table_ref.lineage)
+    data_config["test_split_used"] = False
+    train_table = table_ref.scan_split(str(data_config.get("train_split", "train")))
+    validation_table = table_ref.scan_split(
+        str(data_config.get("validation_split", "validation"))
+    )
+    validation_config = config.get("validation", {})
+    geocv_enabled = bool(config.get("geographic_cv", {}).get("enabled", False))
+    if geocv_enabled:
+        resolve_geographic_folds(config)
+    holdout_cities = list(validation_config.get("geographic_holdout_cities", []))
+    train_table, validation_table, in_domain_table = geographic_frames(
+        train=train_table,
+        validation=validation_table,
+        holdout_cities=holdout_cities,
+        report_in_domain=bool(
+            validation_config.get("report_in_domain_validation", True)
+        ),
+    )
+
     (
         feature_columns,
         categorical_columns,
     ) = _resolve_feature_columns(
-        config
+        config,
+        available_columns=train_table.collect_schema().names(),
     )
 
     if not feature_columns:
@@ -996,18 +941,6 @@ def train(
         f"{artifact_dir}"
     )
 
-    credentials = (
-        pl.CredentialProviderGCP()
-    )
-
-    table = pl.scan_delta(
-        data_config[
-            "model_table_root"
-        ],
-        credential_provider=
-            credentials,
-    )
-
     print(
         "Loading deterministic "
         "observed-event training sample..."
@@ -1015,7 +948,7 @@ def train(
 
     train_frame = (
         _deterministic_observed_sample(
-            table=table,
+            table=train_table,
 
             split=data_config[
                 "train_split"
@@ -1040,7 +973,7 @@ def train(
 
     validation_frame = (
         _deterministic_observed_sample(
-            table=table,
+            table=validation_table,
 
             split=data_config[
                 "validation_split"
@@ -1076,6 +1009,27 @@ def train(
                 target_column,
         )
     )
+    validate_holdout_membership(
+        training=train_frame,
+        validation=validation_frame,
+        holdout_cities=holdout_cities,
+        expected_modeling_cities=(CANONICAL_MODELING_CITIES if geocv_enabled else None),
+    )
+
+    in_domain_summary = None
+    if in_domain_table is not None:
+        in_domain_frame = _deterministic_observed_sample(
+            table=in_domain_table,
+            split=str(data_config.get("validation_split", "validation")),
+            fraction=validation_fraction,
+            seed=seed,
+            feature_columns=feature_columns,
+            target_column=target_column,
+        )
+        if in_domain_frame.height:
+            in_domain_summary = _sample_summary(
+                "in-domain validation", in_domain_frame, target_column=target_column
+            )
 
     (
         classes,
@@ -1148,9 +1102,18 @@ def train(
             categories,
     )
 
-    del train_frame
-    del validation_frame
+    X_in_domain = y_in_domain = None
+    if in_domain_table is not None and "in_domain_frame" in locals() and in_domain_frame.height:
+        X_in_domain, y_in_domain, _ = _prepare_xy(
+            in_domain_frame,
+            feature_columns=feature_columns,
+            categorical_columns=categorical_columns,
+            target_column=target_column,
+            class_to_index=class_to_index,
+            category_levels=categories,
+        )
 
+    del train_frame
     gc.collect()
 
     _validate_labels(
@@ -1220,8 +1183,21 @@ def train(
         )
     )
 
+    din_domain = None
+    if X_in_domain is not None and y_in_domain is not None:
+        din_domain = xgb.QuantileDMatrix(
+            X_in_domain,
+            label=y_in_domain,
+            enable_categorical=True,
+            max_bin=max_bin,
+            ref=dtrain,
+            nthread=-1,
+        )
+
     del X_train
     del X_validation
+    if X_in_domain is not None:
+        del X_in_domain
 
     gc.collect()
 
@@ -1391,6 +1367,35 @@ def train(
         classes=classes,
     )
 
+    validation_probabilities = booster.predict(dvalidation)
+    if validation_probabilities.ndim == 1:
+        validation_probabilities = validation_probabilities.reshape(-1, num_classes)
+    geographic_metrics = geographic_mark_metrics(
+        source_cities=validation_frame["source_city"].cast(pl.String).to_list(),
+        labels=y_validation,
+        probabilities=validation_probabilities,
+        training_priors=train_priors,
+    )
+    per_city_path = artifact_dir / "validation_by_city.csv"
+    pl.DataFrame(geographic_metrics["per_city"]).write_csv(per_city_path)
+    in_domain_metrics = None
+    in_domain_city_path = None
+    if din_domain is not None and y_in_domain is not None and "in_domain_frame" in locals():
+        in_domain_probabilities = booster.predict(din_domain)
+        if in_domain_probabilities.ndim == 1:
+            in_domain_probabilities = in_domain_probabilities.reshape(-1, num_classes)
+        in_domain_metrics = geographic_mark_metrics(
+            source_cities=in_domain_frame["source_city"].cast(pl.String).to_list(),
+            labels=y_in_domain,
+            probabilities=in_domain_probabilities,
+            training_priors=train_priors,
+        )
+        in_domain_city_path = artifact_dir / "validation_in_domain_by_city.csv"
+        pl.DataFrame(in_domain_metrics["per_city"]).write_csv(in_domain_city_path)
+    del validation_frame
+    if "in_domain_frame" in locals():
+        del in_domain_frame
+
     (
         validation_metrics,
         validation_class_metrics,
@@ -1510,10 +1515,11 @@ def train(
         "config_hash":
             config_hash,
 
-        "model_table_root":
-            data_config[
-                "model_table_root"
-            ],
+        **table_ref.lineage,
+
+        "feature_contract_hash": config["features"]["feature_contract_hash"],
+
+        "geographic_holdout_cities": sorted(set(holdout_cities)),
 
         "train_split":
             data_config[
@@ -1580,6 +1586,12 @@ def train(
 
         "test_split_used":
             False,
+
+        "geographic_validation": geographic_metrics,
+
+        "in_domain_summary": in_domain_summary,
+
+        "in_domain_validation": in_domain_metrics,
     }
 
     with metadata_path.open(
@@ -1724,6 +1736,14 @@ def train(
         "sample_validation_bits_gain":
             validation_bits_gain,
 
+        "geographic_macro_log_loss": float(
+            geographic_metrics["macro_city"]["mean_log_loss"]
+        ),
+
+        "geographic_macro_bits_gain": float(
+            geographic_metrics["macro_city"]["mean_bits_gain"]
+        ),
+
         "best_iteration":
             float(
                 best_iteration
@@ -1732,6 +1752,10 @@ def train(
                 else -1
             ),
     }
+    if in_domain_metrics is not None:
+        metrics["in_domain_macro_log_loss"] = float(
+            in_domain_metrics["macro_city"]["mean_log_loss"]
+        )
 
     # Prevent accidental retention of large
     # matrices longer than necessary.
@@ -1742,6 +1766,8 @@ def train(
     return {
         "metrics":
             metrics,
+
+        "geographic_validation": geographic_metrics,
 
         "history":
             evals_result,
@@ -1765,7 +1791,8 @@ def train(
             str(
                 confusion_matrix_path
             ),
-        ],
+            str(per_city_path),
+        ] + ([str(in_domain_city_path)] if in_domain_city_path is not None else []),
 
         "summary": {
             "best_iteration":
