@@ -230,6 +230,7 @@ def test_same_source_seed_produces_identical_sample_output() -> None:
     def sample() -> pl.DataFrame:
         return sample_integration_chunk(
             source="seattle",
+            split="train",
             start_row=0,
             n=50,
             domain_cells=domain_cells,
@@ -246,6 +247,7 @@ def test_same_source_seed_produces_identical_sample_output() -> None:
     assert first.schema == INTEGRATION_SAMPLE_SCHEMA
     assert first.height == 50
     assert first["source_city"].unique().to_list() == ["seattle"]
+    assert first["split"].unique().to_list() == ["train"]
     sampled_us = first["integration_timestamp_utc"].dt.epoch("us")
     in_first = sampled_us.is_between(
         starts_us[0], starts_us[0] + durations_us[0] - 1, closed="both"
@@ -308,7 +310,7 @@ def test_training_event_selection_fails_on_invalid_required_spine_fields() -> No
         )
 
 
-def test_job_publishes_source_partitions_and_training_only_sample_counts(
+def test_job_publishes_split_samples_from_training_frozen_domain(
     tmp_path: Path,
 ) -> None:
     lake = CrimeLakeResources(bucket=str(tmp_path / "lake"))
@@ -381,7 +383,19 @@ def test_job_publishes_source_partitions_and_training_only_sample_counts(
                 "alpha", "2014-01-01T00:00:00Z", "2014-07-01T00:00:00Z"
             ),
             _coverage_row(
+                "alpha", "2024-06-01T00:00:00Z", "2024-06-02T00:00:00Z"
+            ),
+            _coverage_row(
+                "alpha", "2025-06-01T00:00:00Z", "2025-06-02T00:00:00Z"
+            ),
+            _coverage_row(
                 "beta", "2023-06-01T00:00:00Z", "2024-01-01T00:00:00Z"
+            ),
+            _coverage_row(
+                "beta", "2024-06-01T00:00:00Z", "2024-06-02T00:00:00Z"
+            ),
+            _coverage_row(
+                "beta", "2025-06-01T00:00:00Z", "2025-06-02T00:00:00Z"
             ),
         ]
     ).write_csv(temporal_coverage_uri)
@@ -409,7 +423,7 @@ def test_job_publishes_source_partitions_and_training_only_sample_counts(
     output_root = Path(lake.integration_root)
     snapshot_root = output_root / f"snapshot_id={result.run_id}"
     manifest = json.loads((snapshot_root / "manifest.json").read_text())
-    assert manifest["integration_sample_rows"] == 6
+    assert manifest["integration_sample_rows"] == 10
     assert manifest["source_count"] == 2
     assert manifest["train_start_year"] == 2014
     assert manifest["train_end_year"] == 2023
@@ -422,8 +436,11 @@ def test_job_publishes_source_partitions_and_training_only_sample_counts(
         result.run_id
     )
 
-    expected_counts = {"alpha": 4, "beta": 2}
-    for source, expected_count in expected_counts.items():
+    expected_split_counts = {
+        "alpha": {"train": 4, "validation": 1, "test": 1},
+        "beta": {"train": 2, "validation": 1, "test": 1},
+    }
+    for source, expected_counts in expected_split_counts.items():
         domain = pl.read_parquet(
             snapshot_root / "domain" / f"source_city={source}" / "*.parquet"
         )
@@ -432,8 +449,21 @@ def test_job_publishes_source_partitions_and_training_only_sample_counts(
         )
         assert domain["source_city"].unique().to_list() == [source]
         assert samples["source_city"].unique().to_list() == [source]
-        assert samples.height == expected_count
-        assert samples["integration_timestamp_utc"].dt.year().max() <= 2023
+
+        actual_counts = {
+            row["split"]: row["len"]
+            for row in samples.group_by("split").len().to_dicts()
+        }
+        assert actual_counts == expected_counts
+        assert samples.height == sum(expected_counts.values())
+
+        train = samples.filter(pl.col("split") == "train")
+        validation = samples.filter(pl.col("split") == "validation")
+        test = samples.filter(pl.col("split") == "test")
+        assert train["integration_timestamp_utc"].dt.year().max() <= 2023
+        assert validation["integration_timestamp_utc"].dt.year().unique().to_list() == [2024]
+        assert test["integration_timestamp_utc"].dt.year().unique().to_list() == [2025]
+
         if source == "alpha":
             assert alpha_outside_coverage_boundary_cell not in set(
                 domain["osm_h3_cell_id"].to_list()
@@ -457,7 +487,16 @@ def test_job_publishes_source_partitions_and_training_only_sample_counts(
     assert sources["alpha"]["domain_readback_rows"] == (
         sources["alpha"]["integration_domain_h3_cells"]
     )
-    assert sources["alpha"]["sample_readback_rows"] == 4
+    assert sources["alpha"]["sample_readback_rows"] == 6
+    assert sources["alpha"]["split_support"]["train"]["integration_sample_rows"] == 4
+    assert sources["alpha"]["split_support"]["validation"]["integration_sample_rows"] == 1
+    assert sources["alpha"]["split_support"]["test"]["integration_sample_rows"] == 1
+
+    assert sources["beta"]["sample_readback_rows"] == 4
+    assert sources["beta"]["split_support"]["train"]["integration_sample_rows"] == 2
+    assert sources["beta"]["split_support"]["validation"]["integration_sample_rows"] == 1
+    assert sources["beta"]["split_support"]["test"]["integration_sample_rows"] == 1
+
     assert sources["alpha"]["mc_weight_cell_hours"] == pytest.approx(
         sources["alpha"]["integration_domain_h3_cells"] * 181 * 24 / 4
     )
