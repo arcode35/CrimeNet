@@ -27,6 +27,18 @@ def parse_args() -> argparse.Namespace:
         description="Run one fixed CrimeNet XGBoost 5-fold geographic-CV baseline."
     )
     parser.add_argument(
+        "--local-snapshot-root",
+        type=Path,
+        default=Path("/workspace/crimenet_final_model"),
+        help="Local directory used to stage the immutable final-model snapshot once.",
+    )
+
+    parser.add_argument(
+        "--rclone-remote",
+        default="b2",
+        help="Configured rclone remote name for Backblaze B2.",
+    )
+    parser.add_argument(
         "--config",
         type=Path,
         required=True,
@@ -65,7 +77,99 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
     )
     return parser.parse_args()
+def stage_snapshot_once(
+    *,
+    remote_uri: str,
+    snapshot_id: str,
+    local_stage_root: Path,
+    rclone_remote: str,
+) -> Path:
+    """
+    Download one immutable final-model snapshot to local disk exactly once.
 
+    Returns the local snapshot root expected by resolve_model_table(local_root=...).
+    """
+
+    local_snapshot_root = (
+        local_stage_root.expanduser().resolve() / f"snapshot_id={snapshot_id}"
+    )
+
+    ready_marker = local_snapshot_root / "_LOCAL_DOWNLOAD_COMPLETE.json"
+
+    if ready_marker.exists():
+        print(f"Local snapshot already staged: {local_snapshot_root}")
+        return local_snapshot_root
+
+    local_snapshot_root.mkdir(parents=True, exist_ok=True)
+
+    if not remote_uri.startswith("s3://"):
+        raise ValueError(
+            f"Expected immutable S3-compatible snapshot URI, got: {remote_uri}"
+        )
+
+    # Example:
+    # s3://crimenet-data/gold/final_model_table/snapshot_id=XYZ
+    #
+    # Convert to the path understood by the configured rclone B2 remote:
+    # b2:crimenet-data/gold/final_model_table/snapshot_id=XYZ
+    relative = remote_uri.removeprefix("s3://")
+    rclone_source = f"{rclone_remote}:{relative}"
+
+    print("=" * 80)
+    print("STAGING IMMUTABLE MODEL TABLE LOCALLY")
+    print("=" * 80)
+    print(f"Remote: {remote_uri}")
+    print(f"Rclone: {rclone_source}")
+    print(f"Local:  {local_snapshot_root}")
+
+    subprocess.run(
+        [
+            "rclone",
+            "copy",
+            rclone_source,
+            str(local_snapshot_root),
+            "--progress",
+            "--transfers",
+            "16",
+            "--checkers",
+            "32",
+            "--multi-thread-streams",
+            "4",
+            "--fast-list",
+        ],
+        check=True,
+    )
+
+    parquet_files = list(local_snapshot_root.rglob("*.parquet"))
+
+    if not parquet_files:
+        raise RuntimeError(
+            f"Local snapshot staging produced no Parquet files: {local_snapshot_root}"
+        )
+
+    total_bytes = sum(path.stat().st_size for path in parquet_files)
+
+    marker = {
+        "snapshot_id": snapshot_id,
+        "source_uri": remote_uri,
+        "local_root": str(local_snapshot_root),
+        "parquet_file_count": len(parquet_files),
+        "bytes": total_bytes,
+    }
+
+    temp_marker = ready_marker.with_suffix(".tmp")
+    temp_marker.write_text(
+        json.dumps(marker, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    temp_marker.replace(ready_marker)
+
+    print(
+        f"Local snapshot ready: files={len(parquet_files):,}, "
+        f"size={total_bytes / (1024 ** 3):.2f} GiB"
+    )
+
+    return local_snapshot_root
 
 def params_from_config(config: dict) -> dict:
     arch = config["architecture"]
@@ -91,14 +195,59 @@ def main() -> None:
 
     config = load_yaml(args.config)
 
-    # Resolve and pin immutable model table exactly as production HPO does.
+# -------------------------------------------------------------------------
+# 1. Resolve the canonical immutable REMOTE snapshot once.
+# -------------------------------------------------------------------------
+
     data_cfg = config.get("data", {})
-    table_ref = resolve_model_table(
+
+    remote_table_ref = resolve_model_table(
         snapshot_override_uri=data_cfg.get("snapshot_override_uri"),
-        local_root=data_cfg.get("local_snapshot_root"),
+        local_root=None,
     )
 
+    remote_uri = str(remote_table_ref.uri)
+    snapshot_id = str(remote_table_ref.snapshot_id)
+
+    print(f"Resolved immutable remote snapshot: {snapshot_id}")
+    print(f"Remote URI: {remote_uri}")
+
+
+    # -------------------------------------------------------------------------
+    # 2. Stage that exact immutable snapshot onto local disk ONCE.
+    # -------------------------------------------------------------------------
+
+    local_snapshot_root = stage_snapshot_once(
+        remote_uri=remote_uri,
+        snapshot_id=snapshot_id,
+        local_stage_root=args.local_snapshot_root,
+        rclone_remote=args.rclone_remote,
+    )
+
+
+    # -------------------------------------------------------------------------
+    # 3. From this point onward, ONLY use local Parquet.
+    # -------------------------------------------------------------------------
+
+    table_ref = resolve_model_table(
+        local_root=str(local_snapshot_root),
+    )
+
+    if table_ref.snapshot_id != remote_table_ref.snapshot_id:
+        raise RuntimeError(
+            "Local staged snapshot identity does not match resolved remote snapshot: "
+            f"remote={remote_table_ref.snapshot_id}, "
+            f"local={table_ref.snapshot_id}"
+        )
+
     config = enrich_config_with_lineage(config, table_ref)
+
+    # Force every downstream trainer/fold to the local snapshot.
+    config["data"]["local_snapshot_root"] = str(local_snapshot_root)
+
+    # Prevent downstream code from accidentally preferring a remote override.
+    config["data"].pop("snapshot_override_uri", None)
+    config["data"]["final_model_snapshot_uri"] = str(local_snapshot_root)
 
     # Resolve the corrected ZERO-SHOT feature contract before training.
     train_split = str(config["data"].get("train_split", "train"))
@@ -197,7 +346,7 @@ def main() -> None:
         run_label="zero_shot_geocv_baseline",
         seed=int(args.seed),
         keep_artifacts=args.keep_artifacts,
-        snapshot_source=None,
+        snapshot_source=str(local_snapshot_root),
     )
 
     print("\n" + "=" * 80)
