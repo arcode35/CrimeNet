@@ -30,7 +30,11 @@ from machine_learning.data.geographic_cv import (
     aggregate_intensity_oof,
     resolve_geographic_folds,
 )
-from machine_learning.data.model_table import enrich_config_with_lineage, resolve_model_table
+from machine_learning.data.model_table import (
+    enrich_config_with_lineage,
+    resolve_model_table,
+    resolve_model_table_from_config,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +73,16 @@ class Stage:
     validation_fraction: float
     num_boost_round: int
     early_stopping_rounds: int
+
+
+def prepared_xy_cache_enabled(*, requested: bool, stage: Stage) -> bool:
+    """Retain prepared numeric matrices only when both stage samples are partial."""
+
+    return bool(
+        requested
+        and stage.train_fraction < 1.0
+        and stage.validation_fraction < 1.0
+    )
 
 
 INTENSITY_METRIC = "geocv_macro_nll_per_event"
@@ -814,6 +828,25 @@ def _build_sample_cache_entry(
     rebuild: bool,
 ) -> tuple[str, str]:
     table_ref = _resolve_table_for_cache(snapshot_source)
+    expected_data = base_config["data"]
+    if table_ref.snapshot_id != str(expected_data["final_model_snapshot_id"]):
+        raise RuntimeError(
+            f"HPO cache snapshot mismatch for {fold_name}/{split}: "
+            f"resolved={table_ref.snapshot_id!r}, "
+            f"expected={expected_data['final_model_snapshot_id']!r}"
+        )
+    if table_ref.schema_version != str(expected_data["final_model_schema_version"]):
+        raise RuntimeError(
+            f"HPO cache schema mismatch for {fold_name}/{split}: "
+            f"resolved={table_ref.schema_version!r}, "
+            f"expected={expected_data['final_model_schema_version']!r}"
+        )
+    expected_uri = str(expected_data["final_model_snapshot_uri"]).rstrip("/")
+    if table_ref.snapshot_uri.rstrip("/") != expected_uri:
+        raise RuntimeError(
+            f"HPO cache snapshot URI mismatch for {fold_name}/{split}: "
+            f"resolved={table_ref.snapshot_uri!r}, expected={expected_uri!r}"
+        )
     table = table_ref.scan_split(split)
     train_table, validation_table, _ = geographic_frames(
         train=table,
@@ -1444,11 +1477,11 @@ def enqueue_trial_params(
     if reg_alpha > 0.0:
         enqueue["reg_alpha_nonzero"] = reg_alpha
 
-    if family == "mark":
-        gamma = float(enqueue.pop("gamma", 0.0))
-        enqueue["use_gamma"] = gamma > 0.0
-        if gamma > 0.0:
-            enqueue["gamma_nonzero"] = gamma
+    gamma = float(enqueue.pop("gamma", 0.0))
+    enqueue["use_gamma"] = gamma > 0.0
+
+    if gamma > 0.0:
+        enqueue["gamma_nonzero"] = gamma
 
     study.enqueue_trial(enqueue)
 
@@ -2076,19 +2109,21 @@ def main() -> None:
     seeds = parse_seeds(args.tournament_seeds)
     gpus = parse_gpus(args.gpus)
 
+    data_cfg = dict(base_config.get("data", {}))
     if args.hpo_snapshot_source:
-        if str(args.hpo_snapshot_source).startswith("s3://"):
-            table_ref = resolve_model_table(
-                snapshot_override_uri=str(args.hpo_snapshot_source)
-            )
+        requested_source = str(args.hpo_snapshot_source)
+        if requested_source.startswith("s3://"):
+            configured_uri = str(data_cfg.get("final_model_snapshot_uri") or "").rstrip("/")
+            if configured_uri and configured_uri != requested_source.rstrip("/"):
+                raise ValueError(
+                    "--hpo-snapshot-source conflicts with pinned "
+                    "data.final_model_snapshot_uri"
+                )
+            data_cfg["final_model_snapshot_uri"] = requested_source
+            data_cfg.pop("local_snapshot_root", None)
         else:
-            table_ref = resolve_model_table(local_root=str(args.hpo_snapshot_source))
-    else:
-        data_cfg = base_config.get("data", {})
-        table_ref = resolve_model_table(
-            snapshot_override_uri=data_cfg.get("snapshot_override_uri"),
-            local_root=data_cfg.get("local_snapshot_root"),
-        )
+            data_cfg["local_snapshot_root"] = requested_source
+    table_ref = resolve_model_table_from_config(data_cfg)
     base_config = enrich_config_with_lineage(base_config, table_ref)
     contract = resolve_feature_contract(
         base_config["features"],
@@ -2134,7 +2169,7 @@ def main() -> None:
     )
     stage_cache_dir = stage_cache_dir.resolve()
     hpo_table_root = _hpo_table_root(base_config, args.hpo_snapshot_source)
-    cache_prepared_xy = not args.no_prepared_xy_cache
+    prepared_xy_requested = not args.no_prepared_xy_cache
 
     explore_stage = Stage(
         name="explore",
@@ -2157,6 +2192,13 @@ def main() -> None:
         num_boost_round=args.tournament_rounds,
         early_stopping_rounds=args.tournament_early_stop,
     )
+    prepared_xy_by_stage = {
+        stage.name: prepared_xy_cache_enabled(
+            requested=prepared_xy_requested,
+            stage=stage,
+        )
+        for stage in (explore_stage, refine_stage, tournament_stage)
+    }
 
     print(f"Family:              {family}")
     print(f"Base config:         {args.config}")
@@ -2174,7 +2216,16 @@ def main() -> None:
     print(f"HPO table override:  {args.hpo_snapshot_source or 'none (base config)'}")
     print(f"HPO source table:    {hpo_table_root}")
     print(f"Stage cache:         {'disabled' if args.disable_stage_cache else stage_cache_dir}")
-    print(f"Prepared XY cache:   {cache_prepared_xy and not args.disable_stage_cache}")
+    print(
+        "Prepared XY cache:   "
+        + json.dumps(
+            {
+                name: enabled and not args.disable_stage_cache
+                for name, enabled in prepared_xy_by_stage.items()
+            },
+            sort_keys=True,
+        )
+    )
     print(f"Search depth:        {space['depth_low']}..{space['depth_high']}")
     print(f"Explore target:      {args.explore_trials} successful trials")
     print(f"Refine target:       {args.refine_trials} successful trials")
@@ -2233,7 +2284,7 @@ def main() -> None:
         monitor_seconds=args.monitor_seconds,
         max_consecutive_failures=args.max_consecutive_failures,
         sample_cache_entries=explore_cache,
-        cache_prepared_xy=cache_prepared_xy,
+        cache_prepared_xy=prepared_xy_by_stage["explore"],
     )
 
     explore_complete = complete_trials(explore_study)
@@ -2288,7 +2339,7 @@ def main() -> None:
         monitor_seconds=args.monitor_seconds,
         max_consecutive_failures=args.max_consecutive_failures,
         sample_cache_entries=refine_cache,
-        cache_prepared_xy=cache_prepared_xy,
+        cache_prepared_xy=prepared_xy_by_stage["refine"],
     )
 
     refine_complete = complete_trials(refine_study)
@@ -2339,7 +2390,7 @@ def main() -> None:
         monitor_seconds=args.monitor_seconds,
         state_path=root / "tournament_state.json",
         sample_cache_entries=tournament_cache,
-        cache_prepared_xy=cache_prepared_xy,
+        cache_prepared_xy=prepared_xy_by_stage["tournament"],
     )
 
     best = tournament[0]
@@ -2393,7 +2444,10 @@ def main() -> None:
         "hpo_snapshot_source": args.hpo_snapshot_source,
         "stage_cache_enabled": not args.disable_stage_cache,
         "stage_cache_dir": str(stage_cache_dir) if not args.disable_stage_cache else None,
-        "prepared_xy_cache": cache_prepared_xy and not args.disable_stage_cache,
+        "prepared_xy_cache_by_stage": {
+            name: enabled and not args.disable_stage_cache
+            for name, enabled in prepared_xy_by_stage.items()
+        },
         "test_split_used": False,
     }
     # Export a directly runnable one-model/all-city fit. The local HPO cache
@@ -2437,7 +2491,10 @@ def main() -> None:
         "gpus": gpus,
         "stage_cache_enabled": not args.disable_stage_cache,
         "stage_cache_dir": str(stage_cache_dir) if not args.disable_stage_cache else None,
-        "prepared_xy_cache": cache_prepared_xy and not args.disable_stage_cache,
+        "prepared_xy_cache_by_stage": {
+            name: enabled and not args.disable_stage_cache
+            for name, enabled in prepared_xy_by_stage.items()
+        },
         "test_split_used": False,
     }
     write_json(summary_json, summary)

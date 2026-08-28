@@ -45,7 +45,9 @@ geographic_cv:
 
 features:
   feature_set: transferable_v1
-
+  zero_shot_geography: true
+  include_local_history: false
+  include_city_history: false
   categorical:
     - lighting_condition
 
@@ -94,7 +96,6 @@ features:
     - solar_elevation_deg
     - solar_azimuth_deg
     - is_daylight
-  include_city_history: false
   include_solar_zenith: false
 
 architecture:

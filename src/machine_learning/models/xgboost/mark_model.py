@@ -21,7 +21,7 @@ from machine_learning.data.geographic_cv import (
     resolve_geographic_folds,
 )
 from machine_learning.data.metrics import geographic_mark_metrics
-from machine_learning.data.model_table import resolve_model_table
+from machine_learning.data.model_table import resolve_model_table_from_config
 
 
 MACHINE_LEARNING_ROOT = (
@@ -844,11 +844,7 @@ def train(
         ]
     )
 
-    table_ref = resolve_model_table(
-        snapshot_override_uri=data_config.get("final_model_snapshot_uri")
-        or data_config.get("snapshot_override_uri"),
-        local_root=data_config.get("local_snapshot_root"),
-    )
+    table_ref = resolve_model_table_from_config(data_config)
     data_config.update(table_ref.lineage)
     data_config["test_split_used"] = False
     train_table = table_ref.scan_split(str(data_config.get("train_split", "train")))
