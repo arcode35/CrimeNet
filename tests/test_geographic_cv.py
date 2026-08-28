@@ -19,6 +19,7 @@ from machine_learning.data.geographic_cv import (
     validate_geographic_folds,
 )
 from machine_learning.data.geography import (
+    deterministic_sample,
     geographic_frames,
     validate_holdout_membership,
 )
@@ -26,6 +27,7 @@ from machine_learning.experiments.xgb_hpo import (
     Stage,
     aggregate_tournament_geocv_metrics,
     build_final_production_config,
+    prepare_stage_sample_cache,
     run_train_once,
 )
 from machine_learning.models.xgboost import model as intensity_module
@@ -179,9 +181,9 @@ def test_oof_macro_and_integral_aggregation_are_not_renormalized() -> None:
     assert expected_macro != pytest.approx(total_nll / total_events)
 
 
-def test_cache_identity_is_fold_specific_and_deterministic() -> None:
+def test_cache_identity_is_global_and_reused_across_folds_and_stages() -> None:
     base = {
-        "cache_version": "4",
+        "cache_version": "5",
         "snapshot_id": "snapshot",
         "schema_version": "schema",
         "feature_contract_hash": "features",
@@ -191,23 +193,60 @@ def test_cache_identity_is_fold_specific_and_deterministic() -> None:
         "fraction": 0.5,
         "seed": 42,
     }
-    bay = cache_identity(
-        **base,
-        fold_name="bay_area",
-        holdout_cities=list(CANONICAL_GEOGRAPHIC_FOLDS["bay_area"]),
-    )
-    bay_again = cache_identity(
-        **base,
-        fold_name="bay_area",
-        holdout_cities=list(reversed(CANONICAL_GEOGRAPHIC_FOLDS["bay_area"])),
-    )
-    dfw = cache_identity(
-        **base,
-        fold_name="dfw_southwest",
-        holdout_cities=list(CANONICAL_GEOGRAPHIC_FOLDS["dfw_southwest"]),
-    )
-    assert bay == bay_again
-    assert bay != dfw
+    explore = cache_identity(**base)
+    refine_validation = cache_identity(**base)
+    assert explore == refine_validation
+
+    full = {**base, "fraction": 1.0, "seed": 0}
+    refine_train = cache_identity(**full)
+    tournament_train = cache_identity(**full)
+    assert refine_train == tournament_train
+
+
+@pytest.mark.parametrize("fraction", [0.25, 1.0])
+def test_global_sample_then_fold_filter_matches_old_fold_sampling(
+    fraction: float,
+) -> None:
+    rows = pl.DataFrame(
+        {
+            "model_row_id": [
+                f"{city}-{index}"
+                for city in sorted(CANONICAL_MODELING_CITIES)
+                for index in range(20)
+            ],
+            "source_city": [
+                city
+                for city in sorted(CANONICAL_MODELING_CITIES)
+                for _ in range(20)
+            ],
+        }
+    ).lazy()
+    global_sample = deterministic_sample(rows, fraction=fraction, seed=42)
+    for held_out in CANONICAL_GEOGRAPHIC_FOLDS.values():
+        old_train, old_validation, _ = geographic_frames(
+            train=rows,
+            validation=rows,
+            holdout_cities=held_out,
+            report_in_domain=False,
+        )
+        old_train_ids = set(
+            deterministic_sample(old_train, fraction=fraction, seed=42)
+            .collect()["model_row_id"]
+            .to_list()
+        )
+        old_validation_ids = set(
+            deterministic_sample(old_validation, fraction=fraction, seed=42)
+            .collect()["model_row_id"]
+            .to_list()
+        )
+        new_train, new_validation, _ = geographic_frames(
+            train=global_sample,
+            validation=global_sample,
+            holdout_cities=held_out,
+            report_in_domain=False,
+        )
+        assert set(new_train.collect()["model_row_id"]) == old_train_ids
+        assert set(new_validation.collect()["model_row_id"]) == old_validation_ids
 
 
 def test_one_candidate_invokes_five_fits_and_fold_failure_fails_trial(tmp_path: Path) -> None:
@@ -400,6 +439,42 @@ def fifteen_city_snapshot(tmp_path: Path) -> Path:
     return root
 
 
+def test_hpo_fast_path_evaluates_only_validation_macro_metric(
+    fifteen_city_snapshot: Path, tmp_path: Path
+) -> None:
+    config = _minimal_hpo_config(tmp_path)
+    config["data"].update(
+        {
+            "local_snapshot_root": str(fifteen_city_snapshot),
+            "train_fraction": 1.0,
+            "validation_fraction": 1.0,
+        }
+    )
+    config["features"]["categorical"] = []
+    config["architecture"].update({"device": "cpu", "max_bin": 16, "max_depth": 2})
+    config["training"].update(
+        {"num_boost_round": 1, "early_stopping_rounds": 1, "verbose_eval": False}
+    )
+    config["final_training"]["use_all_cities"] = False
+    config["validation"].update(
+        {
+            "geographic_holdout_cities": list(
+                CANONICAL_GEOGRAPHIC_FOLDS["bay_area"]
+            ),
+            "report_in_domain_validation": False,
+        }
+    )
+    config["hpo_runtime"]["enabled"] = True
+    result = intensity_module.train(config, run_id="hpo-fast", config_hash="hash")
+    assert result["artifacts"] == []
+    assert result["summary"]["hpo_fast_path"] is True
+    assert set(result["history"]) == {"validation"}
+    assert set(result["history"]["validation"]) == {
+        "macro_city_pp_nll_per_event"
+    }
+    assert not (tmp_path / "artifacts").exists()
+
+
 def test_tiny_five_fold_then_final_all_city_smoke(
     fifteen_city_snapshot: Path, tmp_path: Path
 ) -> None:
@@ -432,6 +507,11 @@ def test_tiny_five_fold_then_final_all_city_smoke(
     assert len(report["folds"]) == 5
     assert len(report["cities"]) == 15
     assert {row["source_city"] for row in report["cities"]} == CANONICAL_MODELING_CITIES
+    artifact_root = tmp_path / "artifacts"
+    assert not list(artifact_root.rglob("model.json"))
+    assert not list(artifact_root.rglob("metadata.json"))
+    assert not list(artifact_root.rglob("feature_importance.json"))
+    assert not list(artifact_root.rglob("training_history.json"))
 
     final_config = copy.deepcopy(config)
     final_config.pop("hpo_runtime", None)
@@ -455,3 +535,49 @@ def test_tiny_five_fold_then_final_all_city_smoke(
     assert metadata["final_training"]["city_count"] == 15
     assert metadata["final_training"]["excluded_cities"] == []
     assert len(metadata["final_in_domain_temporal_validation"]["per_city"]) == 15
+    assert (artifact_root / "synthetic-final" / "final" / "model.json").is_file()
+    assert (artifact_root / "synthetic-final" / "final" / "training_history.json").is_file()
+
+
+def test_global_arrow_cache_reuses_cross_stage_fraction_pairs(
+    fifteen_city_snapshot: Path, tmp_path: Path
+) -> None:
+    config = _minimal_hpo_config(tmp_path)
+    config["data"].update(
+        {
+            "local_snapshot_root": str(fifteen_city_snapshot),
+            "final_model_snapshot_id": "fifteen-city",
+            "final_model_snapshot_uri": (
+                "s3://canonical/final_model_table/snapshot_id=fifteen-city"
+            ),
+            "final_model_schema_version": "v1",
+            "seed": 42,
+        }
+    )
+    cache_dir = tmp_path / "cache"
+    common = {
+        "module_name": "machine_learning.models.xgboost.model",
+        "base_config": config,
+        "family": "intensity",
+        "snapshot_source": str(fifteen_city_snapshot),
+        "cache_dir": cache_dir,
+        "rebuild": False,
+    }
+    explore = prepare_stage_sample_cache(
+        **common,
+        stage=Stage("explore", 0.25, 0.25, 2, 1),
+    )
+    refine = prepare_stage_sample_cache(
+        **common,
+        stage=Stage("refine", 1.0, 0.25, 2, 1),
+    )
+    tournament = prepare_stage_sample_cache(
+        **common,
+        stage=Stage("tournament", 1.0, 1.0, 2, 1),
+    )
+    assert explore["validation|0.25|42"] == refine["validation|0.25|42"]
+    assert refine["train|1|0"] == tournament["train|1|0"]
+    assert len(list(cache_dir.glob("*.arrow"))) == 4
+    manifests = [json.loads(path.read_text()) for path in cache_dir.glob("*.json")]
+    assert all("fold_name" not in manifest for manifest in manifests)
+    assert all("held_out_cities" not in manifest for manifest in manifests)
