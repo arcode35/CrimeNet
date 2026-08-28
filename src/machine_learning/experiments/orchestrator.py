@@ -14,6 +14,8 @@ from machine_learning.experiments.experiment_logging import (
 from machine_learning.experiments.mlflow_config import (
     start_run,
 )
+from machine_learning.data.features import resolve_feature_contract
+from machine_learning.data.model_table import enrich_config_with_lineage, resolve_model_table
 
 
 def load_config(
@@ -36,6 +38,22 @@ def run_experiment(
     config = load_config(
         config_path
     )
+
+    data_config = config.setdefault("data", {})
+    table = resolve_model_table(
+        snapshot_override_uri=data_config.get("snapshot_override_uri"),
+        local_root=data_config.get("local_snapshot_root"),
+    )
+    config = enrich_config_with_lineage(config, table)
+    contract = resolve_feature_contract(
+        config["features"],
+        available_columns=table.scan_split(
+            str(config["data"].get("train_split", "train"))
+        ).collect_schema().names(),
+    )
+    config["features"]["resolved_numeric"] = list(contract.numeric)
+    config["features"]["resolved_categorical"] = list(contract.categorical)
+    config["features"]["feature_contract_hash"] = contract.contract_hash
 
     model_config = config[
         "model"

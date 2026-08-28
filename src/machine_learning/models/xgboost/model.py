@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import gc
 import json
+import platform
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -10,11 +12,22 @@ import pandas as pd
 import polars as pl
 import xgboost as xgb
 
-from crimenet_data.assets.model_table.transformations import (
-    CONTEXT_FEATURE_COLUMNS,
-    HISTORY_FEATURE_COLUMNS,
-    LIGHTING_FEATURE_COLUMNS,
+from machine_learning.data.features import resolve_feature_contract
+from machine_learning.data.geography import (
+    deterministic_sample,
+    geographic_frames,
+    validate_holdout_membership,
 )
+from machine_learning.data.geographic_cv import (
+    CANONICAL_GEOCV_VERSION,
+    CANONICAL_MODELING_CITIES,
+    resolve_geographic_folds,
+    validate_exact_modeling_cities,
+)
+from machine_learning.data.metrics import geographic_point_process_metrics
+from machine_learning.data.model_table import resolve_model_table
+from machine_learning.data.point_process import prepare_target_exposure
+from machine_learning.experiments.experiment_logging import git_commit, git_dirty
 
 
 MACHINE_LEARNING_ROOT = (
@@ -24,16 +37,12 @@ MACHINE_LEARNING_ROOT = (
 )
 
 
-CALENDAR_FEATURE_COLUMNS = [
-    "local_hour",
-    "local_day_of_week",
-    "local_hour_sin",
-    "local_hour_cos",
-    "local_day_of_week_sin",
-    "local_day_of_week_cos",
-]
-
 AUXILIARY_COLUMNS = [
+    "model_row_id",
+    "source_city",
+    "row_type",
+    "event_indicator",
+    "is_observed_event",
     "event_count",
     "integration_weight_cell_seconds",
 ]
@@ -57,71 +66,16 @@ def _safe_margin(
 
 def _resolve_feature_columns(
     config: dict[str, Any],
+    *,
+    available_columns: list[str],
 ) -> tuple[list[str], list[str]]:
-    feature_config = config["features"]
-
-    feature_columns: list[str] = []
-
-    if feature_config.get(
-        "include_source_city",
-        True,
-    ):
-        feature_columns.append(
-            "source_city"
-        )
-
-    if feature_config.get(
-        "include_calendar",
-        True,
-    ):
-        feature_columns.extend(
-            CALENDAR_FEATURE_COLUMNS
-        )
-
-    if feature_config.get(
-        "include_context",
-        True,
-    ):
-        feature_columns.extend(
-            CONTEXT_FEATURE_COLUMNS
-        )
-
-    if feature_config.get(
-        "include_lighting",
-        True,
-    ):
-        feature_columns.extend(
-            LIGHTING_FEATURE_COLUMNS
-        )
-
-    if feature_config.get(
-        "include_history",
-        True,
-    ):
-        feature_columns.extend(
-            HISTORY_FEATURE_COLUMNS
-        )
-
-    # Preserve order while removing accidental duplicates.
-    feature_columns = list(
-        dict.fromkeys(
-            feature_columns
-        )
+    contract = resolve_feature_contract(
+        config["features"], available_columns=available_columns
     )
-
-    categorical_columns = [
-        column
-        for column in (
-            "source_city",
-            "lighting_condition",
-        )
-        if column in feature_columns
-    ]
-
-    return (
-        feature_columns,
-        categorical_columns,
-    )
+    config["features"]["resolved_numeric"] = list(contract.numeric)
+    config["features"]["resolved_categorical"] = list(contract.categorical)
+    config["features"]["feature_contract_hash"] = contract.contract_hash
+    return list(contract.all_features), list(contract.categorical)
 
 
 def _deterministic_split_sample(
@@ -142,29 +96,8 @@ def _deterministic_split_sample(
             f"got {fraction}."
         )
 
-    buckets = 1_000_000
-
-    threshold = int(
-        fraction
-        * buckets
-    )
-
     return (
-        table
-
-        .filter(
-            pl.col("split")
-            == split
-        )
-
-        .filter(
-            (
-                pl.col("model_row_id")
-                .hash(seed=seed)
-                % buckets
-            )
-            < threshold
-        )
+        deterministic_sample(table, fraction=fraction, seed=seed)
 
         .select(
             [
@@ -267,29 +200,8 @@ def _prepare_xy(
     np.ndarray,
     dict[str, list[str]],
 ]:
-    y = (
-        frame
-        .get_column(
-            "event_count"
-        )
-        .to_numpy()
-        .astype(
-            np.float32,
-            copy=False,
-        )
-    )
-
-    exposure = (
-        frame
-        .get_column(
-            "integration_weight_cell_seconds"
-        )
-        .to_numpy()
-        .astype(
-            np.float64,
-            copy=False,
-        )
-    )
+    y, exposure = prepare_target_exposure(frame)
+    y = y.astype(np.float32, copy=False)
 
     X = (
         frame
@@ -667,11 +579,51 @@ def train(
         )
     )
 
+    table_ref = resolve_model_table(
+        snapshot_override_uri=data_config.get("final_model_snapshot_uri")
+        or data_config.get("snapshot_override_uri"),
+        local_root=data_config.get("local_snapshot_root"),
+    )
+    data_config.update(table_ref.lineage)
+    data_config["test_split_used"] = False
+    train_table = table_ref.scan_split(str(data_config.get("train_split", "train")))
+    validation_table = table_ref.scan_split(
+        str(data_config.get("validation_split", "validation"))
+    )
+    validation_config = config.get("validation", {})
+    geocv_enabled = bool(config.get("geographic_cv", {}).get("enabled", False))
+    resolved_geocv_folds = resolve_geographic_folds(config) if geocv_enabled else {}
+    holdout_cities = list(validation_config.get("geographic_holdout_cities", []))
+    final_training_config = config.get("final_training", {})
+    is_final_production = bool(final_training_config.get("use_all_cities", False))
+    if is_final_production:
+        if holdout_cities:
+            raise ValueError("Final production training cannot exclude geographic cities")
+        if train_fraction != 1.0 or validation_fraction != 1.0:
+            raise ValueError("Final production training requires full train/validation fractions")
+        validate_exact_modeling_cities(
+            train_table.select("source_city").unique().collect()["source_city"].to_list(),
+            label="final production train split",
+        )
+        validate_exact_modeling_cities(
+            validation_table.select("source_city").unique().collect()["source_city"].to_list(),
+            label="final in-domain validation split",
+        )
+    train_table, validation_table, in_domain_table = geographic_frames(
+        train=train_table,
+        validation=validation_table,
+        holdout_cities=holdout_cities,
+        report_in_domain=bool(
+            validation_config.get("report_in_domain_validation", True)
+        ),
+    )
+
     (
         feature_columns,
         categorical_columns,
     ) = _resolve_feature_columns(
-        config
+        config,
+        available_columns=train_table.collect_schema().names(),
     )
 
     if not feature_columns:
@@ -718,18 +670,6 @@ def train(
         f"{artifact_dir}"
     )
 
-    credentials = (
-        pl.CredentialProviderGCP()
-    )
-
-    table = pl.scan_delta(
-        data_config[
-            "model_table_root"
-        ],
-        credential_provider=
-            credentials,
-    )
-
     print(
         "Loading deterministic "
         "training sample..."
@@ -737,7 +677,7 @@ def train(
 
     train_frame = (
         _deterministic_split_sample(
-            table=table,
+            table=train_table,
             split=data_config[
                 "train_split"
             ],
@@ -755,7 +695,7 @@ def train(
 
     validation_frame = (
         _deterministic_split_sample(
-            table=table,
+            table=validation_table,
             split=data_config[
                 "validation_split"
             ],
@@ -778,6 +718,24 @@ def train(
             validation_frame,
         )
     )
+    validate_holdout_membership(
+        training=train_frame,
+        validation=validation_frame,
+        holdout_cities=holdout_cities,
+        expected_modeling_cities=(CANONICAL_MODELING_CITIES if geocv_enabled else None),
+    )
+
+    in_domain_summary = None
+    if in_domain_table is not None:
+        in_domain_frame = _deterministic_split_sample(
+            table=in_domain_table,
+            split=str(data_config.get("validation_split", "validation")),
+            fraction=validation_fraction,
+            seed=seed,
+            feature_columns=feature_columns,
+        )
+        if in_domain_frame.height:
+            in_domain_summary = _sample_summary("in-domain validation", in_domain_frame)
 
     (
         X_train,
@@ -807,9 +765,16 @@ def train(
             categories,
     )
 
-    del train_frame
-    del validation_frame
+    X_in_domain = y_in_domain = exposure_in_domain = None
+    if in_domain_table is not None and "in_domain_frame" in locals() and in_domain_frame.height:
+        X_in_domain, y_in_domain, exposure_in_domain, _ = _prepare_xy(
+            in_domain_frame,
+            feature_columns=feature_columns,
+            categorical_columns=categorical_columns,
+            category_levels=categories,
+        )
 
+    del train_frame
     gc.collect()
 
     _validate_point_process_rows(
@@ -819,6 +784,13 @@ def train(
         event_exposure_tolerance=
             event_exposure_tolerance,
     )
+    if y_in_domain is not None and exposure_in_domain is not None:
+        _validate_point_process_rows(
+            name="in-domain validation",
+            y=y_in_domain,
+            exposure=exposure_in_domain,
+            event_exposure_tolerance=event_exposure_tolerance,
+        )
 
     _validate_point_process_rows(
         name="validation",
@@ -916,8 +888,22 @@ def train(
         )
     )
 
+    din_domain = None
+    if X_in_domain is not None and y_in_domain is not None:
+        din_domain = xgb.QuantileDMatrix(
+            X_in_domain,
+            label=y_in_domain,
+            base_margin=np.full(y_in_domain.shape, initial_log_lambda, dtype=np.float32),
+            enable_categorical=True,
+            max_bin=max_bin,
+            ref=dtrain,
+            nthread=-1,
+        )
+
     del X_train
     del X_validation
+    if X_in_domain is not None:
+        del X_in_domain
 
     gc.collect()
 
@@ -975,6 +961,8 @@ def train(
         id(dvalidation):
             exposure_validation,
     }
+    if din_domain is not None and exposure_in_domain is not None:
+        exposure_lookup[id(din_domain)] = exposure_in_domain
 
     def point_process_nll(
         predt: np.ndarray,
@@ -1083,6 +1071,8 @@ def train(
                 ]
             ),
 
+        "gamma": float(optimization_config.get("gamma", 0.0)),
+
         "reg_lambda":
             float(
                 optimization_config[
@@ -1156,6 +1146,7 @@ def train(
         ],
     ] = {}
 
+    fixed_rounds = bool(training_config.get("fixed_num_boost_round", False))
     booster = xgb.train(
         params=params,
 
@@ -1184,10 +1175,10 @@ def train(
         custom_metric=
             point_process_nll,
 
-        early_stopping_rounds=int(
-            training_config[
-                "early_stopping_rounds"
-            ]
+        early_stopping_rounds=(
+            None
+            if fixed_rounds
+            else int(training_config["early_stopping_rounds"])
         ),
 
         evals_result=
@@ -1205,7 +1196,7 @@ def train(
         None,
     )
 
-    if best_iteration is not None:
+    if best_iteration is not None and not fixed_rounds:
         booster = booster[
             : best_iteration + 1
         ]
@@ -1234,6 +1225,43 @@ def train(
                 max_log_intensity,
         )
     )
+
+    validation_margin_for_geo = booster.predict(
+        dvalidation, output_margin=True
+    )
+    geographic_metrics = geographic_point_process_metrics(
+        validation_frame,
+        log_intensity=validation_margin_for_geo,
+        constant_log_intensity=initial_log_lambda,
+        min_log_intensity=min_log_intensity,
+        max_log_intensity=max_log_intensity,
+    )
+    per_city_path = artifact_dir / (
+        "final_in_domain_temporal_validation_by_city.csv"
+        if is_final_production
+        else "geographic_validation_by_city.csv"
+    )
+    pl.DataFrame(geographic_metrics["per_city"]).write_csv(per_city_path)
+    in_domain_metrics = None
+    in_domain_city_path = None
+    if (
+        din_domain is not None
+        and exposure_in_domain is not None
+        and "in_domain_frame" in locals()
+    ):
+        in_domain_margin = booster.predict(din_domain, output_margin=True)
+        in_domain_metrics = geographic_point_process_metrics(
+            in_domain_frame,
+            log_intensity=in_domain_margin,
+            constant_log_intensity=initial_log_lambda,
+            min_log_intensity=min_log_intensity,
+            max_log_intensity=max_log_intensity,
+        )
+        in_domain_city_path = artifact_dir / "validation_in_domain_by_city.csv"
+        pl.DataFrame(in_domain_metrics["per_city"]).write_csv(in_domain_city_path)
+    del validation_frame
+    if in_domain_table is not None and "in_domain_frame" in locals():
+        del in_domain_frame
 
     train_nll_gain = (
         constant_train_nll
@@ -1318,10 +1346,22 @@ def train(
         "config_hash":
             config_hash,
 
-        "model_table_root":
-            data_config[
-                "model_table_root"
-            ],
+        "git_commit": git_commit(),
+
+        "git_dirty": git_dirty(),
+
+        "runtime_versions": {
+            "python": sys.version.split()[0],
+            "platform": platform.platform(),
+            "polars": pl.__version__,
+            "xgboost": xgb.__version__,
+        },
+
+        **table_ref.lineage,
+
+        "feature_contract_hash": config["features"]["feature_contract_hash"],
+
+        "geographic_holdout_cities": sorted(set(holdout_cities)),
 
         "train_fraction":
             train_fraction,
@@ -1359,6 +1399,69 @@ def train(
 
         "test_split_used":
             False,
+
+        "geographic_validation": (
+            None if is_final_production else geographic_metrics
+        ),
+
+        "geographic_oof_validation": config.get("hpo", {}).get(
+            "geographic_oof_validation"
+        ),
+
+        "final_in_domain_temporal_validation": (
+            geographic_metrics if is_final_production else None
+        ),
+
+        "in_domain_summary": in_domain_summary,
+
+        "in_domain_validation": in_domain_metrics,
+
+        "training_strategy": (
+            "final_all_city_train" if is_final_production else "geographic_holdout_fit"
+        ),
+
+        "geographic_cv": {
+            "enabled": geocv_enabled,
+            "fold_version": (
+                CANONICAL_GEOCV_VERSION if geocv_enabled else None
+            ),
+            "fold_count": len(resolved_geocv_folds),
+            "folds": (
+                {
+                    name: list(cities)
+                    for name, cities in resolved_geocv_folds.items()
+                }
+                if geocv_enabled
+                else {}
+            ),
+            "primary_metric": "geocv_macro_nll_per_event",
+        },
+
+        "final_training": {
+            "train_split": str(data_config.get("train_split", "train")),
+            "city_count": len(CANONICAL_MODELING_CITIES) if is_final_production else None,
+            "excluded_cities": [] if is_final_production else sorted(set(holdout_cities)),
+            "train_fraction": train_fraction,
+        },
+
+        "validation_strategy": {
+            "selection_metric_source": "geographic_oof_cv",
+            "final_diagnostic_source": "full_validation_split_in_domain",
+        },
+
+        "validation": {
+            "selection_metric_source": "geographic_oof_cv",
+            "final_diagnostic_source": "full_validation_split_in_domain",
+        },
+
+        "hyperparameters": {
+            "architecture": architecture_config,
+            "optimization": optimization_config,
+            "num_boost_round": int(training_config["num_boost_round"]),
+            "fixed_num_boost_round": fixed_rounds,
+        },
+
+        "hpo": config.get("hpo"),
     }
 
     with metadata_path.open(
@@ -1482,6 +1585,22 @@ def train(
         "sample_validation_bits_per_event":
             validation_bits_per_event,
 
+        "geographic_macro_nll_per_event": float(
+            geographic_metrics["macro_city"]["mean_nll_per_event"]
+        ),
+
+        "geographic_macro_bits_per_event": float(
+            geographic_metrics["macro_city"]["mean_bits_per_event"]
+        ),
+
+        "geographic_worst_city_bits_per_event": float(
+            geographic_metrics["macro_city"]["worst_city_bits_per_event"]
+        ),
+
+        "geographic_mean_abs_calibration_error_pct": float(
+            geographic_metrics["macro_city"]["mean_absolute_calibration_error_pct"]
+        ),
+
         "best_iteration":
             float(
                 best_iteration
@@ -1491,9 +1610,22 @@ def train(
             ),
     }
 
+    if in_domain_metrics is not None:
+        metrics["in_domain_macro_nll_per_event"] = float(
+            in_domain_metrics["macro_city"]["mean_nll_per_event"]
+        )
+
     return {
         "metrics":
             metrics,
+
+        "geographic_validation": (
+            None if is_final_production else geographic_metrics
+        ),
+
+        "final_in_domain_temporal_validation": (
+            geographic_metrics if is_final_production else None
+        ),
 
         "history":
             evals_result,
@@ -1511,7 +1643,8 @@ def train(
             str(
                 training_history_path
             ),
-        ],
+            str(per_city_path),
+        ] + ([str(in_domain_city_path)] if in_domain_city_path is not None else []),
 
         "summary": {
             "best_iteration":

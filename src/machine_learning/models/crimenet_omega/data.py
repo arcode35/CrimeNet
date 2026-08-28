@@ -8,6 +8,8 @@ import polars as pl
 import torch
 from torch.utils.data import Dataset
 
+from machine_learning.data.model_table import resolve_model_table
+
 
 _INTERNAL_COLUMNS = {
     "row_id": "__row_id",
@@ -62,13 +64,14 @@ class Omega0Preprocessor:
         }
 
 
-def _scan_delta(path: str) -> pl.LazyFrame:
-    if path.startswith("gs://"):
-        return pl.scan_delta(
-            path,
-            credential_provider=pl.CredentialProviderGCP(),
-        )
-    return pl.scan_delta(path)
+def _scan_model_split(path: str, split: str) -> pl.LazyFrame:
+    if path == "current_final_model_snapshot":
+        table = resolve_model_table()
+    elif path.startswith("s3://"):
+        table = resolve_model_table(snapshot_override_uri=path)
+    else:
+        table = resolve_model_table(local_root=path)
+    return table.scan_split(split)
 
 
 def _require_columns_config(columns: Mapping[str, str]) -> None:
@@ -143,8 +146,7 @@ def load_training_vocabulary(
     _require_columns_config(columns)
 
     lf = (
-        _scan_delta(table_root)
-        .filter(pl.col("split") == train_split)
+        _scan_model_split(table_root, train_split)
         .select(
             [
                 pl.col(columns["observed"]).alias(
@@ -230,8 +232,7 @@ def load_split(
     )
 
     lf = (
-        _scan_delta(table_root)
-        .filter(pl.col("split") == split)
+        _scan_model_split(table_root, split)
         .select(select_exprs)
         .with_columns(
             pl.col(_INTERNAL_COLUMNS["lighting_condition"])
@@ -243,7 +244,7 @@ def load_split(
             pl.col(_INTERNAL_COLUMNS["event_count"]).cast(pl.Float32),
             pl.col(_INTERNAL_COLUMNS["integration_weight"]).cast(
                 pl.Float64
-            ),
+            ).fill_null(0.0),
         )
     )
 

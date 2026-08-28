@@ -63,12 +63,13 @@ def run_validation(*, config_path: Path, run_id: str) -> dict:
                     artifact_path="full_validation",
                 )
 
-            validation_year = result["summary"]["validation_year"]
+            validation_split = result["summary"]["validation_split"]
 
             mlflow.set_tags(
                 {
                     "full_validation_status": "completed",
-                    "full_validation_year": str(validation_year),
+                    "full_validation_split": str(validation_split),
+                    "test_split_used": "false",
                 }
             )
 
@@ -79,7 +80,7 @@ def run_validation(*, config_path: Path, run_id: str) -> dict:
                 "event": "full_validation",
                 "run_id": run_id,
                 "model": model_config["name"],
-                "validation_year": validation_year,
+                "validation_split": validation_split,
                 "metrics": result.get("metrics", {}),
                 "city_metrics": result.get("city_metrics", {}),
                 "artifacts": result.get("artifacts", []),

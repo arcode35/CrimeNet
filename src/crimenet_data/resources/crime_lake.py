@@ -886,6 +886,43 @@ class CrimeLakeResources(dg.ConfigurableResource):
             label="Gold final model table",
         )
 
+    def resolve_final_model_table_snapshot(
+        self,
+        *,
+        snapshot_override_uri: str | None = None,
+    ) -> tuple[str, dict[str, object]]:
+        """Resolve current, or validate an explicit canonical immutable snapshot."""
+
+        if snapshot_override_uri is None:
+            return self.resolve_current_final_model_table_snapshot()
+        snapshot_uri = snapshot_override_uri.rstrip("/")
+        expected_prefix = f"{self.final_model_table_root}/snapshot_id="
+        if not snapshot_uri.startswith(expected_prefix):
+            raise ValueError(
+                "Final model-table override is outside the canonical root: "
+                f"{snapshot_uri!r}"
+            )
+        snapshot_id = snapshot_uri.removeprefix(expected_prefix)
+        if not snapshot_id or "/" in snapshot_id:
+            raise ValueError(f"Invalid final model-table snapshot URI: {snapshot_uri}")
+        if not self._object_exists(self.snapshot_success_uri(snapshot_uri)):
+            raise RuntimeError(f"Final model-table snapshot is incomplete: {snapshot_uri}")
+        try:
+            manifest = json.loads(
+                self._read_object(self.snapshot_manifest_uri(snapshot_uri))
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise RuntimeError("Malformed final model-table manifest") from error
+        if not isinstance(manifest, dict):
+            raise RuntimeError("Malformed final model-table manifest")
+        if str(manifest.get("snapshot_id", "")) != snapshot_id or str(
+            manifest.get("snapshot_uri", "")
+        ).rstrip("/") != snapshot_uri:
+            raise RuntimeError("Final model-table override identity mismatch")
+        if not self._snapshot_has_parquet(snapshot_uri):
+            raise RuntimeError("Final model-table override contains no Parquet")
+        return snapshot_uri, manifest
+
     def _snapshot_has_parquet(self, snapshot_uri: str) -> bool:
         if not snapshot_uri.startswith("s3://"):
             return any(Path(snapshot_uri).rglob("*.parquet"))

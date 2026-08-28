@@ -3,20 +3,16 @@ experiment:
   seed: 42
 
 data:
-  model_table_root: "gs://crimenet/gold_staging_/model_table_nyc_timestamp_fix"
+  snapshot_source: "current_final_model_snapshot"
   event_spine_root: "gs://crimenet/gold/event_spine"
 
   splits:
     train: "train"
     validation: "validation"
-    test: "test"
 
   # Development sampling. Increase only after the implementation is stable.
   train_fraction: 0.01
   validation_fraction: 0.01
-
-  # Training code must never read the test split.
-  allow_test_access: false
 
   # Physical model-table column names.
   columns:
