@@ -2,27 +2,28 @@ from __future__ import annotations
 
 import gc
 import json
+import os
 import platform
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pandas as pd
 import polars as pl
 import xgboost as xgb
 
 from machine_learning.data.features import resolve_feature_contract
-from machine_learning.data.geography import (
-    deterministic_sample,
-    geographic_frames,
-    validate_holdout_membership,
-)
 from machine_learning.data.geographic_cv import (
     CANONICAL_GEOCV_VERSION,
     CANONICAL_MODELING_CITIES,
     resolve_geographic_folds,
     validate_exact_modeling_cities,
+)
+from machine_learning.data.geography import (
+    deterministic_sample,
+    geographic_frames,
+    validate_holdout_membership,
 )
 from machine_learning.data.metrics import geographic_point_process_metrics
 from machine_learning.data.model_table import resolve_model_table_from_config
@@ -46,6 +47,239 @@ AUXILIARY_COLUMNS = [
     "event_count",
     "integration_weight_cell_seconds",
 ]
+
+
+def _load_cupy():
+    try:
+        import cupy as cp
+    except ImportError as error:
+        raise RuntimeError(
+            "CUDA intensity training requires cupy-cuda13x on this host"
+        ) from error
+    return cp
+
+
+def _point_process_grad_hess_cpu(
+    *,
+    pred: np.ndarray,
+    y: np.ndarray,
+    exposure: np.ndarray,
+    min_log_intensity: float,
+    max_log_intensity: float,
+    hessian_floor: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    safe = np.clip(
+        np.asarray(pred, dtype=np.float64),
+        min_log_intensity,
+        max_log_intensity,
+    )
+    integrated = np.asarray(exposure, dtype=np.float64) * np.exp(safe)
+    grad = integrated - np.asarray(y, dtype=np.float64)
+    hess = np.maximum(integrated, hessian_floor)
+    return grad.astype(np.float32), hess.astype(np.float32)
+
+
+class _CudaPointProcessObjective:
+    _kernel_source = r"""
+    extern "C" __global__
+    void point_process_grad_hess(
+        const float* pred,
+        const double* y,
+        const double* exposure,
+        const double min_margin,
+        const double max_margin,
+        const double hessian_floor,
+        float* grad,
+        float* hess,
+        const long long size
+    ) {
+        const long long i = (long long)blockDim.x * blockIdx.x + threadIdx.x;
+        if (i >= size) return;
+        double margin = (double)pred[i];
+        margin = margin < min_margin ? min_margin : margin;
+        margin = margin > max_margin ? max_margin : margin;
+        const double integrated = exposure[i] * exp(margin);
+        grad[i] = (float)(integrated - y[i]);
+        hess[i] = (float)(integrated > hessian_floor ? integrated : hessian_floor);
+    }
+    """
+
+    def __init__(
+        self,
+        *,
+        y: np.ndarray,
+        exposure: np.ndarray,
+        min_log_intensity: float,
+        max_log_intensity: float,
+        hessian_floor: float,
+    ) -> None:
+        self.cp = _load_cupy()
+        self.y = self.cp.asarray(y, dtype=self.cp.float64)
+        self.exposure = self.cp.asarray(exposure, dtype=self.cp.float64)
+        self.pred = self.cp.empty(y.shape, dtype=self.cp.float32)
+        self.grad = self.cp.empty(y.shape, dtype=self.cp.float32)
+        self.hess = self.cp.empty(y.shape, dtype=self.cp.float32)
+        self.min_log_intensity = float(min_log_intensity)
+        self.max_log_intensity = float(max_log_intensity)
+        self.hessian_floor = float(hessian_floor)
+        self.kernel = self.cp.RawKernel(
+            self._kernel_source, "point_process_grad_hess"
+        )
+
+    def __call__(self, predt, _dtrain):
+        if hasattr(predt, "__cuda_array_interface__"):
+            pred = self.cp.asarray(predt, dtype=self.cp.float32)
+        else:
+            self.pred.set(np.asarray(predt, dtype=np.float32))
+            pred = self.pred
+        threads = 256
+        blocks = (pred.size + threads - 1) // threads
+        self.kernel(
+            (blocks,),
+            (threads,),
+            (
+                pred,
+                self.y,
+                self.exposure,
+                self.min_log_intensity,
+                self.max_log_intensity,
+                self.hessian_floor,
+                self.grad,
+                self.hess,
+                pred.size,
+            ),
+        )
+        return self.grad, self.hess
+
+    def release(self) -> None:
+        self.cp.cuda.get_current_stream().synchronize()
+        self.y = self.exposure = self.pred = self.grad = self.hess = None
+
+
+class _CpuPointProcessObjective:
+    def __init__(
+        self,
+        *,
+        y: np.ndarray,
+        exposure: np.ndarray,
+        min_log_intensity: float,
+        max_log_intensity: float,
+        hessian_floor: float,
+    ) -> None:
+        self.y = np.asarray(y, dtype=np.float64)
+        self.exposure = np.asarray(exposure, dtype=np.float64)
+        self.min_log_intensity = min_log_intensity
+        self.max_log_intensity = max_log_intensity
+        self.hessian_floor = hessian_floor
+
+    def __call__(self, predt, _dtrain):
+        return _point_process_grad_hess_cpu(
+            pred=predt,
+            y=self.y,
+            exposure=self.exposure,
+            min_log_intensity=self.min_log_intensity,
+            max_log_intensity=self.max_log_intensity,
+            hessian_floor=self.hessian_floor,
+        )
+
+    def release(self) -> None:
+        return None
+
+
+class _CudaMacroCityMetric:
+    _kernel_source = r"""
+    extern "C" __global__
+    void point_process_row_nll(
+        const float* pred,
+        const double* y,
+        const double* exposure,
+        const double min_margin,
+        const double max_margin,
+        double* row_nll,
+        const long long size
+    ) {
+        const long long i = (long long)blockDim.x * blockIdx.x + threadIdx.x;
+        if (i >= size) return;
+        double margin = (double)pred[i];
+        margin = margin < min_margin ? min_margin : margin;
+        margin = margin > max_margin ? max_margin : margin;
+        row_nll[i] = exposure[i] * exp(margin) - y[i] * margin;
+    }
+    """
+
+    def __init__(
+        self,
+        *,
+        y: np.ndarray,
+        exposure: np.ndarray,
+        city_codes: np.ndarray,
+        city_count: int,
+        min_log_intensity: float,
+        max_log_intensity: float,
+    ) -> None:
+        self.cp = _load_cupy()
+        self.y = self.cp.asarray(y, dtype=self.cp.float64)
+        self.exposure = self.cp.asarray(exposure, dtype=self.cp.float64)
+        self.city_codes = self.cp.asarray(city_codes, dtype=self.cp.int64)
+        self.city_count = int(city_count)
+        self.observed_by_city = self.cp.bincount(
+            self.city_codes, weights=self.y, minlength=self.city_count
+        )
+        if bool(self.cp.any(self.observed_by_city <= 0).item()):
+            raise ValueError(
+                "Macro-city early stopping requires observed events in every city"
+            )
+        self.pred = self.cp.empty(y.shape, dtype=self.cp.float32)
+        self.row_nll = self.cp.empty(y.shape, dtype=self.cp.float64)
+        self.min_log_intensity = float(min_log_intensity)
+        self.max_log_intensity = float(max_log_intensity)
+        self.kernel = self.cp.RawKernel(self._kernel_source, "point_process_row_nll")
+
+    def __call__(self, predt, _dmatrix):
+        if hasattr(predt, "__cuda_array_interface__"):
+            pred = self.cp.asarray(predt, dtype=self.cp.float32)
+        else:
+            self.pred.set(np.asarray(predt, dtype=np.float32))
+            pred = self.pred
+        threads = 256
+        blocks = (pred.size + threads - 1) // threads
+        self.kernel(
+            (blocks,),
+            (threads,),
+            (
+                pred,
+                self.y,
+                self.exposure,
+                self.min_log_intensity,
+                self.max_log_intensity,
+                self.row_nll,
+                pred.size,
+            ),
+        )
+        nll_by_city = self.cp.bincount(
+            self.city_codes, weights=self.row_nll, minlength=self.city_count
+        )
+        macro = self.cp.mean(nll_by_city / self.observed_by_city)
+        value = float(macro.item())
+        if not np.isfinite(value):
+            raise ValueError("Point-process evaluation metric is non-finite")
+        return "macro_city_pp_nll_per_event", value
+
+    def release(self) -> None:
+        self.cp.cuda.get_current_stream().synchronize()
+        self.y = self.exposure = self.city_codes = None
+        self.observed_by_city = self.pred = self.row_nll = None
+
+
+def _release_cuda_memory(*objects: Any) -> None:
+    cupy_objects = [obj for obj in objects if hasattr(obj, "cp")]
+    if not cupy_objects:
+        return
+    cp = cupy_objects[0].cp
+    for obj in cupy_objects:
+        obj.release()
+    cp.cuda.get_current_stream().synchronize()
+    cp.get_default_memory_pool().free_all_blocks()
 
 
 def _safe_margin(
@@ -235,7 +469,7 @@ def _prepare_xy(
         dict[str, list[str]]
         | None = None,
 ) -> tuple[
-    pd.DataFrame,
+    pl.DataFrame,
     np.ndarray,
     np.ndarray,
     dict[str, list[str]],
@@ -243,27 +477,25 @@ def _prepare_xy(
     y, exposure = prepare_target_exposure(frame)
     y = y.astype(np.float32, copy=False)
 
-    X = (
-        frame
-        .select(
-            feature_columns
-        )
-        .to_pandas()
-    )
-
     learned_categories: dict[
         str,
         list[str],
     ] = {}
 
-    for column in categorical_columns:
+    expressions: list[pl.Expr] = []
+    for column in feature_columns:
+        if column not in categorical_columns:
+            expressions.append(
+                pl.col(column).cast(pl.Float32, strict=False).alias(column)
+            )
+            continue
         if category_levels is None:
             categories = sorted(
-                X[column]
-                .dropna()
-                .astype(str)
+                frame.get_column(column)
+                .drop_nulls()
+                .cast(pl.String)
                 .unique()
-                .tolist()
+                .to_list()
             )
         else:
             categories = (
@@ -276,24 +508,13 @@ def _prepare_xy(
             column
         ] = categories
 
-        X[column] = pd.Categorical(
-            X[column],
-            categories=categories,
+        expressions.append(
+            pl.col(column)
+            .cast(pl.String, strict=False)
+            .cast(pl.Enum(categories), strict=False)
+            .alias(column)
         )
-
-    for column in feature_columns:
-        if column in categorical_columns:
-            continue
-
-        X[column] = (
-            pd.to_numeric(
-                X[column],
-                errors="coerce",
-            )
-            .astype(
-                np.float32
-            )
-        )
+    X = frame.select(expressions)
 
     return (
         X,
@@ -571,6 +792,7 @@ def train(
     training_config = config["training"]
     numerics_config = config["numerics"]
     artifact_config = config["artifacts"]
+    hpo_enabled = bool(config.get("hpo_runtime", {}).get("enabled", False))
 
     seed = int(
         data_config["seed"]
@@ -676,10 +898,11 @@ def train(
         / run_id
     )
 
-    artifact_dir.mkdir(
-        parents=True,
-        exist_ok=False,
-    )
+    if not hpo_enabled:
+        artifact_dir.mkdir(
+            parents=True,
+            exist_ok=False,
+        )
 
     model_path = (
         artifact_dir
@@ -701,16 +924,20 @@ def train(
         / "training_history.json"
     )
 
-    print(
-        f"Experiment artifacts: "
-        f"{artifact_dir}"
-    )
+    if hpo_enabled:
+        print("HPO fast path: per-fold artifacts and full-train diagnostics disabled")
+    else:
+        print(
+            f"Experiment artifacts: "
+            f"{artifact_dir}"
+        )
 
     print(
         "Loading deterministic "
         "training sample..."
     )
 
+    sample_started = time.perf_counter()
     train_frame = (
         _deterministic_split_sample(
             table=train_table,
@@ -742,18 +969,18 @@ def train(
                 feature_columns,
         )
     )
+    print(f"[timing] sample load/filter: {time.perf_counter() - sample_started:.3f}s")
 
-    train_summary = _sample_summary(
-        "train",
-        train_frame,
-    )
-
-    validation_summary = (
-        _sample_summary(
+    train_summary = validation_summary = None
+    if not hpo_enabled:
+        train_summary = _sample_summary(
+            "train",
+            train_frame,
+        )
+        validation_summary = _sample_summary(
             "validation",
             validation_frame,
         )
-    )
     validate_holdout_membership(
         training=train_frame,
         validation=validation_frame,
@@ -773,6 +1000,7 @@ def train(
         if in_domain_frame.height:
             in_domain_summary = _sample_summary("in-domain validation", in_domain_frame)
 
+    feature_started = time.perf_counter()
     (
         X_train,
         y_train,
@@ -809,6 +1037,7 @@ def train(
             categorical_columns=categorical_columns,
             category_levels=categories,
         )
+    print(f"[timing] feature preparation: {time.perf_counter() - feature_started:.3f}s")
 
     train_city_codes, train_city_count = _city_metric_index(train_frame)
     validation_city_codes, validation_city_count = _city_metric_index(validation_frame)
@@ -912,6 +1141,7 @@ def train(
         dtype=np.float32,
     )
 
+    dmatrix_started = time.perf_counter()
     dtrain = xgb.QuantileDMatrix(
         X_train,
         label=y_train,
@@ -945,6 +1175,10 @@ def train(
             ref=dtrain,
             nthread=-1,
         )
+    print(
+        f"[timing] QuantileDMatrix construction: "
+        f"{time.perf_counter() - dmatrix_started:.3f}s"
+    )
 
     del X_train
     del X_validation
@@ -953,52 +1187,24 @@ def train(
 
     gc.collect()
 
-    def point_process_poisson_objective(
-        predt: np.ndarray,
-        dtrain_: xgb.DMatrix,
-    ):
-        y = (
-            dtrain_
-            .get_label()
-            .astype(
-                np.float64,
-                copy=False,
-            )
+    cuda_active = str(architecture_config["device"]).lower().startswith("cuda")
+    objective = (
+        _CudaPointProcessObjective(
+            y=y_train,
+            exposure=exposure_train,
+            min_log_intensity=min_log_intensity,
+            max_log_intensity=max_log_intensity,
+            hessian_floor=hessian_floor,
         )
-
-        f_safe = _safe_margin(
-            predt,
-            min_log_intensity=
-                min_log_intensity,
-            max_log_intensity=
-                max_log_intensity,
+        if cuda_active
+        else _CpuPointProcessObjective(
+            y=y_train,
+            exposure=exposure_train,
+            min_log_intensity=min_log_intensity,
+            max_log_intensity=max_log_intensity,
+            hessian_floor=hessian_floor,
         )
-
-        integrated_intensity = (
-            exposure_train
-            * np.exp(
-                f_safe
-            )
-        )
-
-        grad = (
-            integrated_intensity
-            - y
-        )
-
-        hess = np.maximum(
-            integrated_intensity,
-            hessian_floor,
-        )
-
-        return (
-            grad.astype(
-                np.float32
-            ),
-            hess.astype(
-                np.float32
-            ),
-        )
+    )
 
     exposure_lookup = {
         id(dtrain):
@@ -1053,6 +1259,30 @@ def train(
             ("pp_nll_per_event", pooled_nll),
             ("macro_city_pp_nll_per_event", macro_city_nll),
         ]
+
+    if hpo_enabled and cuda_active:
+        hpo_metric = _CudaMacroCityMetric(
+            y=y_validation,
+            exposure=exposure_validation,
+            city_codes=validation_city_codes,
+            city_count=validation_city_count,
+            min_log_intensity=min_log_intensity,
+            max_log_intensity=max_log_intensity,
+        )
+    elif hpo_enabled:
+        def hpo_metric(predt, _dmatrix):
+            _, macro = _point_process_eval_values(
+                y=y_validation,
+                exposure=exposure_validation,
+                margin=predt,
+                city_codes=validation_city_codes,
+                city_count=validation_city_count,
+                min_log_intensity=min_log_intensity,
+                max_log_intensity=max_log_intensity,
+            )
+            return "macro_city_pp_nll_per_event", macro
+    else:
+        hpo_metric = None
 
     params = {
         "tree_method":
@@ -1143,34 +1373,20 @@ def train(
             True,
     }
 
-    constant_train_nll = (
-        _constant_nll_per_event(
+    constant_train_nll = constant_validation_nll = None
+    if not hpo_enabled:
+        constant_train_nll = _constant_nll_per_event(
             y=y_train,
             exposure=exposure_train,
-            log_lambda=
-                initial_log_lambda,
+            log_lambda=initial_log_lambda,
         )
-    )
-
-    constant_validation_nll = (
-        _constant_nll_per_event(
+        constant_validation_nll = _constant_nll_per_event(
             y=y_validation,
-            exposure=
-                exposure_validation,
-            log_lambda=
-                initial_log_lambda,
+            exposure=exposure_validation,
+            log_lambda=initial_log_lambda,
         )
-    )
-
-    print(
-        "Constant train NLL/event:",
-        constant_train_nll,
-    )
-
-    print(
-        "Constant validation NLL/event:",
-        constant_validation_nll,
-    )
+        print("Constant train NLL/event:", constant_train_nll)
+        print("Constant validation NLL/event:", constant_validation_nll)
 
     print(
         "\nTraining XGBoost "
@@ -1199,45 +1415,55 @@ def train(
             )
         ]
     )
-    booster = xgb.train(
-        params=params,
+    global _cuda_banner_printed
+    if cuda_active and not globals().get("_cuda_banner_printed", False):
+        cp = _load_cupy()
+        print(
+            "CUDA HPO trainer: "
+            f"GPU={os.environ.get('CUDA_VISIBLE_DEVICES', 'default')} "
+            f"objective_active=yes CuPy={cp.__version__} "
+            f"train_rows={len(y_train):,} validation_rows={len(y_validation):,} "
+            f"max_bin={max_bin} max_depth={architecture_config['max_depth']}"
+        )
+        _cuda_banner_printed = True
 
-        dtrain=dtrain,
+    training_started = time.perf_counter()
+    try:
+        booster = xgb.train(
+            params=params,
 
-        num_boost_round=int(
-            training_config[
-                "num_boost_round"
-            ]
-        ),
+            dtrain=dtrain,
 
-        evals=[
-            (
-                dtrain,
-                "train",
+            num_boost_round=int(training_config["num_boost_round"]),
+
+            evals=(
+                [(dvalidation, "validation")]
+                if hpo_enabled
+                else [(dtrain, "train"), (dvalidation, "validation")]
             ),
-            (
-                dvalidation,
-                "validation",
-            ),
-        ],
 
-        obj=
-            point_process_poisson_objective,
+            obj=objective,
 
-        custom_metric=
-            point_process_nll,
+            custom_metric=hpo_metric if hpo_enabled else point_process_nll,
 
-        early_stopping_rounds=None,
+            early_stopping_rounds=None,
 
-        callbacks=early_stopping_callbacks,
+            callbacks=early_stopping_callbacks,
 
-        evals_result=
-            evals_result,
+            evals_result=evals_result,
 
-        verbose_eval=
-            training_config[
-                "verbose_eval"
-            ],
+            verbose_eval=training_config["verbose_eval"],
+        )
+    except Exception:
+        _release_cuda_memory(objective, hpo_metric)
+        raise
+    training_seconds = time.perf_counter() - training_started
+    metric_history = evals_result.get("validation", {})
+    rounds_trained = max((len(values) for values in metric_history.values()), default=0)
+    per_iteration = training_seconds / max(rounds_trained, 1)
+    print(
+        f"[timing] training: {training_seconds:.3f}s; "
+        f"rounds={rounds_trained}; seconds/iteration={per_iteration:.6f}"
     )
 
     best_iteration = getattr(
@@ -1250,6 +1476,45 @@ def train(
         booster = booster[
             : best_iteration + 1
         ]
+
+    if hpo_enabled:
+        scoring_started = time.perf_counter()
+        validation_margin_for_geo = booster.predict(
+            dvalidation, output_margin=True
+        )
+        geographic_metrics = geographic_point_process_metrics(
+            validation_frame,
+            log_intensity=validation_margin_for_geo,
+            constant_log_intensity=initial_log_lambda,
+            min_log_intensity=min_log_intensity,
+            max_log_intensity=max_log_intensity,
+        )
+        print(
+            f"[timing] post-fit geographic scoring: "
+            f"{time.perf_counter() - scoring_started:.3f}s"
+        )
+        _release_cuda_memory(objective, hpo_metric)
+        return {
+            "metrics": {
+                "best_iteration": float(
+                    best_iteration if best_iteration is not None else -1
+                ),
+                "geographic_macro_nll_per_event": float(
+                    geographic_metrics["macro_city"]["mean_nll_per_event"]
+                ),
+            },
+            "geographic_validation": geographic_metrics,
+            "final_in_domain_temporal_validation": None,
+            "history": evals_result,
+            "artifacts": [],
+            "summary": {
+                "best_iteration": best_iteration,
+                "feature_count": len(feature_columns),
+                "artifact_dir": None,
+                "hpo_fast_path": True,
+                "test_split_used": False,
+            },
+        }
 
     train_metrics = _evaluate_split(
         name="train",
@@ -1312,6 +1577,7 @@ def train(
     del validation_frame
     if in_domain_table is not None and "in_domain_frame" in locals():
         del in_domain_frame
+    _release_cuda_memory(objective)
 
     train_nll_gain = (
         constant_train_nll

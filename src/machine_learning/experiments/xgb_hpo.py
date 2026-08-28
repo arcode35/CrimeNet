@@ -14,17 +14,17 @@ import shutil
 import time
 import traceback
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
-import optuna
 import numpy as np
+import optuna
 import yaml
 
 from machine_learning.data.cache import cache_identity as immutable_cache_identity
 from machine_learning.data.features import resolve_feature_contract
-from machine_learning.data.geography import geographic_frames
 from machine_learning.data.geographic_cv import (
     CANONICAL_GEOCV_VERSION,
     aggregate_intensity_oof,
@@ -34,6 +34,12 @@ from machine_learning.data.model_table import (
     enrich_config_with_lineage,
     resolve_model_table,
     resolve_model_table_from_config,
+)
+from machine_learning.data.snapshot_stage import (
+    assert_test_split_not_staged,
+    plan_hpo_snapshot_stage,
+    preflight_hpo_disk,
+    stage_hpo_snapshot,
 )
 
 
@@ -197,6 +203,20 @@ def parse_args() -> argparse.Namespace:
             "Directory for immutable sampled Arrow IPC caches. Default: "
             "<study-output>/stage_cache. Put this on local NVMe for best throughput."
         ),
+    )
+    parser.add_argument(
+        "--snapshot-stage-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Local NVMe directory for the immutable train/validation snapshot. "
+            "Default: a snapshot_stage directory beside the HPO cache root."
+        ),
+    )
+    parser.add_argument(
+        "--no-snapshot-stage",
+        action="store_true",
+        help="Explicitly opt out of staging a remote HPO snapshot locally.",
     )
     parser.add_argument(
         "--disable-stage-cache",
@@ -664,6 +684,7 @@ def configure_stage(
     # the one-model, all-15-city final production strategy.
     config.setdefault("final_training", {})["use_all_cities"] = False
     config["training"]["fixed_num_boost_round"] = False
+    config.setdefault("hpo_runtime", {})["enabled"] = True
 
     if seed is not None:
         config["data"]["seed"] = int(seed)
@@ -748,11 +769,9 @@ def _canonical_sampling_seed(fraction: float, seed: int) -> int:
     return 0 if abs(float(fraction) - 1.0) <= 1e-12 else int(seed)
 
 
-def _sample_lookup_key(
-    *, fold_name: str, split: str, fraction: float, seed: int
-) -> str:
+def _sample_lookup_key(*, split: str, fraction: float, seed: int) -> str:
     canonical_seed = _canonical_sampling_seed(fraction, seed)
-    return f"{fold_name}|{split}|{_fraction_token(fraction)}|{canonical_seed}"
+    return f"{split}|{_fraction_token(fraction)}|{canonical_seed}"
 
 
 def _hpo_table_root(base_config: dict[str, Any], override: str | None) -> str:
@@ -778,10 +797,7 @@ def _cache_identity(
     module_name: str,
     base_config: dict[str, Any],
     family: str,
-    snapshot_source: str,
     split: str,
-    fold_name: str,
-    held_out_cities: list[str],
     fraction: float,
     seed: int,
     feature_columns: list[str],
@@ -790,15 +806,13 @@ def _cache_identity(
     data = base_config["data"]
     feature_hash = str(base_config["features"]["feature_contract_hash"])
     return immutable_cache_identity(
-        cache_version="4",
+        cache_version="5",
         snapshot_id=str(data["final_model_snapshot_id"]),
         schema_version=str(data["final_model_schema_version"]),
         feature_contract_hash=feature_hash,
         model_family=family,
         model_module=module_name,
         split=str(split),
-        fold_name=fold_name,
-        holdout_cities=held_out_cities,
         fraction=float(fraction),
         seed=_canonical_sampling_seed(fraction, seed),
         target_column=target_column,
@@ -821,8 +835,6 @@ def _build_sample_cache_entry(
     snapshot_source: str,
     cache_dir: Path,
     split: str,
-    fold_name: str,
-    held_out_cities: list[str],
     fraction: float,
     seed: int,
     rebuild: bool,
@@ -831,30 +843,23 @@ def _build_sample_cache_entry(
     expected_data = base_config["data"]
     if table_ref.snapshot_id != str(expected_data["final_model_snapshot_id"]):
         raise RuntimeError(
-            f"HPO cache snapshot mismatch for {fold_name}/{split}: "
+            f"HPO cache snapshot mismatch for {split}: "
             f"resolved={table_ref.snapshot_id!r}, "
             f"expected={expected_data['final_model_snapshot_id']!r}"
         )
     if table_ref.schema_version != str(expected_data["final_model_schema_version"]):
         raise RuntimeError(
-            f"HPO cache schema mismatch for {fold_name}/{split}: "
+            f"HPO cache schema mismatch for {split}: "
             f"resolved={table_ref.schema_version!r}, "
             f"expected={expected_data['final_model_schema_version']!r}"
         )
     expected_uri = str(expected_data["final_model_snapshot_uri"]).rstrip("/")
     if table_ref.snapshot_uri.rstrip("/") != expected_uri:
         raise RuntimeError(
-            f"HPO cache snapshot URI mismatch for {fold_name}/{split}: "
+            f"HPO cache snapshot URI mismatch for {split}: "
             f"resolved={table_ref.snapshot_uri!r}, expected={expected_uri!r}"
         )
     table = table_ref.scan_split(split)
-    train_table, validation_table, _ = geographic_frames(
-        train=table,
-        validation=table,
-        holdout_cities=held_out_cities,
-        report_in_domain=False,
-    )
-    table = train_table if split == "train" else validation_table
     feature_columns, _ = module._resolve_feature_columns(
         base_config, available_columns=table.collect_schema().names()
     )
@@ -865,10 +870,7 @@ def _build_sample_cache_entry(
         module_name=module_name,
         base_config=base_config,
         family=family,
-        snapshot_source=snapshot_source,
         split=split,
-        fold_name=fold_name,
-        held_out_cities=held_out_cities,
         fraction=fraction,
         seed=canonical_seed,
         feature_columns=feature_columns,
@@ -876,28 +878,40 @@ def _build_sample_cache_entry(
     )
 
     safe_split = sanitize_name(split)
-    stem = (
-        f"{family}_{sanitize_name(fold_name)}_{safe_split}_"
-        f"f{_fraction_token(fraction)}_{identity}"
-    )
+    stem = f"{family}_{safe_split}_f{_fraction_token(fraction)}_{identity}"
     ipc_path = (cache_dir / f"{stem}.arrow").resolve()
     manifest_path = ipc_path.with_suffix(".json")
     lookup_key = _sample_lookup_key(
-        fold_name=fold_name,
         split=split,
         fraction=fraction,
         seed=canonical_seed,
     )
 
     if not rebuild and ipc_path.exists() and manifest_path.exists():
-        print(
-            f"[cache] reuse {fold_name}/{split} fraction={fraction:g}: {ipc_path} "
-            f"({ipc_path.stat().st_size / (1024 ** 3):.2f} GiB)"
+        try:
+            existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+        reusable = (
+            existing.get("version") == 5
+            and existing.get("final_model_snapshot_id") == table_ref.snapshot_id
+            and existing.get("final_model_schema_version") == table_ref.schema_version
+            and existing.get("feature_contract_hash")
+            == base_config["features"]["feature_contract_hash"]
+            and existing.get("split") == split
+            and float(existing.get("fraction", -1.0)) == float(fraction)
+            and int(existing.get("sampling_seed", -1)) == int(canonical_seed)
+            and int(existing.get("bytes", -1)) == ipc_path.stat().st_size
         )
-        return lookup_key, str(ipc_path)
+        if reusable:
+            print(
+                f"[cache] reuse global {split} fraction={fraction:g}: {ipc_path} "
+                f"({ipc_path.stat().st_size / (1024 ** 3):.2f} GiB)"
+            )
+            return lookup_key, str(ipc_path)
 
     print(
-        f"[cache] BUILD {family} fold={fold_name} split={split} fraction={fraction:g} "
+        f"[cache] BUILD {family} global split={split} fraction={fraction:g} "
         f"seed={canonical_seed} from {snapshot_source}"
     )
 
@@ -931,15 +945,13 @@ def _build_sample_cache_entry(
     temp_path.replace(ipc_path)
 
     manifest = {
-        "version": 4,
+        "version": 5,
         "family": family,
         "module": module_name,
         "final_model_snapshot_id": table_ref.snapshot_id,
         "final_model_schema_version": table_ref.schema_version,
         "feature_contract_hash": base_config["features"]["feature_contract_hash"],
         "split": split,
-        "fold_name": fold_name,
-        "held_out_cities": sorted(held_out_cities),
         "fraction": float(fraction),
         "sampling_seed": int(canonical_seed),
         "rows": int(frame.height),
@@ -978,27 +990,29 @@ def prepare_stage_sample_cache(
     base_seed = int(data_cfg["seed"])
 
     entries: dict[str, str] = {}
-    for fold_name, held_out_cities in resolve_geographic_folds(base_config).items():
-        specs = [
-            (str(data_cfg["train_split"]), float(stage.train_fraction)),
-            (str(data_cfg["validation_split"]), float(stage.validation_fraction)),
-        ]
-        for split, fraction in specs:
-            key, path = _build_sample_cache_entry(
-                module=module,
-                module_name=module_name,
-                base_config=base_config,
-                family=family,
-                snapshot_source=snapshot_source,
-                cache_dir=cache_dir,
-                split=split,
-                fold_name=fold_name,
-                held_out_cities=list(held_out_cities),
-                fraction=fraction,
-                seed=base_seed,
-                rebuild=rebuild,
-            )
-            entries[key] = path
+    specs = {
+        (str(data_cfg["train_split"]), float(stage.train_fraction)),
+        (str(data_cfg["validation_split"]), float(stage.validation_fraction)),
+    }
+    for split, fraction in sorted(specs):
+        started = time.perf_counter()
+        key, path = _build_sample_cache_entry(
+            module=module,
+            module_name=module_name,
+            base_config=base_config,
+            family=family,
+            snapshot_source=snapshot_source,
+            cache_dir=cache_dir,
+            split=split,
+            fraction=fraction,
+            seed=base_seed,
+            rebuild=rebuild,
+        )
+        entries[key] = path
+        print(
+            f"[timing] Arrow cache {split} fraction={fraction:g}: "
+            f"{time.perf_counter() - started:.3f}s"
+        )
 
     return entries
 
@@ -1042,9 +1056,7 @@ def install_worker_stage_cache(
         split = str(kwargs["split"])
         fraction = float(kwargs["fraction"])
         seed = int(kwargs["seed"])
-        key = _sample_lookup_key(
-            fold_name=fold_name, split=split, fraction=fraction, seed=seed
-        )
+        key = _sample_lookup_key(split=split, fraction=fraction, seed=seed)
         path = sample_cache_entries.get(key)
         if path is None:
             # Defensive fallback for a future trainer/sample shape not prepared
@@ -1058,7 +1070,23 @@ def install_worker_stage_cache(
                 f"[worker {worker_index}] cached sample resident: "
                 f"rows={loaded_frames[path].height:,}"
             )
-        return loaded_frames[path]
+        held_out = list(getattr(module, "_hpo_active_holdout_cities", ()))
+        started = time.perf_counter()
+        if split == "train":
+            result = loaded_frames[path].filter(
+                ~real_pl.col("source_city").is_in(held_out)
+            )
+        elif split == "validation":
+            result = loaded_frames[path].filter(
+                real_pl.col("source_city").is_in(held_out)
+            )
+        else:
+            raise ValueError(f"HPO cache cannot serve split={split!r}")
+        print(
+            f"[timing] worker {worker_index} sample load/filter "
+            f"{fold_name}/{split}: {time.perf_counter() - started:.3f}s"
+        )
+        return result
 
     setattr(module, sample_fn_name, cached_sample)
 
@@ -1066,11 +1094,10 @@ def install_worker_stage_cache(
         lineage: dict[str, object] = {}
 
         def scan_split(self, split: str):
-            fold_name = str(getattr(module, "_hpo_active_fold_name", ""))
             candidates = [
                 path
                 for key, path in sample_cache_entries.items()
-                if key.startswith(f"{fold_name}|{split}|")
+                if key.startswith(f"{split}|")
             ]
             if not candidates:
                 raise RuntimeError(f"No prepared HPO cache for split={split}")
@@ -1258,6 +1285,7 @@ def run_train_once(
         cfg_hash = stable_config_hash(fold_cfg)
         result: dict[str, Any] | None = None
         setattr(module, "_hpo_active_fold_name", fold_name)
+        setattr(module, "_hpo_active_holdout_cities", tuple(held_out_cities))
         try:
             result = module.train(fold_cfg, run_id=run_id, config_hash=cfg_hash)
             report = result.get("geographic_validation")
@@ -1289,6 +1317,7 @@ def run_train_once(
             if result is not None and not keep_artifacts:
                 cleanup_result_artifacts(result)
             setattr(module, "_hpo_active_fold_name", "")
+            setattr(module, "_hpo_active_holdout_cities", ())
             del result
             gc.collect()
 
@@ -2123,13 +2152,11 @@ def main() -> None:
             data_cfg.pop("local_snapshot_root", None)
         else:
             data_cfg["local_snapshot_root"] = requested_source
-    table_ref = resolve_model_table_from_config(data_cfg)
-    base_config = enrich_config_with_lineage(base_config, table_ref)
+    canonical_table_ref = resolve_model_table_from_config(data_cfg)
+    base_config = enrich_config_with_lineage(base_config, canonical_table_ref)
     contract = resolve_feature_contract(
         base_config["features"],
-        available_columns=table_ref.scan_split(
-            str(base_config["data"].get("train_split", "train"))
-        ).collect_schema().names(),
+        available_columns=list(canonical_table_ref.manifest["columns"]),
     )
     base_config["features"]["resolved_numeric"] = list(contract.numeric)
     base_config["features"]["resolved_categorical"] = list(contract.categorical)
@@ -2137,7 +2164,7 @@ def main() -> None:
     frozen_folds = resolve_geographic_folds(base_config)
     study_tag = sanitize_name(
         f"{args.study_name}_{CANONICAL_GEOCV_VERSION}_transfer_v2_"
-        f"{table_ref.snapshot_id[:10]}_{contract.contract_hash[:10]}"
+        f"{canonical_table_ref.snapshot_id[:10]}_{contract.contract_hash[:10]}"
     )
 
     explore_workers = resolved_worker_count(args.explore_workers, gpus)
@@ -2168,8 +2195,79 @@ def main() -> None:
         else root / "stage_cache"
     )
     stage_cache_dir = stage_cache_dir.resolve()
-    hpo_table_root = _hpo_table_root(base_config, args.hpo_snapshot_source)
-    prepared_xy_requested = not args.no_prepared_xy_cache
+    snapshot_stage_dir = (
+        args.snapshot_stage_dir
+        if args.snapshot_stage_dir is not None
+        else stage_cache_dir.parent / "snapshot_stage"
+    ).resolve()
+    remote_stage_plan = None
+    remote_staged = False
+    if canonical_table_ref.local_root:
+        hpo_table_root = str(Path(canonical_table_ref.local_root).resolve())
+        assert_test_split_not_staged(Path(hpo_table_root))
+    elif canonical_table_ref.snapshot_uri.startswith("s3://"):
+        remote_stage_plan = plan_hpo_snapshot_stage(
+            snapshot_uri=canonical_table_ref.snapshot_uri,
+            snapshot_id=canonical_table_ref.snapshot_id,
+            lake=canonical_table_ref.lake,
+        )
+        disk_report = preflight_hpo_disk(
+            plan=remote_stage_plan,
+            stage_dir=snapshot_stage_dir,
+            cache_dir=stage_cache_dir,
+            stage_enabled=not args.no_snapshot_stage,
+        )
+        print(f"remote parquet bytes: {disk_report['remote_parquet_bytes']:,}")
+        print(
+            "local staged snapshot bytes: "
+            f"{disk_report['local_staged_snapshot_bytes']:,}"
+        )
+        print(
+            "explore cache projected/actual bytes: "
+            f"{disk_report['explore_cache_projected_bytes']:,}/0"
+        )
+        print(
+            "full train cache projected bytes: "
+            f"{disk_report['full_train_cache_projected_bytes']:,}"
+        )
+        print(
+            "full validation cache projected bytes: "
+            f"{disk_report['full_validation_cache_projected_bytes']:,}"
+        )
+        print(f"free disk bytes: {disk_report['free_disk_bytes']:,}")
+        if args.no_snapshot_stage:
+            hpo_table_root = canonical_table_ref.snapshot_uri
+        else:
+            stage_started = time.perf_counter()
+            local_root = stage_hpo_snapshot(
+                plan=remote_stage_plan,
+                stage_dir=snapshot_stage_dir,
+                lake=canonical_table_ref.lake,
+                workers=12,
+            )
+            print(
+                f"[timing] snapshot staging: "
+                f"{time.perf_counter() - stage_started:.3f}s"
+            )
+            hpo_table_root = str(local_root)
+            staged_bytes = sum(
+                (local_root / item.relative_path).stat().st_size
+                for item in remote_stage_plan.objects
+            )
+            print(f"local staged snapshot bytes: {staged_bytes:,}")
+            local_table_ref = resolve_model_table(local_root=hpo_table_root)
+            if local_table_ref.lineage != canonical_table_ref.lineage:
+                raise RuntimeError("Local HPO snapshot lineage differs from canonical source")
+            base_config["data"]["local_snapshot_root"] = hpo_table_root
+            remote_staged = True
+    else:
+        hpo_table_root = _hpo_table_root(base_config, args.hpo_snapshot_source)
+    local_hpo_snapshot = (
+        hpo_table_root if not str(hpo_table_root).startswith("s3://") else "not staged"
+    )
+    # Intensity now feeds Polars directly into QuantileDMatrix, so retaining a
+    # second prepared matrix is both redundant and dangerous at production size.
+    prepared_xy_requested = not args.no_prepared_xy_cache and family != "intensity"
 
     explore_stage = Stage(
         name="explore",
@@ -2211,10 +2309,17 @@ def main() -> None:
     print(f"Explore workers:     {explore_workers}")
     print(f"Refine workers:      {refine_workers}")
     print(f"Tournament workers:  {tournament_workers}")
-    print(f"Threads/worker:      {'auto' if args.threads_per_worker <= 0 else args.threads_per_worker}")
+    threads_label = (
+        "auto" if args.threads_per_worker <= 0 else str(args.threads_per_worker)
+    )
+    print(f"Threads/worker:      {threads_label}")
     print(f"Study output:        {root.resolve()}")
     print(f"HPO table override:  {args.hpo_snapshot_source or 'none (base config)'}")
     print(f"HPO source table:    {hpo_table_root}")
+    print(f"Canonical snapshot:  {canonical_table_ref.snapshot_uri}")
+    print(f"Local HPO snapshot:  {local_hpo_snapshot}")
+    print(f"Remote snapshot staged: {'yes' if remote_staged else 'no'}")
+    print("TEST SPLIT STAGED: NO")
     print(f"Stage cache:         {'disabled' if args.disable_stage_cache else stage_cache_dir}")
     print(
         "Prepared XY cache:   "
@@ -2262,6 +2367,9 @@ def main() -> None:
             rebuild=args.rebuild_stage_cache,
         )
     )
+    if explore_cache:
+        actual = sum(Path(path).stat().st_size for path in set(explore_cache.values()))
+        print(f"explore cache projected/actual bytes: n/a/{actual:,}")
 
     explore_study = run_parallel_study(
         name=f"{study_tag}__explore",
@@ -2273,7 +2381,7 @@ def main() -> None:
         device=args.device,
         study_tag=study_tag,
         keep_artifacts=args.keep_trial_artifacts,
-        snapshot_source=args.hpo_snapshot_source,
+        snapshot_source=hpo_table_root,
         target_complete_trials=args.explore_trials,
         sampler_seed=42,
         enqueued=initial_enqueue,
@@ -2297,9 +2405,12 @@ def main() -> None:
         limit=args.seed_top_k,
     )
 
+    explore_best_params = normalized_params_from_trial(
+        explore_study.best_trial.params, family=family
+    )
     print(
         f"\nExploration best: {explore_study.best_value:.12f}\n"
-        f"{json.dumps(normalized_params_from_trial(explore_study.best_trial.params, family=family), indent=2, sort_keys=True)}"
+        f"{json.dumps(explore_best_params, indent=2, sort_keys=True)}"
     )
 
     # Stage 2: distributed refinement. Full-train cache is built once; the
@@ -2328,7 +2439,7 @@ def main() -> None:
         device=args.device,
         study_tag=study_tag,
         keep_artifacts=args.keep_trial_artifacts,
-        snapshot_source=args.hpo_snapshot_source,
+        snapshot_source=hpo_table_root,
         target_complete_trials=args.refine_trials,
         sampler_seed=1337,
         enqueued=top_explore,
@@ -2352,9 +2463,12 @@ def main() -> None:
         limit=args.finalists,
     )
 
+    refine_best_params = normalized_params_from_trial(
+        refine_study.best_trial.params, family=family
+    )
     print(
         f"\nRefinement best: {refine_study.best_value:.12f}\n"
-        f"{json.dumps(normalized_params_from_trial(refine_study.best_trial.params, family=family), indent=2, sort_keys=True)}"
+        f"{json.dumps(refine_best_params, indent=2, sort_keys=True)}"
     )
 
     # Stage 3: 100% fractions make sampled rows seed-invariant, so tournament
@@ -2382,7 +2496,7 @@ def main() -> None:
         device=args.device,
         study_tag=study_tag,
         keep_artifacts=args.keep_trial_artifacts,
-        snapshot_source=args.hpo_snapshot_source,
+        snapshot_source=hpo_table_root,
         gpus=gpus,
         worker_count=tournament_workers,
         threads_per_worker=args.threads_per_worker,
@@ -2441,9 +2555,13 @@ def main() -> None:
         "refine_workers": refine_workers,
         "tournament_workers": tournament_workers,
         "optuna_storage": "JournalStorage/JournalFileBackend",
-        "hpo_snapshot_source": args.hpo_snapshot_source,
+        "hpo_snapshot_source": hpo_table_root,
+        "canonical_snapshot_uri": canonical_table_ref.snapshot_uri,
+        "remote_snapshot_staged": remote_staged,
+        "test_split_staged": False,
         "stage_cache_enabled": not args.disable_stage_cache,
         "stage_cache_dir": str(stage_cache_dir) if not args.disable_stage_cache else None,
+        "snapshot_stage_dir": str(snapshot_stage_dir) if remote_staged else None,
         "prepared_xy_cache_by_stage": {
             name: enabled and not args.disable_stage_cache
             for name, enabled in prepared_xy_by_stage.items()
@@ -2491,6 +2609,9 @@ def main() -> None:
         "gpus": gpus,
         "stage_cache_enabled": not args.disable_stage_cache,
         "stage_cache_dir": str(stage_cache_dir) if not args.disable_stage_cache else None,
+        "snapshot_stage_dir": str(snapshot_stage_dir) if remote_staged else None,
+        "canonical_snapshot_uri": canonical_table_ref.snapshot_uri,
+        "remote_snapshot_staged": remote_staged,
         "prepared_xy_cache_by_stage": {
             name: enabled and not args.disable_stage_cache
             for name, enabled in prepared_xy_by_stage.items()

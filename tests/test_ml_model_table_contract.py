@@ -308,7 +308,6 @@ def _identity(**changes) -> str:
         "model_family": "intensity",
         "model_module": "module",
         "split": "train",
-        "holdout_cities": ["beta"],
         "fraction": 0.5,
         "seed": 42,
     }
@@ -320,7 +319,7 @@ def test_cache_identity_uses_immutable_contract() -> None:
     assert _identity() == _identity()
     assert _identity() != _identity(snapshot_id="snapshot-b")
     assert _identity() != _identity(feature_contract_hash="features-b")
-    assert _identity() != _identity(holdout_cities=["gamma"])
+    assert _identity() != _identity(target_column="other_target")
     with pytest.raises(ValueError, match="Test split"):
         _identity(split="test")
 

@@ -31,6 +31,12 @@ discovery, or validation. Test evaluation requires a future distinct entrypoint.
 
 Production HPO:
 
+The default runner pins the canonical remote snapshot, stages only `train` and
+`validation` beside the global Arrow stage cache, and resumes both snapshot
+downloads and Optuna journals. Use `--snapshot-stage-dir` and
+`--stage-cache-dir` to place both on the production NVMe. `split=test` is never
+listed or staged.
+
 ```bash
 uv run python -m machine_learning.experiments.xgb_hpo \
   --family intensity \
