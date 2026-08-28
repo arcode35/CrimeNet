@@ -26,6 +26,7 @@ HISTORY_WINDOWS_SECONDS = {
 CITY_TIMEZONES = {
     source_key: source.config.timezone for source_key, source in SOURCES.items()
 }
+SOURCE_IDS = {city: index for index, city in enumerate(CITY_TIMEZONES)}
 
 SOCIOECONOMIC_FEATURE_COLUMNS = [
     "socio_population",
@@ -518,56 +519,38 @@ def validate_normalized_rows(
     return metrics
 
 
-def _validate_unique_store_keys(
-    store: pl.LazyFrame, keys: Sequence[str], *, name: str
-) -> None:
-    summary = store.select(
-        pl.len().alias("rows"), pl.struct(keys).n_unique().alias("keys")
-    ).collect(engine="streaming").row(0, named=True)
-    duplicates = int(summary["rows"]) - int(summary["keys"])
-    if duplicates:
-        raise FinalModelContractError(f"{name} contains duplicate keys: {duplicates}")
-
-
 def attach_environmental_features(
     rows: pl.DataFrame | pl.LazyFrame,
     environmental: pl.DataFrame | pl.LazyFrame,
 ) -> pl.LazyFrame:
-    """Exact H3-r6/hour join; structural misses remain distinguishable."""
+    """Attach frozen H3-r6/hour environmental features with one hash join.
+
+    Uniqueness is an upstream-store contract.  This stage intentionally avoids
+    rescanning the environmental store just to re-prove it.
+    """
 
     rows = _lazy(rows)
     environmental = _lazy(environmental)
-    require_columns(
-        environmental,
-        ["h3_cell_id", "hour", *ENVIRONMENTAL_FEATURE_COLUMNS],
-        name="environmental feature store",
-    )
-    _validate_unique_store_keys(
-        environmental, ["h3_cell_id", "hour"], name="environmental feature store"
-    )
     prepared = environmental.select(
         pl.col("h3_cell_id").cast(pl.Int64).alias("weather_query_cell_id"),
-        pl.col("hour").cast(pl.Datetime("us", time_zone="UTC")).alias(
-            "_environmental_hour"
-        ),
+        pl.col("hour")
+        .cast(pl.Datetime("us", time_zone="UTC"), strict=False)
+        .alias("_environmental_hour"),
         *ENVIRONMENTAL_FEATURE_COLUMNS,
-    ).with_columns(pl.lit(True).alias("_environmental_row_exists"))
+    )
     return (
         rows.with_columns(
-            pl.col("model_timestamp_utc").dt.truncate("1h").alias(
-                "_environmental_hour"
-            )
+            pl.col("model_timestamp_utc")
+            .dt.truncate("1h")
+            .alias("_environmental_hour")
         )
         .join(
             prepared,
             on=["weather_query_cell_id", "_environmental_hour"],
             how="left",
-            validate="m:1",
         )
-        .with_columns(
-            pl.col("_environmental_row_exists").fill_null(False),
-            pl.col("weather_available").fill_null(False),
-        )
+        .with_columns(pl.col("weather_available").fill_null(False))
+        .drop("_environmental_hour")
     )
 
 
@@ -575,63 +558,74 @@ def attach_temporal_features(
     rows: pl.DataFrame | pl.LazyFrame,
     history: pl.DataFrame | pl.LazyFrame,
 ) -> pl.LazyFrame:
-    """Backward as-of enrich rows that do not already carry H3 history.
+    """Backward as-of national features without sorting the wide integration rows.
 
-    This function is used by the final-table builder only for integration rows.
-    Event rows must retain the feature version frozen into the Event Spine.
+    The 155M-row integration table is given a temporary integer key.  Only the
+    three lookup columns are sorted; the matched features are then joined back by
+    the integer key.  This is deliberately RAM-hungry and CPU-efficient.
     """
+
     rows = _lazy(rows)
+    temporary_rid = "_rid" not in rows.collect_schema().names()
+    if temporary_rid:
+        rows = (
+            rows.with_row_index("_rid_local")
+            .with_columns(pl.col("_rid_local").cast(pl.UInt64).alias("_rid"))
+            .drop("_rid_local")
+        )
     history = _lazy(history)
     feature_columns = [*SOCIOECONOMIC_FEATURE_COLUMNS, *STATIC_FEATURE_COLUMNS]
-    require_columns(
-        history,
-        [
-            "osm_h3_cell_id",
-            "feature_available_at",
-            "feature_version_id",
-            *feature_columns,
-        ],
-        name="national temporal history",
-    )
-    _validate_unique_store_keys(
-        history,
-        ["osm_h3_cell_id", "feature_available_at"],
-        name="national temporal history",
-    )
 
-    # Avoid sorting unrelated national cells.  This remains a lazy semi-join, so
-    # it does not materialize the 155M-row integration table in memory.
-    relevant_cells = rows.select(
-        pl.col("osm_h3_cell_id").cast(pl.Int64)
-    ).unique()
-    right = (
-        history
-        .select(
+    lookup = (
+        rows.select(
+            "_rid",
             pl.col("osm_h3_cell_id").cast(pl.Int64),
-            pl.col("feature_available_at")
-            .cast(pl.Datetime("us", time_zone="UTC"), strict=False),
+            pl.col("model_timestamp_utc").cast(
+                pl.Datetime("us", time_zone="UTC"), strict=False
+            ),
+        )
+        .sort(["osm_h3_cell_id", "model_timestamp_utc"], multithreaded=True)
+        .cache()
+    )
+    relevant_cells = lookup.select("osm_h3_cell_id").unique()
+    right = (
+        history.select(
+            pl.col("osm_h3_cell_id").cast(pl.Int64),
+            pl.col("feature_available_at").cast(
+                pl.Datetime("us", time_zone="UTC"), strict=False
+            ),
             pl.col("feature_version_id").cast(pl.String, strict=False),
             *feature_columns,
         )
         .join(relevant_cells, on="osm_h3_cell_id", how="semi")
-        .sort(["osm_h3_cell_id", "feature_available_at"])
+        .sort(["osm_h3_cell_id", "feature_available_at"], multithreaded=True)
     )
-    return rows.sort(["osm_h3_cell_id", "model_timestamp_utc"]).join_asof(
-        right,
-        left_on="model_timestamp_utc",
-        right_on="feature_available_at",
-        by="osm_h3_cell_id",
-        strategy="backward",
-        allow_exact_matches=True,
-        check_sortedness=False,
+    matched = (
+        lookup.set_sorted(["osm_h3_cell_id", "model_timestamp_utc"])
+        .join_asof(
+            right.set_sorted(["osm_h3_cell_id", "feature_available_at"]),
+            left_on="model_timestamp_utc",
+            right_on="feature_available_at",
+            by="osm_h3_cell_id",
+            strategy="backward",
+            allow_exact_matches=True,
+            check_sortedness=False,
+        )
+        .select(
+            "_rid",
+            "feature_available_at",
+            "feature_version_id",
+            *feature_columns,
+        )
     )
+    result = rows.join(matched, on="_rid", how="left")
+    return result.drop("_rid") if temporary_rid else result
+
 
 def attach_static_features(
     rows: pl.DataFrame | pl.LazyFrame,
     history: pl.DataFrame | pl.LazyFrame,
 ) -> pl.LazyFrame:
-    """Compatibility entry point; static columns share the versioned history."""
-
     return attach_temporal_features(rows, history)
 
 
@@ -644,7 +638,7 @@ def prepare_lighting(lighting: pl.DataFrame | pl.LazyFrame) -> pl.LazyFrame:
         pl.col(cell).cast(pl.Int64).alias("weather_query_cell_id"),
         pl.col(hour).alias("weather_timestamp"),
         *LIGHTING_FEATURE_COLUMNS,
-    ).with_columns(pl.lit(True).alias("_lighting_matched"))
+    )
 
 
 def join_lighting(
@@ -655,23 +649,11 @@ def join_lighting(
         prepare_lighting(lighting),
         on=["weather_query_cell_id", "weather_timestamp"],
         how="left",
-        validate="m:1",
     )
 
 
 def prepare_history_events(events: pl.DataFrame | pl.LazyFrame) -> pl.LazyFrame:
     events = _lazy(events)
-    require_columns(
-        events,
-        [
-            "source_city",
-            "occurrence_timestamp_utc",
-            "osm_h3_cell_id",
-            "is_violent",
-            "is_property",
-        ],
-        name="history events",
-    )
     return events.select(
         pl.col("source_city").cast(pl.String),
         pl.col("osm_h3_cell_id").cast(pl.Int64),
@@ -687,84 +669,105 @@ def prepare_history_events(events: pl.DataFrame | pl.LazyFrame) -> pl.LazyFrame:
     )
 
 
-def _prefix(events: pl.LazyFrame, *, grain: str) -> pl.LazyFrame:
-    if grain == "cell":
-        groups = ["source_city", "osm_h3_cell_id"]
-        base = events
-        aggregations = [
+def _event_pulses(events: pl.LazyFrame) -> pl.LazyFrame:
+    """Aggregate raw events once; all three history grains reuse this table."""
+
+    return (
+        events.with_columns(
+            pl.col("source_city")
+            .replace_strict(SOURCE_IDS, return_dtype=pl.UInt8)
+            .alias("_source_id")
+        )
+        .select(
+            "_source_id",
+            "osm_h3_cell_id",
+            "occurrence_timestamp_utc",
+            "is_violent",
+            "is_property",
+        )
+        .group_by(
+            ["_source_id", "osm_h3_cell_id", "occurrence_timestamp_utc"]
+        )
+        .agg(
             pl.len().cast(pl.Int64).alias("_delta_all"),
             pl.col("is_violent").cast(pl.Int64).sum().alias("_delta_violent"),
             pl.col("is_property").cast(pl.Int64).sum().alias("_delta_property"),
-        ]
-    elif grain == "city":
-        groups = ["source_city"]
-        base = events
-        aggregations = [pl.len().cast(pl.Int64).alias("_delta_all")]
-    elif grain == "k1":
-        groups = ["source_city", "osm_h3_cell_id"]
-        base = (
-            events.select("source_city", "occurrence_timestamp_utc", "osm_h3_cell_id")
-            .with_columns(plh3.grid_disk("osm_h3_cell_id", 1).alias("_neighbors"))
-            .explode("_neighbors", empty_as_null=True)
-            .select(
-                "source_city",
-                "occurrence_timestamp_utc",
-                pl.col("_neighbors").cast(pl.Int64).alias("osm_h3_cell_id"),
-            )
         )
-        aggregations = [pl.len().cast(pl.Int64).alias("_delta_all")]
+        .cache()
+    )
+
+
+def _prefix_from_pulses(pulses: pl.LazyFrame, *, grain: str) -> pl.LazyFrame:
+    if grain == "cell":
+        groups = ["_source_id", "osm_h3_cell_id"]
+        grouped = pulses.select(
+            *groups,
+            "occurrence_timestamp_utc",
+            "_delta_all",
+            "_delta_violent",
+            "_delta_property",
+        )
+        deltas = ["_delta_all", "_delta_violent", "_delta_property"]
+    elif grain == "city":
+        groups = ["_source_id"]
+        grouped = pulses.group_by(
+            ["_source_id", "occurrence_timestamp_utc"]
+        ).agg(pl.col("_delta_all").sum().alias("_delta_all"))
+        deltas = ["_delta_all"]
+    elif grain == "k1":
+        groups = ["_source_id", "osm_h3_cell_id"]
+        # grid_disk is evaluated once per distinct event cell, not once per event.
+        neighbors = (
+            pulses.select(
+                "_source_id",
+                pl.col("osm_h3_cell_id").alias("_event_cell"),
+            )
+            .unique()
+            .with_columns(
+                plh3.grid_disk("_event_cell", 1).alias("osm_h3_cell_id")
+            )
+            .explode("osm_h3_cell_id", empty_as_null=False)
+            .with_columns(pl.col("osm_h3_cell_id").cast(pl.Int64))
+        )
+        grouped = (
+            pulses.select(
+                "_source_id",
+                "occurrence_timestamp_utc",
+                pl.col("osm_h3_cell_id").alias("_event_cell"),
+                "_delta_all",
+            )
+            .join(neighbors, on=["_source_id", "_event_cell"], how="inner")
+            .group_by(
+                ["_source_id", "osm_h3_cell_id", "occurrence_timestamp_utc"]
+            )
+            .agg(pl.col("_delta_all").sum().alias("_delta_all"))
+        )
+        deltas = ["_delta_all"]
     else:
         raise ValueError(f"unknown prefix grain: {grain}")
-    grouped = base.group_by([*groups, "occurrence_timestamp_utc"]).agg(
-        *aggregations
-    ).sort([*groups, "occurrence_timestamp_utc"])
-    delta_columns = [expression.meta.output_name() for expression in aggregations]
-    return grouped.with_columns(
-        pl.col(column).cum_sum().over(groups).alias(column.replace("delta", "cum"))
-        for column in delta_columns
+
+    ordered = grouped.sort(
+        [*groups, "occurrence_timestamp_utc"], multithreaded=True
+    )
+    return (
+        ordered.with_columns(
+            pl.col(column)
+            .cum_sum()
+            .over(groups)
+            .alias(column.replace("_delta_", "_cum_"))
+            for column in deltas
+        )
+        .select(
+            *groups,
+            "occurrence_timestamp_utc",
+            *[column.replace("_delta_", "_cum_") for column in deltas],
+        )
+        .cache()
     )
 
 
-def _prefix_lookup(
-    rows: pl.LazyFrame,
-    prefix: pl.LazyFrame,
-    *,
-    by: list[str],
-    query_time: pl.Expr,
-    cumulative_columns: list[str],
-    suffix: str,
-    include_time: bool = False,
-) -> pl.LazyFrame:
-    left = rows.select("row_id", *by, query_time.alias("_lookup_time")).sort(
-        [*by, "_lookup_time"]
-    )
-    right = prefix.select(
-        *by,
-        pl.col("occurrence_timestamp_utc").alias("_pulse_time"),
-        *cumulative_columns,
-    ).sort([*by, "_pulse_time"])
-    joined = left.join_asof(
-        right,
-        left_on="_lookup_time",
-        right_on="_pulse_time",
-        by=by,
-        strategy="backward",
-        allow_exact_matches=False,
-        check_sortedness=False,
-        coalesce=False,
-    )
-    selected: list[pl.Expr | str] = ["row_id"]
-    if include_time:
-        selected.append(pl.col("_pulse_time").alias(f"_last_occurrence{suffix}"))
-    selected.extend(
-        pl.col(column).fill_null(0).cast(pl.Int64).alias(f"{column}{suffix}")
-        for column in cumulative_columns
-    )
-    return joined.select(selected)
-
-
-def _attach_prefix_history(
-    rows: pl.LazyFrame,
+def _history_features_from_sorted_queries(
+    query_base: pl.LazyFrame,
     prefix: pl.LazyFrame,
     *,
     by: list[str],
@@ -772,77 +775,117 @@ def _attach_prefix_history(
     output_prefix: str,
     recency: bool,
 ) -> pl.LazyFrame:
-    cumulative = list(cumulative_map)
-    end = _prefix_lookup(
-        rows,
-        prefix,
-        by=by,
-        query_time=pl.col("model_timestamp_utc"),
-        cumulative_columns=cumulative,
-        suffix="_end",
-        include_time=recency,
+    """Five causal lookups with one left sort and one right sort per grain.
+
+    Every lookup timestamp is a constant shift of model_timestamp_utc, so the
+    ordering is identical.  We assert that ordering with set_sorted and chain the
+    five as-of joins instead of sorting and hash-joining five separate results.
+    """
+
+    lookup_specs = [("end", 0), *HISTORY_WINDOWS_SECONDS.items()]
+    lookups = query_base.with_columns(
+        (
+            pl.col("model_timestamp_utc") - pl.duration(seconds=seconds)
+            if seconds
+            else pl.col("model_timestamp_utc")
+        ).alias(f"_lookup_{label}")
+        for label, seconds in lookup_specs
     )
-    result = rows.join(end, on="row_id", how="left", validate="1:1")
-    for window, seconds in HISTORY_WINDOWS_SECONDS.items():
-        lower = _prefix_lookup(
-            rows,
-            prefix,
+
+    result = lookups
+    cumulative = list(cumulative_map)
+    for label, _seconds in lookup_specs:
+        lookup_column = f"_lookup_{label}"
+        pulse_column = f"_pulse_{label}"
+        right = prefix.select(
+            *by,
+            pl.col("occurrence_timestamp_utc").alias(pulse_column),
+            *[
+                pl.col(column).alias(f"{column}_{label}")
+                for column in cumulative
+            ],
+        ).set_sorted([*by, pulse_column])
+        result = result.set_sorted([*by, lookup_column]).join_asof(
+            right,
+            left_on=lookup_column,
+            right_on=pulse_column,
             by=by,
-            query_time=pl.col("model_timestamp_utc") - pl.duration(seconds=seconds),
-            cumulative_columns=cumulative,
-            suffix=f"_lower_{window}",
+            strategy="backward",
+            allow_exact_matches=False,
+            check_sortedness=False,
         )
-        result = result.join(lower, on="row_id", how="left", validate="1:1")
-        result = result.with_columns(
-            (
-                pl.col(f"{source}_end").fill_null(0)
-                - pl.col(f"{source}_lower_{window}").fill_null(0)
-            )
-            .clip(lower_bound=0)
-            .cast(pl.Int64)
-            .alias(f"{output_prefix}_{target}_{window}")
-            for source, target in cumulative_map.items()
-        )
-    if recency:
-        last = "_last_occurrence_end"
-        result = result.with_columns(
-            (
-                pl.col(last).is_not_null()
-                & (
-                    pl.col(last)
-                    >= pl.col("model_timestamp_utc")
-                    - pl.duration(seconds=HISTORY_MAX_SECONDS)
-                )
-            ).alias(f"has_crime_{output_prefix}_28d"),
-            pl.when(pl.col(last).is_not_null())
-            .then(
+
+    feature_exprs: list[pl.Expr] = []
+    for window in HISTORY_WINDOWS_SECONDS:
+        for source, target in cumulative_map.items():
+            feature_exprs.append(
                 (
-                    (pl.col("model_timestamp_utc") - pl.col(last)).dt.total_seconds()
-                    / 3600.0
-                ).clip(upper_bound=HISTORY_MAX_SECONDS / 3600.0)
+                    pl.col(f"{source}_end").fill_null(0)
+                    - pl.col(f"{source}_{window}").fill_null(0)
+                )
+                .clip(lower_bound=0)
+                .cast(pl.Int64)
+                .alias(f"{output_prefix}_{target}_{window}")
             )
-            .otherwise(HISTORY_MAX_SECONDS / 3600.0)
-            .alias(f"hours_since_last_crime_{output_prefix}_capped_28d"),
+
+    if recency:
+        last = pl.col("_pulse_end")
+        feature_exprs.extend(
+            [
+                (
+                    last.is_not_null()
+                    & (
+                        last
+                        >= pl.col("model_timestamp_utc")
+                        - pl.duration(seconds=HISTORY_MAX_SECONDS)
+                    )
+                ).alias(f"has_crime_{output_prefix}_28d"),
+                pl.when(last.is_not_null())
+                .then(
+                    (
+                        (
+                            pl.col("model_timestamp_utc") - last
+                        ).dt.total_seconds()
+                        / 3600.0
+                    ).clip(upper_bound=HISTORY_MAX_SECONDS / 3600.0)
+                )
+                .otherwise(HISTORY_MAX_SECONDS / 3600.0)
+                .alias(
+                    f"hours_since_last_crime_{output_prefix}_capped_28d"
+                ),
+            ]
         )
-    temporary = [
-        column
-        for column in result.collect_schema().names()
-        if column.startswith(("_cum_", "_last_occurrence"))
-    ]
-    return result.drop(temporary)
+
+    return result.select("_rid", *feature_exprs)
 
 
-def attach_dynamic_history(
+def _build_dynamic_history_features(
     *,
-    rows: pl.DataFrame | pl.LazyFrame,
+    row_keys: pl.LazyFrame,
     history_events: pl.DataFrame | pl.LazyFrame,
 ) -> pl.LazyFrame:
-    rows = _lazy(rows)
     events = prepare_history_events(history_events)
-    result = _attach_prefix_history(
-        rows,
-        _prefix(events, grain="cell"),
-        by=["source_city", "osm_h3_cell_id"],
+    pulses = _event_pulses(events)
+
+    # Cell and k1 use identical query ordering, so this 155M-row sort is shared.
+    cell_queries = (
+        row_keys.select(
+            "_rid", "_source_id", "osm_h3_cell_id", "model_timestamp_utc"
+        )
+        .sort(
+            ["_source_id", "osm_h3_cell_id", "model_timestamp_utc"],
+            multithreaded=True,
+        )
+        .cache()
+    )
+    city_queries = row_keys.select(
+        "_rid", "_source_id", "model_timestamp_utc"
+    ).sort(["_source_id", "model_timestamp_utc"], multithreaded=True)
+
+    cell = _history_features_from_sorted_queries(
+        cell_queries,
+        _prefix_from_pulses(pulses, grain="cell"),
+        by=["_source_id", "osm_h3_cell_id"],
         cumulative_map={
             "_cum_all": "crime_count",
             "_cum_violent": "violent_count",
@@ -851,51 +894,115 @@ def attach_dynamic_history(
         output_prefix="cell",
         recency=True,
     )
-    result = _attach_prefix_history(
-        result,
-        _prefix(events, grain="city"),
-        by=["source_city"],
+    city = _history_features_from_sorted_queries(
+        city_queries,
+        _prefix_from_pulses(pulses, grain="city"),
+        by=["_source_id"],
         cumulative_map={"_cum_all": "crime_count"},
         output_prefix="city",
         recency=True,
     )
-    result = _attach_prefix_history(
-        result,
-        _prefix(events, grain="k1"),
-        by=["source_city", "osm_h3_cell_id"],
+    k1 = _history_features_from_sorted_queries(
+        cell_queries,
+        _prefix_from_pulses(pulses, grain="k1"),
+        by=["_source_id", "osm_h3_cell_id"],
         cumulative_map={"_cum_all": "crime_count"},
         output_prefix="k1",
         recency=False,
     )
-    return result.with_columns(
-        (
-            (pl.col("cell_crime_count_24h").cast(pl.Float64) + 1.0)
-            / (pl.col("cell_crime_count_28d").cast(pl.Float64) + 1.0)
-        ).alias("cell_crime_24h_vs_28d_ratio"),
-        (
-            pl.col("cell_crime_count_24h").cast(pl.Float64)
-            / pl.when(pl.col("k1_crime_count_24h") > 0)
-            .then(pl.col("k1_crime_count_24h").cast(pl.Float64))
-            .otherwise(1.0)
-        ).alias("cell_share_of_k1_crime_24h"),
+
+    return (
+        cell.join(city, on="_rid", how="inner")
+        .join(k1, on="_rid", how="inner")
+        .with_columns(
+            (
+                (pl.col("cell_crime_count_24h").cast(pl.Float64) + 1.0)
+                / (pl.col("cell_crime_count_28d").cast(pl.Float64) + 1.0)
+            ).alias("cell_crime_24h_vs_28d_ratio"),
+            (
+                pl.col("cell_crime_count_24h").cast(pl.Float64)
+                / pl.when(pl.col("k1_crime_count_24h") > 0)
+                .then(pl.col("k1_crime_count_24h").cast(pl.Float64))
+                .otherwise(1.0)
+            ).alias("cell_share_of_k1_crime_24h"),
+        )
     )
 
 
-def _timezone_expression(*, weekday: bool) -> pl.Expr:
-    result = pl.lit(None, dtype=pl.Int8)
-    for city, timezone in reversed(list(CITY_TIMEZONES.items())):
-        value = pl.col("model_timestamp_utc").dt.convert_time_zone(timezone)
-        value = (value.dt.weekday() - 1).cast(pl.Int8) if weekday else value.dt.hour()
-        result = pl.when(pl.col("source_city") == city).then(value).otherwise(result)
-    return result
+def attach_dynamic_history(
+    *,
+    rows: pl.DataFrame | pl.LazyFrame,
+    history_events: pl.DataFrame | pl.LazyFrame,
+) -> pl.LazyFrame:
+    rows = _lazy(rows)
+    temporary_rid = "_rid" not in rows.collect_schema().names()
+    if temporary_rid:
+        rows = rows.with_row_index("_rid")
+
+    row_keys = (
+        rows.select(
+            "_rid", "source_city", "osm_h3_cell_id", "model_timestamp_utc"
+        )
+        .with_columns(
+            pl.col("source_city")
+            .replace_strict(SOURCE_IDS, return_dtype=pl.UInt8)
+            .alias("_source_id")
+        )
+        .select("_rid", "_source_id", "osm_h3_cell_id", "model_timestamp_utc")
+        .cache()
+    )
+    features = _build_dynamic_history_features(
+        row_keys=row_keys,
+        history_events=history_events,
+    )
+    result = rows.join(features, on="_rid", how="left")
+    return result.drop("_rid") if temporary_rid else result
+
+
+CALENDAR_FEATURE_COLUMNS = [
+    "local_hour",
+    "local_day_of_week",
+    "local_hour_sin",
+    "local_hour_cos",
+    "local_day_of_week_sin",
+    "local_day_of_week_cos",
+]
 
 
 def add_calendar_features(rows: pl.DataFrame | pl.LazyFrame) -> pl.LazyFrame:
-    rows = _lazy(rows).with_columns(
-        _timezone_expression(weekday=False).alias("local_hour"),
-        _timezone_expression(weekday=True).alias("local_day_of_week"),
-    )
-    return rows.with_columns(
+    """Compute each timezone once per row using a compact UInt8 city key."""
+
+    rows = _lazy(rows)
+    columns = set(rows.collect_schema().names())
+    temporary_source_id = "_source_id" not in columns
+    if temporary_source_id:
+        rows = rows.with_columns(
+            pl.col("source_city")
+            .replace_strict(SOURCE_IDS, return_dtype=pl.UInt8)
+            .alias("_source_id")
+        )
+
+    branches: list[pl.LazyFrame] = []
+    for city, timezone in CITY_TIMEZONES.items():
+        source_id = SOURCE_IDS[city]
+        branch = (
+            rows.filter(pl.col("_source_id") == source_id)
+            .with_columns(
+                pl.col("model_timestamp_utc")
+                .dt.convert_time_zone(timezone)
+                .alias("_local_timestamp")
+            )
+            .with_columns(
+                pl.col("_local_timestamp").dt.hour().cast(pl.Int8).alias("local_hour"),
+                (pl.col("_local_timestamp").dt.weekday() - 1)
+                .cast(pl.Int8)
+                .alias("local_day_of_week"),
+            )
+            .drop("_local_timestamp")
+        )
+        branches.append(branch)
+
+    result = pl.concat(branches, how="vertical").with_columns(
         (pl.col("local_hour") * (2.0 * math.pi / 24.0)).sin().alias("local_hour_sin"),
         (pl.col("local_hour") * (2.0 * math.pi / 24.0)).cos().alias("local_hour_cos"),
         (pl.col("local_day_of_week") * (2.0 * math.pi / 7.0))
@@ -905,6 +1012,7 @@ def add_calendar_features(rows: pl.DataFrame | pl.LazyFrame) -> pl.LazyFrame:
         .cos()
         .alias("local_day_of_week_cos"),
     )
+    return result.drop("_source_id") if temporary_source_id else result
 
 
 def validate_model_support(
@@ -1125,59 +1233,46 @@ def build_final_model_table(
     temporal_history: pl.DataFrame | pl.LazyFrame,
     support_intervals: Sequence[ModelSupportInterval],
 ) -> tuple[pl.LazyFrame, dict[str, object]]:
-    """Build the final table with asymmetric point enrichment.
+    """Build once; validation/auditing belongs on the persisted snapshot.
 
-    Event rows:
-      - preserve the national H3/ACS/OSM feature version already frozen by the
-        Event Spine;
-      - add environmental weather + lighting from the frozen environmental store.
-
-    Integration rows:
-      - resolve national H3/ACS/OSM features with a leakage-safe backward as-of
-        join at integration_timestamp_utc;
-      - add the same environmental weather + lighting contract.
-
-    Both row types then receive identical calendar and causal crime-history
-    transformations.  No enrichment operation is allowed to change row grain.
+    This plan is tuned for a high-core, high-RAM host:
+      * integration national features sort only a thin integer-key lookup frame;
+      * one cached integer row key is shared by context/history enrichment;
+      * cell+k1 share one query-row sort;
+      * history uses five chained as-of probes per grain without repeated sorts;
+      * H3 k1 adjacency is computed once per distinct event cell;
+      * no collect() occurs in the expensive build graph.
     """
+
     validate_model_support_intervals(support_intervals)
 
-    event_rows = normalize_event_rows(
-        events,
-        support_intervals=support_intervals,
+    # Give each side a compact globally unique temporary UInt64 key before any
+    # branching.  The top bit separates integration rows from event rows.
+    event_rows = (
+        normalize_event_rows(
+            events,
+            support_intervals=support_intervals,
+        )
+        .with_row_index("_rid_local")
+        .with_columns(pl.col("_rid_local").cast(pl.UInt64).alias("_rid"))
+        .drop("_rid_local")
     )
-    integration_rows = normalize_integration_rows(
-        integration,
-        support_intervals=support_intervals,
+    integration_base = (
+        normalize_integration_rows(
+            integration,
+            support_intervals=support_intervals,
+        )
+        .with_row_index("_rid_local")
+        .with_columns(
+            (
+                pl.col("_rid_local").cast(pl.UInt64)
+                + pl.lit(1 << 63, dtype=pl.UInt64)
+            ).alias("_rid")
+        )
+        .drop("_rid_local")
     )
-
-    event_count = int(
-        event_rows.select(pl.len()).collect(engine="streaming").item()
-    )
-    integration_count = int(
-        integration_rows.select(pl.len()).collect(engine="streaming").item()
-    )
-    expected_rows = event_count + integration_count
-
-    # Validate identities/splits before any feature work.  At this point the two
-    # sides intentionally have asymmetric schemas.
-    normalized_rows = pl.concat(
-        [event_rows, integration_rows],
-        how="diagonal_relaxed",
-    )
-    normalized_summary = validate_normalized_rows(
-        normalized_rows,
-        expected_rows=expected_rows,
-    )
-    support_summary = validate_model_support(
-        normalized_rows,
-        intervals=support_intervals,
-    )
-
-    # Critical asymmetry: ONLY integration rows query the national temporal H3
-    # history.  Event rows retain exactly what gold_event_spine selected.
     integration_rows = attach_temporal_features(
-        integration_rows,
+        integration_base,
         temporal_history,
     )
 
@@ -1186,32 +1281,70 @@ def build_final_model_table(
         how="diagonal_relaxed",
     )
 
-    # Environmental is already a frozen H3-r6 x UTC-hour store built from both
-    # the Event Spine and this exact integration snapshot. Weather may be null;
-    # deterministic solar-lighting must be present.
-    rows = attach_environmental_features(rows, environmental)
-    rows = add_calendar_features(rows)
-
-    # Full event history is retained for causal lookback. Events outside model
-    # support can condition later rows, while allow_exact_matches=False in the
-    # prefix lookups prevents self-event/future-event leakage.
-    rows = attach_dynamic_history(rows=rows, history_events=events)
-
-    validation = validate_final_model_table(
-        rows,
-        support_intervals=support_intervals,
-        expected_rows=expected_rows,
+    # Cache only the narrow hot set.  On a large-RAM machine this avoids repeatedly
+    # rescanning/recomputing the wide event+integration branch while keeping the
+    # full final table lazy/streamable.
+    row_keys = (
+        rows.select(
+            "_rid",
+            "source_city",
+            "model_timestamp_utc",
+            "osm_h3_cell_id",
+            "weather_query_cell_id",
+        )
+        .with_columns(
+            pl.col("source_city")
+            .replace_strict(SOURCE_IDS, return_dtype=pl.UInt8)
+            .alias("_source_id")
+        )
+        .select(
+            "_rid",
+            "_source_id",
+            "model_timestamp_utc",
+            "osm_h3_cell_id",
+            "weather_query_cell_id",
+        )
+        .cache()
     )
-    return finalize_model_table(rows), {
-        **normalized_summary,
-        **support_summary,
-        **validation,
-        "event_h3_enrichment_policy": "preserve_event_spine_frozen_features",
-        "integration_h3_enrichment_policy": "backward_asof_national_temporal_history",
+
+    environmental_features = attach_environmental_features(
+        row_keys.select(
+            "_rid", "weather_query_cell_id", "model_timestamp_utc"
+        ),
+        environmental,
+    ).select("_rid", *ENVIRONMENTAL_FEATURE_COLUMNS)
+
+    calendar_features = add_calendar_features(
+        row_keys.select("_rid", "_source_id", "model_timestamp_utc")
+    ).select("_rid", *CALENDAR_FEATURE_COLUMNS)
+
+    history_features = _build_dynamic_history_features(
+        row_keys=row_keys,
+        history_events=events,
+    )
+
+    feature_bundle = environmental_features.join(
+        calendar_features, on="_rid", how="inner"
+    ).join(history_features, on="_rid", how="inner")
+
+    final = (
+        rows.join(feature_bundle, on="_rid", how="left")
+        .drop("_rid")
+    )
+    return finalize_model_table(final), {
+        "build_execution_policy": "single_expensive_sink_then_persisted_audit",
+        "history_query_sort_policy": "shared_cell_k1_plus_city",
+        "history_asof_policy": "five_chained_probes_per_grain_no_resort",
+        "history_join_key": "temporary_integer_row_index",
+        "k1_adjacency_policy": "once_per_distinct_event_cell",
+        "calendar_policy": "one_timezone_conversion_per_row_via_city_branches",
+        "integration_h3_enrichment_policy": "thin_backward_asof_national_temporal_history",
         "environmental_enrichment_policy": "exact_h3_r6_utc_hour_left_join",
     }
 
+
 __all__ = [
+    "CALENDAR_FEATURE_COLUMNS",
     "CONTEXT_FEATURE_COLUMNS",
     "ENVIRONMENTAL_FEATURE_COLUMNS",
     "FINAL_COLUMNS",
@@ -1222,6 +1355,7 @@ __all__ = [
     "MODEL_SPLITS",
     "ModelSupportInterval",
     "SOCIOECONOMIC_FEATURE_COLUMNS",
+    "SOURCE_IDS",
     "STATIC_FEATURE_COLUMNS",
     "add_calendar_features",
     "assign_model_split",
