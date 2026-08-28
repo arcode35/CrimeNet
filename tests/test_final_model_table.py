@@ -9,11 +9,14 @@ import h3.api.basic_int as h3
 import polars as pl
 import pytest
 
+from crimenet_data.assets.event_spine.temporal import validate_temporal_history
+from crimenet_data.assets.final_model_table.gold import final_model_table
 from crimenet_data.assets.final_model_table.transformations import (
     ENVIRONMENTAL_FEATURE_COLUMNS,
     SOCIOECONOMIC_FEATURE_COLUMNS,
     STATIC_FEATURE_COLUMNS,
     FinalModelContractError,
+    ModelSupportInterval,
     assign_model_split,
     attach_environmental_features,
     attach_temporal_features,
@@ -21,12 +24,10 @@ from crimenet_data.assets.final_model_table.transformations import (
     normalize_event_rows,
     normalize_integration_rows,
     validate_normalized_rows,
-    validate_source_temporal_coverage,
+    validate_model_support,
 )
-from crimenet_data.assets.final_model_table.gold import final_model_table
 from crimenet_data.resources.crime_lake import CrimeLakeResources
 from machine_learning.model_table_io import scan_model_table
-from crimenet_data.assets.integration.transforms import TemporalCoverageInterval
 
 
 CELL_R9 = h3.latlng_to_cell(41.88, -87.63, 9)
@@ -34,25 +35,31 @@ CELL_R6 = h3.cell_to_parent(CELL_R9, 6)
 
 
 def _event(timestamp: datetime, *, crime_id: str = "crime-1") -> pl.DataFrame:
-    return pl.DataFrame(
-        {
-            "crime_id": [crime_id],
-            "source_city": ["chicago"],
-            "occurrence_timestamp_utc": pl.Series(
-                [timestamp], dtype=pl.Datetime("us", time_zone="UTC")
-            ),
-            "osm_h3_cell_id": pl.Series([CELL_R9], dtype=pl.Int64),
-            "weather_query_cell_id": pl.Series([CELL_R6], dtype=pl.Int64),
-            "latitude": [41.88],
-            "longitude": [-87.63],
-            "canonical_family_code": ["property"],
-            "canonical_offense_family": ["Property"],
-            "canonical_subtype_code": ["burglary"],
-            "canonical_offense_subtype": ["Burglary"],
-            "is_violent": [False],
-            "is_property": [True],
-        }
-    )
+    values: dict[str, pl.Series | list[object]] = {
+        "crime_id": [crime_id],
+        "source_city": ["chicago"],
+        "occurrence_timestamp_utc": pl.Series(
+            [timestamp], dtype=pl.Datetime("us", time_zone="UTC")
+        ),
+        "osm_h3_cell_id": pl.Series([CELL_R9], dtype=pl.Int64),
+        "weather_query_cell_id": pl.Series([CELL_R6], dtype=pl.Int64),
+        "latitude": [41.88],
+        "longitude": [-87.63],
+        "canonical_family_code": ["property"],
+        "canonical_offense_family": ["Property"],
+        "canonical_subtype_code": ["burglary"],
+        "canonical_offense_subtype": ["Burglary"],
+        "is_violent": [False],
+        "is_property": [True],
+        "feature_available_at": pl.Series(
+            [timestamp - timedelta(days=1)],
+            dtype=pl.Datetime("us", time_zone="UTC"),
+        ),
+        "feature_version_id": ["fixture-v1"],
+    }
+    for column in [*SOCIOECONOMIC_FEATURE_COLUMNS, *STATIC_FEATURE_COLUMNS]:
+        values[column] = [1.0]
+    return pl.DataFrame(values)
 
 
 def _integration(timestamp: datetime, *, split: str = "validation") -> pl.DataFrame:
@@ -68,6 +75,7 @@ def _integration(timestamp: datetime, *, split: str = "validation") -> pl.DataFr
             "latitude": [41.88],
             "longitude": [-87.63],
             "integration_weight_cell_seconds": [123.5],
+            "mc_weight_cell_hours": [123.5 / 3600.0],
             "split": [split],
         }
     )
@@ -80,6 +88,7 @@ def _history() -> pl.DataFrame:
             [datetime(2023, 12, 1, tzinfo=UTC)],
             dtype=pl.Datetime("us", time_zone="UTC"),
         ),
+        "feature_version_id": ["test"],
     }
     for column in [*SOCIOECONOMIC_FEATURE_COLUMNS, *STATIC_FEATURE_COLUMNS]:
         values[column] = [1.0]
@@ -110,11 +119,12 @@ def _environmental(
     return pl.DataFrame(values).select("h3_cell_id", "hour", *ENVIRONMENTAL_FEATURE_COLUMNS)
 
 
-def _coverage(
-    start: datetime, end: datetime
-) -> TemporalCoverageInterval:
-    return TemporalCoverageInterval(
+def _support(
+    start: datetime, end: datetime, *, split: str = "validation"
+) -> ModelSupportInterval:
+    return ModelSupportInterval(
         source_city="chicago",
+        split=split,
         source_timezone="America/Chicago",
         start_utc=start,
         end_utc=end,
@@ -132,15 +142,27 @@ def test_canonical_split_boundaries_are_half_open() -> None:
     ]
     rows = pl.DataFrame(
         {
+            "source_city": ["chicago"] * len(timestamps),
             "model_timestamp_utc": pl.Series(
                 timestamps, dtype=pl.Datetime("us", time_zone="UTC")
             )
         }
     )
 
-    result = assign_model_split(
-        rows, dataset_end_utc=datetime(2026, 1, 1, tzinfo=UTC)
-    ).collect()
+    support_intervals = [
+        _support(
+            datetime(2023, 1, 1, tzinfo=UTC),
+            datetime(2024, 1, 1, tzinfo=UTC),
+            split="train",
+        ),
+        _support(datetime(2024, 1, 1, tzinfo=UTC), datetime(2025, 1, 1, tzinfo=UTC)),
+        _support(
+            datetime(2025, 1, 1, tzinfo=UTC),
+            datetime(2026, 1, 1, tzinfo=UTC),
+            split="test",
+        ),
+    ]
+    result = assign_model_split(rows, support_intervals=support_intervals).collect()
 
     assert result["split"].to_list() == [
         "train",
@@ -152,11 +174,11 @@ def test_canonical_split_boundaries_are_half_open() -> None:
 
 def test_source_non_calendar_start_and_gap_fail_closed() -> None:
     intervals = [
-        _coverage(
+        _support(
             datetime(2023, 3, 15, 6, tzinfo=UTC),
             datetime(2023, 6, 1, tzinfo=UTC),
         ),
-        _coverage(
+        _support(
             datetime(2023, 7, 1, tzinfo=UTC),
             datetime(2024, 1, 1, tzinfo=UTC),
         ),
@@ -174,17 +196,23 @@ def test_source_non_calendar_start_and_gap_fail_closed() -> None:
         }
     )
 
-    assert validate_source_temporal_coverage(valid, intervals=intervals) == {
-        "rows_outside_source_temporal_coverage": 0
+    assert validate_model_support(valid, intervals=intervals) == {
+        "rows_outside_frozen_model_support": 0
     }
-    with pytest.raises(FinalModelContractError, match="outside authoritative"):
-        validate_source_temporal_coverage(gap, intervals=intervals)
+    with pytest.raises(FinalModelContractError, match="outside frozen"):
+        validate_model_support(gap, intervals=intervals)
 
 
 def test_weather_unavailable_row_is_retained_with_null_features() -> None:
     timestamp = datetime(2024, 2, 1, 12, 30, tzinfo=UTC)
     rows = normalize_event_rows(
-        _event(timestamp), dataset_end_utc=datetime(2026, 1, 1, tzinfo=UTC)
+        _event(timestamp),
+        support_intervals=[
+            _support(
+                datetime(2024, 1, 1, tzinfo=UTC),
+                datetime(2025, 1, 1, tzinfo=UTC),
+            )
+        ],
     )
 
     result = attach_environmental_features(
@@ -192,33 +220,51 @@ def test_weather_unavailable_row_is_retained_with_null_features() -> None:
     ).collect()
 
     assert result.height == 1
-    assert result["_environmental_row_exists"].item() is True
     assert result["weather_available"].item() is False
     assert result["weather_temperature_2m_c"].item() is None
     assert result["weather_relative_humidity_2m_pct"].item() is None
+    assert result["solar_elevation_deg"].item() == 20.0
 
 
 def test_structural_environmental_miss_is_distinct_from_weather_unavailable() -> None:
     timestamp = datetime(2024, 2, 1, 12, 30, tzinfo=UTC)
     rows = normalize_event_rows(
-        _event(timestamp), dataset_end_utc=datetime(2026, 1, 1, tzinfo=UTC)
+        _event(timestamp),
+        support_intervals=[
+            _support(
+                datetime(2024, 1, 1, tzinfo=UTC),
+                datetime(2025, 1, 1, tzinfo=UTC),
+            )
+        ],
     )
     empty = _environmental([timestamp]).head(0)
 
     result = attach_environmental_features(rows, empty).collect()
 
     assert result.height == 1
-    assert result["_environmental_row_exists"].item() is False
     assert result["weather_available"].item() is False
+    assert result["solar_elevation_deg"].item() is None
 
 
 def test_integration_weight_is_preserved_and_event_weight_is_null() -> None:
     timestamp = datetime(2024, 2, 1, tzinfo=UTC)
     integration = normalize_integration_rows(
-        _integration(timestamp), dataset_end_utc=datetime(2026, 1, 1, tzinfo=UTC)
+        _integration(timestamp),
+        support_intervals=[
+            _support(
+                datetime(2024, 1, 1, tzinfo=UTC),
+                datetime(2025, 1, 1, tzinfo=UTC),
+            )
+        ],
     ).collect()
     event = normalize_event_rows(
-        _event(timestamp), dataset_end_utc=datetime(2026, 1, 1, tzinfo=UTC)
+        _event(timestamp),
+        support_intervals=[
+            _support(
+                datetime(2024, 1, 1, tzinfo=UTC),
+                datetime(2025, 1, 1, tzinfo=UTC),
+            )
+        ],
     ).collect()
 
     assert integration["integration_weight_cell_seconds"].item() == 123.5
@@ -229,7 +275,12 @@ def test_integration_split_mismatch_fails() -> None:
     timestamp = datetime(2024, 2, 1, tzinfo=UTC)
     rows = normalize_integration_rows(
         _integration(timestamp, split="train"),
-        dataset_end_utc=datetime(2026, 1, 1, tzinfo=UTC),
+        support_intervals=[
+            _support(
+                datetime(2024, 1, 1, tzinfo=UTC),
+                datetime(2025, 1, 1, tzinfo=UTC),
+            )
+        ],
     )
 
     with pytest.raises(FinalModelContractError, match="split_mismatch"):
@@ -240,7 +291,12 @@ def test_duplicate_row_id_and_null_structural_key_fail() -> None:
     timestamp = datetime(2024, 2, 1, tzinfo=UTC)
     rows = normalize_event_rows(
         pl.concat([_event(timestamp), _event(timestamp)]),
-        dataset_end_utc=datetime(2026, 1, 1, tzinfo=UTC),
+        support_intervals=[
+            _support(
+                datetime(2024, 1, 1, tzinfo=UTC),
+                datetime(2025, 1, 1, tzinfo=UTC),
+            )
+        ],
     ).with_columns(pl.lit(None, dtype=pl.Int64).alias("weather_query_cell_id"))
 
     with pytest.raises(FinalModelContractError, match="duplicate_row_ids"):
@@ -248,7 +304,12 @@ def test_duplicate_row_id_and_null_structural_key_fail() -> None:
 
     null_only = normalize_event_rows(
         _event(timestamp, crime_id="unique"),
-        dataset_end_utc=datetime(2026, 1, 1, tzinfo=UTC),
+        support_intervals=[
+            _support(
+                datetime(2024, 1, 1, tzinfo=UTC),
+                datetime(2025, 1, 1, tzinfo=UTC),
+            )
+        ],
     ).with_columns(pl.lit(None, dtype=pl.Int64).alias("weather_query_cell_id"))
     with pytest.raises(FinalModelContractError, match="null_structural_rows"):
         validate_normalized_rows(null_only)
@@ -257,18 +318,30 @@ def test_duplicate_row_id_and_null_structural_key_fail() -> None:
 def test_feature_joins_cannot_multiply_rows() -> None:
     timestamp = datetime(2024, 2, 1, tzinfo=UTC)
     rows = normalize_event_rows(
-        _event(timestamp), dataset_end_utc=datetime(2026, 1, 1, tzinfo=UTC)
+        _event(timestamp),
+        support_intervals=[
+            _support(
+                datetime(2024, 1, 1, tzinfo=UTC),
+                datetime(2025, 1, 1, tzinfo=UTC),
+            )
+        ],
     )
     duplicate_history = pl.concat([_history(), _history()])
 
-    with pytest.raises(FinalModelContractError, match="duplicate keys"):
-        attach_temporal_features(rows, duplicate_history)
+    with pytest.raises(RuntimeError, match="unique.*grain"):
+        validate_temporal_history(duplicate_history)
 
 
 def test_temporal_feature_join_selects_only_information_available_at_query() -> None:
     timestamp = datetime(2024, 2, 1, tzinfo=UTC)
     rows = normalize_event_rows(
-        _event(timestamp), dataset_end_utc=datetime(2026, 1, 1, tzinfo=UTC)
+        _event(timestamp),
+        support_intervals=[
+            _support(
+                datetime(2024, 1, 1, tzinfo=UTC),
+                datetime(2025, 1, 1, tzinfo=UTC),
+            )
+        ],
     )
     older = _history()
     future = _history().with_columns(
@@ -279,32 +352,31 @@ def test_temporal_feature_join_selects_only_information_available_at_query() -> 
     result = attach_temporal_features(rows, pl.concat([older, future])).collect()
 
     assert result["socio_population"].item() == 1.0
-    assert result["_feature_available_at"].item() < timestamp
+    assert result["feature_available_at"].item() < timestamp
 
 
 def test_small_full_table_preserves_nullable_weather() -> None:
     event_time = datetime(2024, 1, 1, 1, tzinfo=UTC)
     integration_time = event_time + timedelta(hours=1)
-    table, summary = build_final_model_table(
+    table, _ = build_final_model_table(
         events=_event(event_time),
         integration=_integration(integration_time),
         environmental=_environmental(
             [event_time, integration_time], unavailable_first=True
         ),
         temporal_history=_history(),
-        coverage_intervals=[
-            _coverage(
+        support_intervals=[
+            _support(
                 datetime(2023, 3, 15, tzinfo=UTC),
                 datetime(2026, 1, 1, tzinfo=UTC),
             )
         ],
-        dataset_end_utc=datetime(2026, 1, 1, tzinfo=UTC),
     )
     result = table.collect()
 
     assert result.height == 2
-    assert summary["structural_environmental_missing_rows"] == 0
-    assert summary["weather_unavailable_rows"] == 1
+    assert result["solar_elevation_deg"].null_count() == 0
+    assert result["weather_available"].to_list() == [False, True]
     assert result.filter(pl.col("row_type") == "event")[
         "weather_temperature_2m_c"
     ].item() is None
@@ -373,16 +445,58 @@ def test_final_model_asset_publishes_immutable_partitioned_snapshot(
     )
     integration_part.parent.mkdir(parents=True)
     _integration(integration_time, split="train").drop(
-        "integration_sample_id", "split", "integration_weight_cell_seconds"
+        "integration_sample_id", "integration_weight_cell_seconds"
     ).with_columns(pl.lit(1.5).alias("mc_weight_cell_hours")).write_parquet(
         integration_part
     )
+    interval_record = {
+        "source_timezone": "America/Chicago",
+        "coverage_basis": "test",
+        "coverage_reference": "fixture",
+    }
     integration_manifest = {
+        "schema_version": "crime_integration_samples_v4",
         "snapshot_id": integration_id,
         "snapshot_root": integration_uri,
-        "train_end_year": 2023,
+        "event_spine_snapshot_id": event_id,
+        "event_spine_snapshot_uri": event_uri,
         "sources": [
-            {"source_city": "chicago", "sample_part_count": 1}
+            {
+                "source_city": "chicago",
+                "sample_part_count": 1,
+                "split_support": {
+                    "train": {
+                        "integration_sample_rows": 1,
+                        "temporal_coverage_intervals": [
+                            {
+                                **interval_record,
+                                "coverage_start_utc": "2023-03-15T00:00:00Z",
+                                "coverage_end_utc": "2024-01-01T00:00:00Z",
+                            }
+                        ],
+                    },
+                    "validation": {
+                        "integration_sample_rows": 0,
+                        "temporal_coverage_intervals": [
+                            {
+                                **interval_record,
+                                "coverage_start_utc": "2024-01-01T00:00:00Z",
+                                "coverage_end_utc": "2025-01-01T00:00:00Z",
+                            }
+                        ],
+                    },
+                    "test": {
+                        "integration_sample_rows": 0,
+                        "temporal_coverage_intervals": [
+                            {
+                                **interval_record,
+                                "coverage_start_utc": "2025-01-01T00:00:00Z",
+                                "coverage_end_utc": "2026-01-01T00:00:00Z",
+                            }
+                        ],
+                    },
+                },
+            }
         ],
     }
     lake._write_object(
@@ -441,18 +555,6 @@ def test_final_model_asset_publishes_immutable_partitioned_snapshot(
     )
     history_part.parent.mkdir(parents=True)
     _history().write_parquet(history_part)
-    coverage_path = Path(lake.temporal_coverage_uri)
-    coverage_path.parent.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame(
-        {
-            "source_city": ["chicago"],
-            "source_timezone": ["America/Chicago"],
-            "coverage_start_utc": ["2023-03-15T00:00:00Z"],
-            "coverage_end_utc": ["2024-01-01T00:00:00Z"],
-            "coverage_basis": ["test"],
-            "coverage_reference": ["fixture"],
-        }
-    ).write_csv(coverage_path)
 
     result = dg.materialize(
         [
@@ -470,9 +572,10 @@ def test_final_model_asset_publishes_immutable_partitioned_snapshot(
     assert manifest["event_rows"] == 1
     assert manifest["integration_rows"] == 1
     assert manifest["weather_unavailable_rows"] == 1
-    assert manifest["duplicate_row_ids"] == 0
     assert manifest["event_spine_snapshot_id"] == event_id
     assert manifest["integration_snapshot_id"] == integration_id
     assert manifest["environmental_snapshot_id"] == environmental_id
     assert list(Path(snapshot_uri).glob("split=train/source_city=chicago/*.parquet"))
-    assert scan_model_table(snapshot_uri).select(pl.len()).collect().item() == 2
+    published = scan_model_table(snapshot_uri)
+    assert published.select(pl.len()).collect().item() == 2
+    assert published.select(pl.col("row_id").n_unique()).collect().item() == 2
