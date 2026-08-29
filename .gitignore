@@ -230,3 +230,12 @@ tests/images/*.png
 tests/images/*.aux.xml
 
 src/crimenet_data/scripts/
+
+# Frontend generated files
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/dist/
+frontend/coverage/
+frontend/test-results/
+frontend/playwright-report/
