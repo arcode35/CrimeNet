@@ -556,6 +556,35 @@ def _class_metrics_json(classes: list[str], confusion: np.ndarray) -> dict[str, 
     }
 
 
+
+def _build_quantile_matrices(
+    *,
+    X_train: pd.DataFrame,
+    y_train: np.ndarray,
+    X_validation: pd.DataFrame,
+    y_validation: np.ndarray,
+    max_bin: int,
+) -> tuple[xgb.QuantileDMatrix, xgb.QuantileDMatrix]:
+    """Build quantized matrices; HPO may cache these per geographic fold/max_bin."""
+
+    dtrain = xgb.QuantileDMatrix(
+        X_train,
+        label=y_train,
+        enable_categorical=True,
+        max_bin=int(max_bin),
+        nthread=-1,
+    )
+    dvalidation = xgb.QuantileDMatrix(
+        X_validation,
+        label=y_validation,
+        enable_categorical=True,
+        max_bin=int(max_bin),
+        ref=dtrain,
+        nthread=-1,
+    )
+    return dtrain, dvalidation
+
+
 def train(
     config: dict[str, Any],
     *,
@@ -681,20 +710,12 @@ def train(
     print(f"Features:            {len(feature_columns)}")
 
     max_bin = int(arch_cfg["max_bin"])
-    dtrain = xgb.QuantileDMatrix(
-        X_train,
-        label=y_train,
-        enable_categorical=True,
+    dtrain, dvalidation = _build_quantile_matrices(
+        X_train=X_train,
+        y_train=y_train,
+        X_validation=X_validation,
+        y_validation=y_validation,
         max_bin=max_bin,
-        nthread=-1,
-    )
-    dvalidation = xgb.QuantileDMatrix(
-        X_validation,
-        label=y_validation,
-        enable_categorical=True,
-        max_bin=max_bin,
-        ref=dtrain,
-        nthread=-1,
     )
 
     del X_train, X_validation, train_frame, validation_frame

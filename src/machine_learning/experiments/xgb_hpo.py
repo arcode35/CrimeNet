@@ -1048,6 +1048,7 @@ def install_worker_stage_cache(
     )
     original_sample_fn = getattr(module, sample_fn_name)
     loaded_frames: dict[str, Any] = {}
+    filtered_frames: dict[tuple[str, str, str, tuple[str, ...]], Any] = {}
 
     def cached_sample(*args, **kwargs):
         fold_name = str(getattr(module, "_hpo_active_fold_name", ""))
@@ -1071,24 +1072,38 @@ def install_worker_stage_cache(
                 f"rows={loaded_frames[path].height:,}"
             )
         held_out = list(getattr(module, "_hpo_active_holdout_cities", ()))
-        started = time.perf_counter()
-        if split == "train":
-            result = loaded_frames[path].filter(
-                ~real_pl.col("source_city").is_in(held_out)
+        held_out_tuple = tuple(sorted(str(city) for city in held_out))
+        filter_key = (path, fold_name, split, held_out_tuple)
+
+        if filter_key not in filtered_frames:
+            started = time.perf_counter()
+
+            if split == "train":
+                result = loaded_frames[path].filter(
+                    ~real_pl.col("source_city").is_in(held_out)
+                )
+            elif split == "validation":
+                result = loaded_frames[path].filter(
+                    real_pl.col("source_city").is_in(held_out)
+                )
+            else:
+                raise ValueError(f"HPO cache cannot serve split={split!r}")
+
+            filtered_frames[filter_key] = result
+
+            print(
+                f"[timing] worker {worker_index} build persistent fold frame "
+                f"{fold_name}/{split}: {time.perf_counter() - started:.3f}s"
             )
-        elif split == "validation":
-            result = loaded_frames[path].filter(
-                real_pl.col("source_city").is_in(held_out)
-            )
-        else:
-            raise ValueError(f"HPO cache cannot serve split={split!r}")
-        print(
-            f"[timing] worker {worker_index} sample load/filter "
-            f"{fold_name}/{split}: {time.perf_counter() - started:.3f}s"
-        )
-        return result
+
+        return filtered_frames[filter_key]
 
     setattr(module, sample_fn_name, cached_sample)
+
+    # cached_sample() has already applied the geographic fold. Avoid creating
+    # another Polars DataFrame and defeating id(frame)-based memoization.
+    if family == "mark" and callable(getattr(module, "_apply_geographic_role", None)):
+        setattr(module, "_apply_geographic_role", lambda frame, **_: frame)
 
     class CachedModelTable:
         lineage: dict[str, object] = {}
@@ -1132,6 +1147,59 @@ def install_worker_stage_cache(
             return prepared_xy[key]
 
         setattr(module, "_prepare_xy", cached_prepare_xy)
+
+    # Mark capacity/HPO runs can reuse the quantized representation whenever
+    # the fold and max_bin are unchanged. The capacity sweep fixes max_bin,
+    # therefore each worker constructs only one train/validation QDM pair per
+    # geographic fold.
+    if family == "mark":
+        original_build_qdm = getattr(module, "_build_quantile_matrices", None)
+        if not callable(original_build_qdm):
+            raise RuntimeError(
+                "Mark trainer must expose _build_quantile_matrices() for QDM reuse"
+            )
+
+        qdm_cache: dict[tuple[str, int], Any] = {}
+
+        def cached_build_qdm(
+            *,
+            X_train,
+            y_train,
+            X_validation,
+            y_validation,
+            max_bin,
+        ):
+            fold_name = str(getattr(module, "_hpo_active_fold_name", ""))
+            if not fold_name:
+                raise RuntimeError(
+                    "QuantileDMatrix cache requires an active geographic fold"
+                )
+
+            key = (fold_name, int(max_bin))
+
+            if key not in qdm_cache:
+                started = time.perf_counter()
+                qdm_cache[key] = original_build_qdm(
+                    X_train=X_train,
+                    y_train=y_train,
+                    X_validation=X_validation,
+                    y_validation=y_validation,
+                    max_bin=int(max_bin),
+                )
+                print(
+                    f"[timing] worker {worker_index} BUILD QDM "
+                    f"fold={fold_name} max_bin={int(max_bin)}: "
+                    f"{time.perf_counter() - started:.3f}s"
+                )
+            else:
+                print(
+                    f"[worker {worker_index}] REUSE QDM "
+                    f"fold={fold_name} max_bin={int(max_bin)}"
+                )
+
+            return qdm_cache[key]
+
+        setattr(module, "_build_quantile_matrices", cached_build_qdm)
 
     # Cache pure O(N) summaries/vocabulary/validation checks that depend only on
     # the immutable cached frame/arrays. This removes additional repeated CPU
