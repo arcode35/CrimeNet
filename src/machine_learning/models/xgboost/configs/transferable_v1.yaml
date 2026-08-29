@@ -1,5 +1,5 @@
 features:
-  feature_set: transferable_v2
+  feature_set: transferable_v1
 
   categorical:
     - lighting_condition

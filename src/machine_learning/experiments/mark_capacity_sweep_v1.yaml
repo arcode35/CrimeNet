@@ -1,0 +1,59 @@
+sweep_name: xgb_mark_capacity_sweep_v1
+family: mark
+base_config: src/machine_learning/models/xgboost/configs/mark_subtype_transfer_prod_v1.yaml
+
+# null = reuse the base model's deterministic data seed so the 25% Arrow cache
+# is shared exactly across every candidate.
+seed: null
+
+stage:
+  train_fraction: 0.25
+  validation_fraction: 0.25
+  num_boost_round: 2500
+  early_stopping_rounds: 100
+
+runtime:
+  # Override these on the CLI for the actual Vast host.
+  gpus: "0,1,2,3"
+  workers: 4
+  threads_per_worker: 0
+  monitor_seconds: 30
+  output_dir: hpo/capacity_sweeps
+  snapshot_stage_dir: hpo_nvme/snapshot_stage
+  stage_cache_dir: hpo_nvme/stage_cache
+
+# Purpose: determine the mark model's capacity basin before Optuna.
+# Previous 8-city/full-feature runs were essentially flat around depth 12-14,
+# but the new zero-shot transferable contract may move the optimum.
+depths: [6, 8, 10, 12, 14, 16, 18, 20, 22]
+
+# Keep representation fixed so each long-lived GPU worker builds one
+# QuantileDMatrix train/validation pair per fold, then reuses it for all 18
+# candidates. Probe max_bin separately; do not mix it into this depth sweep.
+common_params:
+  max_bin: 128
+  max_cat_to_onehot: 1
+  learning_rate: 0.05
+  subsample: 0.80
+  colsample_bytree: 0.80
+
+# Two deliberately different regularization regimes. This avoids falsely
+# concluding that a depth is bad only because one fixed regularization level
+# is mismatched to its capacity.
+regularization_regimes:
+  moderate_reg:
+    min_child_weight: 20.0
+    reg_lambda: 10.0
+    reg_alpha: 0.0
+    gamma: 0.0
+
+  strong_reg:
+    min_child_weight: 100.0
+    reg_lambda: 30.0
+    reg_alpha: 1.0
+    gamma: 0.1
+
+# Intentionally empty for the first structural sweep. After the depth basin is
+# known, use xgb_hpo.py for joint continuous tuning rather than expanding this
+# into a large hand-built grid.
+interaction_probes: []
