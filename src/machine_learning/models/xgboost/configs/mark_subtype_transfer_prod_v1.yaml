@@ -1,0 +1,141 @@
+# GEOGRAPHIC OOF CV: five models per candidate during HPO/model selection.
+# FINAL PRODUCTION TRAINING: one all-city conditional mark model after HPO.
+# FINAL IN-DOMAIN VALIDATION: all 15 validation cities; diagnostic only.
+# TEST: sealed and unavailable to all commands represented by this config.
+model:
+  family: xgboost
+  module: machine_learning.models.xgboost.mark_model
+  name: xgb_mark_subtype_transfer_prod_v1
+  description: Zero-shot geographic-transfer 87-way conditional crime-subtype model
+
+data:
+  source: current_final_model_snapshot
+  train_split: train
+  validation_split: validation
+  train_fraction: 1.0
+  validation_fraction: 1.0
+  seed: 42
+
+target:
+  column: canonical_subtype_code
+  unseen_validation_label_policy: fail
+
+geographic_cv:
+  version: crimenet_geocv_v1
+  enabled: true
+  folds:
+    bay_area:
+      - san_francisco
+      - marin_county_sheriff_ca
+      - sonoma_county_sheriff_ca
+    mid_atlantic:
+      - washington_dc
+      - montgomery_county_md
+      - baltimore
+    dfw_southwest:
+      - dallas
+      - fort_worth
+      - chandler_az
+    major_urban:
+      - new_york
+      - chicago
+      - atlanta
+    western_mixed:
+      - los_angeles_county_sheriff
+      - denver
+      - seattle
+  primary_metric: geocv_macro_mark_log_loss
+
+features:
+  # The standalone attached feature contract calls these exact 37+1 columns
+  # transferable_v2. Keep the explicit list authoritative.
+  feature_set: transferable_v2
+  zero_shot_geography: true
+  include_local_history: false
+  include_city_history: false
+  categorical:
+    - lighting_condition
+
+  numeric:
+    # Calendar
+    - local_hour
+    - local_day_of_week
+    - local_hour_sin
+    - local_hour_cos
+    - local_day_of_week_sin
+    - local_day_of_week_cos
+
+    # Socioeconomic
+    - socio_population
+    - socio_median_age
+    - socio_median_household_income
+    - socio_poverty_rate
+    - socio_unemployment_rate
+    - socio_vacancy_rate
+    - socio_renter_occupied_rate
+    - socio_no_vehicle_rate
+
+    # OSM / built environment
+    - osm_poi_density_per_km2
+    - osm_nightlife_poi_density_per_km2
+    - osm_food_poi_density_per_km2
+    - osm_retail_poi_density_per_km2
+    - osm_transit_poi_density_per_km2
+    - osm_road_length_density_m_per_km2
+    - osm_major_road_density_m_per_km2
+    - osm_intersection_density_per_km2
+    - osm_dead_end_density_per_km2
+    - osm_building_density_per_km2
+    - osm_major_road_length_ratio
+    - osm_residential_road_length_ratio
+    - osm_service_road_length_ratio
+    - osm_one_way_road_length_ratio
+    - osm_tracked_poi_category_entropy
+    - osm_land_use_category_entropy
+    - osm_commercial_residential_mix_ratio
+
+    # Environmental
+    - weather_temperature_2m_c
+    - weather_relative_humidity_2m_pct
+    - weather_available
+    - solar_elevation_deg
+    - solar_azimuth_deg
+    - is_daylight
+  include_solar_zenith: false
+
+architecture:
+  objective: multi:softprob
+  tree_method: hist
+  device: cuda
+  max_bin: 128
+  max_depth: 12
+  max_cat_to_onehot: 1
+
+optimization:
+  learning_rate: 0.05
+  subsample: 0.80
+  colsample_bytree: 0.80
+  min_child_weight: 20.0
+  gamma: 0.0
+  reg_lambda: 10.0
+  reg_alpha: 0.0
+
+training:
+  num_boost_round: 3000
+  early_stopping_rounds: 100
+  verbose_eval: 25
+  fixed_num_boost_round: false
+
+final_training:
+  use_all_cities: true
+  train_fraction: 1.0
+
+validation:
+  final_in_domain_validation: true
+  report_global: true
+  report_macro_city: true
+  report_per_city: true
+  report_in_domain_validation: false
+
+artifacts:
+  output_root: artifacts/experiments

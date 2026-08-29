@@ -92,7 +92,7 @@ def prepared_xy_cache_enabled(*, requested: bool, stage: Stage) -> bool:
 
 
 INTENSITY_METRIC = "geocv_macro_nll_per_event"
-MARK_METRIC = "sample_validation_log_loss"
+MARK_METRIC = "geocv_macro_mark_log_loss"
 
 
 def parse_args() -> argparse.Namespace:
