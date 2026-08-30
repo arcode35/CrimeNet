@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -341,19 +342,53 @@ print(
 
 
 # ============================================================
-# Load current environmental snapshot
+# CLI + environmental snapshot selection
 # ============================================================
 
-environment_pointer = load_json(
-    ENV_ROOT
-    / "environmental_current.json"
+parser = argparse.ArgumentParser()
+
+parser.add_argument(
+    "--environmental-snapshot-path",
+    help=(
+        "Use this exact environmental snapshot directory instead "
+        "of environmental_current.json. Required by forecast builds."
+    ),
 )
 
-env_dir = Path(
-    environment_pointer[
-        "snapshot_path"
-    ]
+parser.add_argument(
+    "--expected-valid-utc-hour",
+    help=(
+        "Optional invariant: fail unless the selected environmental "
+        "snapshot represents this exact UTC hour."
+    ),
 )
+
+parser.add_argument(
+    "--no-publish-current",
+    action="store_true",
+    help=(
+        "Build the timestamped intensity snapshot without advancing "
+        "intensity_current.json. Used for forecasts."
+    ),
+)
+
+args = parser.parse_args()
+
+if args.environmental_snapshot_path:
+    env_dir = Path(
+        args.environmental_snapshot_path
+    ).expanduser().resolve()
+else:
+    environment_pointer = load_json(
+        ENV_ROOT
+        / "environmental_current.json"
+    )
+
+    env_dir = Path(
+        environment_pointer[
+            "snapshot_path"
+        ]
+    )
 
 if not env_dir.exists():
     raise RuntimeError(
@@ -382,6 +417,25 @@ else:
         valid_utc
         .tz_convert("UTC")
     )
+
+if args.expected_valid_utc_hour:
+    expected_valid_utc = pd.Timestamp(
+        args.expected_valid_utc_hour
+    )
+
+    if expected_valid_utc.tzinfo is None:
+        expected_valid_utc = expected_valid_utc.tz_localize("UTC")
+    else:
+        expected_valid_utc = expected_valid_utc.tz_convert("UTC")
+
+    expected_valid_utc = expected_valid_utc.floor("h")
+
+    if valid_utc != expected_valid_utc:
+        raise RuntimeError(
+            "Selected environmental snapshot has wrong UTC hour: "
+            f"expected={expected_valid_utc.isoformat()}, "
+            f"actual={valid_utc.isoformat()}"
+        )
 
 snapshot_id = (
     valid_utc
@@ -1591,6 +1645,13 @@ try:
         "environmental_valid_utc_hour":
             valid_utc.isoformat(),
 
+        "publication_mode":
+            (
+                "timestamp_only"
+                if args.no_publish_current
+                else "current"
+            ),
+
         "chunk_size":
             CHUNK_SIZE,
 
@@ -1713,10 +1774,11 @@ try:
     }
 
 
-    atomic_json_write(
-        CURRENT_POINTER,
-        pointer,
-    )
+    if not args.no_publish_current:
+        atomic_json_write(
+            CURRENT_POINTER,
+            pointer,
+        )
 
 
 except Exception:
@@ -1912,8 +1974,12 @@ print(
 )
 
 print(
-    f"Current pointer:"
-    f" {CURRENT_POINTER}"
+    "Publication:    "
+    + (
+        f"current pointer -> {CURRENT_POINTER}"
+        if not args.no_publish_current
+        else "timestamp-only forecast snapshot"
+    )
 )
 
 print()
