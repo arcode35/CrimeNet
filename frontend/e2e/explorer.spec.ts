@@ -130,3 +130,59 @@ test("prediction surface survives a basemap style failure", async ({ page }, tes
   if (viewport) await page.mouse.click(viewport.width * 0.55, viewport.height * 0.57);
   await expect(page.getByText("H3 CELL INSPECTOR")).toBeVisible();
 });
+
+test("location search selects a suggestion and moves the existing map", async ({ page }, testInfo) => {
+  test.skip(
+    testInfo.project.name !== "desktop-1440",
+    "One deterministic geocoding browser check is sufficient",
+  );
+  await page.route("https://api.maptiler.com/geocoding/**", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        type: "FeatureCollection",
+        query: ["1234", "westheimer"],
+        attribution: "MapTiler",
+        features: [
+          {
+            type: "Feature",
+            id: "address.mock-westheimer",
+            text: "Westheimer Road",
+            address: "1234",
+            place_name: "1234 Westheimer Road, Houston, Texas 77006, United States",
+            place_type: ["address"],
+            place_type_name: ["Address"],
+            center: [-95.3936, 29.7411],
+            geometry: { type: "Point", coordinates: [-95.3936, 29.7411] },
+            properties: { ref: "mock", country_code: "us" },
+            relevance: 1,
+          },
+        ],
+      }),
+    });
+  });
+  await page.goto("/explorer");
+  await expect(page.locator(".map-canvas")).toHaveAttribute("data-map-loaded", "true", {
+    timeout: 15_000,
+  });
+  const longitudeBefore = await page
+    .locator(".map-canvas")
+    .getAttribute("data-map-center-longitude");
+  await page.getByRole("button", { name: "Open command palette" }).click();
+  await page
+    .getByRole("combobox", { name: "Search addresses, places, and CrimeNet commands" })
+    .fill("1234 Westheimer Rd, Houston TX");
+  await expect(page.getByText("1234 Westheimer Road", { exact: true })).toBeVisible();
+  await page.getByRole("option", { name: /1234 Westheimer Road/ }).click();
+  await expect(page.locator(".command-dialog")).not.toBeVisible();
+  await expect(page.locator(".search-destination-marker")).toBeVisible();
+  await expect
+    .poll(() => page.locator(".map-canvas").getAttribute("data-map-center-longitude"), {
+      timeout: 5_000,
+    })
+    .not.toBe(longitudeBefore);
+  await expect(page.locator(".map-canvas")).toHaveAttribute(
+    "data-map-center-longitude",
+    "-95.39360",
+  );
+});

@@ -1,7 +1,7 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { cellToLatLng } from "h3-js";
 import {
   AlertTriangle,
@@ -15,7 +15,8 @@ import {
   ShieldAlert,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { serviceHealthQueryKey } from "@/lib/api";
 import type { PredictionResponse } from "@/lib/domain";
 import { coverageLabel, featureLabels, formatIntensity, formatTimestamp } from "@/lib/format";
 import {
@@ -26,6 +27,7 @@ import {
   type SubtypePrediction,
 } from "@/lib/inference";
 import { getCity } from "@/lib/domain";
+import { isNativeMarkCell, NATIVE_MARK_RESOLUTION } from "@/lib/map/lod";
 import { CRIME_FAMILIES } from "@/lib/taxonomy";
 import { useExplorerStore } from "@/stores/explorer-store";
 
@@ -212,7 +214,13 @@ function AllTypesPanel({
   );
 }
 
-export function Inspector({ data }: { data?: PredictionResponse }) {
+export function Inspector({
+  data,
+  snapshotId,
+}: {
+  data?: PredictionResponse;
+  snapshotId?: string;
+}) {
   const selectedH3 = useExplorerStore((state) => state.selectedH3);
   const close = useExplorerStore((state) => state.selectCell);
   const cityId = useExplorerStore((state) => state.cityId);
@@ -220,7 +228,13 @@ export function Inspector({ data }: { data?: PredictionResponse }) {
   const [selectedFamilyCode, setSelectedFamilyCode] = useState<string | null>(null);
   const [showAllFamilies, setShowAllFamilies] = useState(false);
   const [allTypesOpen, setAllTypesOpen] = useState(false);
-  const cell = data?.cells.find((candidate) => candidate.h3 === selectedH3);
+  const queryClient = useQueryClient();
+  const nativeSelection = Boolean(
+    selectedH3 && data?.resolution === NATIVE_MARK_RESOLUTION && isNativeMarkCell(selectedH3),
+  );
+  const cell = nativeSelection
+    ? data?.cells.find((candidate) => candidate.h3 === selectedH3)
+    : undefined;
   const request =
     selectedH3 && data && cell
       ? {
@@ -228,6 +242,7 @@ export function Inspector({ data }: { data?: PredictionResponse }) {
           h3: selectedH3,
           timestamp: data.timestamp,
           horizonHours: data.horizonHours,
+          snapshotId: snapshotId ?? data.snapshotId,
           surfaceCell: cell,
         }
       : null;
@@ -235,9 +250,23 @@ export function Inspector({ data }: { data?: PredictionResponse }) {
     queryKey: request ? cellPredictionQueryKey(request) : ["cell-prediction", "idle"],
     queryFn: ({ signal }) => inferenceProvider.getCellPrediction({ ...request!, signal }),
     enabled: Boolean(request),
-    placeholderData: (previous) => (previous?.h3 === selectedH3 ? previous : undefined),
+    placeholderData: (previous) =>
+      previous?.h3 === selectedH3 &&
+      (!request?.snapshotId || previous.snapshotId === request.snapshotId)
+        ? previous
+        : undefined,
   });
-  const prediction = predictionQuery.data;
+  const snapshotMismatch = Boolean(
+    request?.snapshotId &&
+      predictionQuery.data?.snapshotId &&
+      request.snapshotId !== predictionQuery.data.snapshotId,
+  );
+  const prediction = snapshotMismatch ? undefined : predictionQuery.data;
+  useEffect(() => {
+    if (snapshotMismatch) {
+      void queryClient.invalidateQueries({ queryKey: serviceHealthQueryKey });
+    }
+  }, [queryClient, snapshotMismatch]);
   const rankedFamilies = useMemo(
     () =>
       [...(prediction?.familyDistribution ?? [])].sort(
@@ -246,6 +275,7 @@ export function Inspector({ data }: { data?: PredictionResponse }) {
     [prediction, metric],
   );
   if (!selectedH3) return null;
+  if (data && data.resolution < NATIVE_MARK_RESOLUTION) return null;
   if (!cell || !data)
     return (
       <aside className="inspector">
@@ -334,7 +364,7 @@ export function Inspector({ data }: { data?: PredictionResponse }) {
           {cell.missingReason && <p>{cell.missingReason}</p>}
         </div>
       </div>
-      {predictionQuery.isPending && (
+      {(predictionQuery.isPending || snapshotMismatch) && (
         <div className="prediction-skeleton" aria-label="Loading cell prediction">
           <i />
           <i />
@@ -473,29 +503,41 @@ export function Inspector({ data }: { data?: PredictionResponse }) {
                 </button>
               </section>
             )}
-            <section className="inspector-section temporal-distribution">
-              <div className="section-title">
-                <span>TEMPORAL INTENSITY</span>
-                <span>−12H · NOW · +12H</span>
-              </div>
-              <div className="temporal-bars">
-                {prediction.temporal?.map((point, index) => (
-                  <i
-                    key={point.timestamp}
-                    className={index === 12 ? "now" : ""}
-                    style={{
-                      height: `${Math.max(8, (point.totalIntensity / temporalMax) * 100)}%`,
-                    }}
-                    title={`${formatTimestamp(point.timestamp, city.timezone, false)} · ${formatMarkIntensity(point.totalIntensity)}`}
-                  />
-                ))}
-              </div>
-              <div className="temporal-axis">
-                <span>−12h</span>
-                <strong>NOW</strong>
-                <span>+12h</span>
-              </div>
-            </section>
+            {prediction.temporal?.length ? (
+              <section className="inspector-section temporal-distribution">
+                <div className="section-title">
+                  <span>TEMPORAL INTENSITY</span>
+                  <span>−12H · NOW · +12H</span>
+                </div>
+                <div className="temporal-bars">
+                  {prediction.temporal.map((point, index) => (
+                    <i
+                      key={point.timestamp}
+                      className={index === 12 ? "now" : ""}
+                      style={{
+                        height: `${Math.max(8, (point.totalIntensity / temporalMax) * 100)}%`,
+                      }}
+                      title={`${formatTimestamp(point.timestamp, city.timezone, false)} · ${formatMarkIntensity(point.totalIntensity)}`}
+                    />
+                  ))}
+                </div>
+                <div className="temporal-axis">
+                  <span>−12h</span>
+                  <strong>NOW</strong>
+                  <span>+12h</span>
+                </div>
+              </section>
+            ) : prediction.provider.kind === "api" ? (
+              <section className="inspector-section current-hour-note">
+                <div className="section-title">
+                  <span>CURRENT-HOUR INFERENCE</span>
+                  <span>{prediction.snapshotId}</span>
+                </div>
+                <p>
+                  The live service exposes one current hourly rate; no temporal curve is inferred.
+                </p>
+              </section>
+            ) : null}
             <section className="inspector-section model-strip">
               <div>
                 <small>MODEL</small>
@@ -516,20 +558,22 @@ export function Inspector({ data }: { data?: PredictionResponse }) {
           </>
         )
       )}
-      <section className="inspector-section compact-features">
-        <div className="section-title">
-          <span>FEATURE COVERAGE</span>
-          <Database size={12} />
-        </div>
-        <div className="feature-pills">
-          {cell.features.map((feature) => (
-            <span key={feature.group} className={feature.available ? "available" : "missing"}>
-              {feature.available ? <Check size={10} /> : <Minus size={10} />}
-              {featureLabels[feature.group]}
-            </span>
-          ))}
-        </div>
-      </section>
+      {cell.features.length > 0 && (
+        <section className="inspector-section compact-features">
+          <div className="section-title">
+            <span>FEATURE COVERAGE</span>
+            <Database size={12} />
+          </div>
+          <div className="feature-pills">
+            {cell.features.map((feature) => (
+              <span key={feature.group} className={feature.available ? "available" : "missing"}>
+                {feature.available ? <Check size={10} /> : <Minus size={10} />}
+                {featureLabels[feature.group]}
+              </span>
+            ))}
+          </div>
+        </section>
+      )}
       {prediction && (
         <AllTypesPanel
           prediction={prediction}

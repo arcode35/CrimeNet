@@ -18,9 +18,14 @@ export default defineConfig({
     { name: "mobile", use: { viewport: { width: 390, height: 844 }, isMobile: true } },
   ],
   webServer: {
-    command: "npm run start -- --port 3100",
+    command: "npm run dev -- --port 3100",
     url: "http://127.0.0.1:3100",
-    reuseExistingServer: true,
-    timeout: 30_000,
+    reuseExistingServer: false,
+    timeout: 120_000,
+    env: {
+      NEXT_DIST_DIR: ".next-e2e",
+      NEXT_PUBLIC_CRIMENET_API_URL: "",
+      NEXT_PUBLIC_CRIMENET_DATA_MODE: "fixture",
+    },
   },
 });

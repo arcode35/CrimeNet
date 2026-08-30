@@ -1,6 +1,6 @@
 # CrimeNet frontend
 
-CrimeNet's frontend is a map-first geospatial model-operations interface. MapLibre owns the basemap and camera; deck.gl renders the H3 resolution-9 analytical surface directly on the GPU. React owns controls and small analytical views, never individual spatial features.
+CrimeNet's frontend is a map-first geospatial model-operations interface. MapLibre owns the basemap and camera; deck.gl renders the backend-selected H3-r4 through H3-r9 analytical surface directly on the GPU. React owns controls and small analytical views, never individual spatial features.
 
 ## Requirements and setup
 
@@ -28,12 +28,16 @@ npm run build
 
 ## Environment
 
-| Variable                       | Purpose                                                                                      |
-| ------------------------------ | -------------------------------------------------------------------------------------------- |
-| `NEXT_PUBLIC_CRIMENET_API_URL` | FastAPI origin. If absent, the application enters visibly labelled development-fixture mode. |
-| `NEXT_PUBLIC_MAP_STYLE_URL`    | MapLibre style URL. May contain a public map-style token, but never a server secret.         |
+| Variable                         | Purpose                                                                              |
+| -------------------------------- | ------------------------------------------------------------------------------------ |
+| `NEXT_PUBLIC_CRIMENET_DATA_MODE` | `fixture` for deterministic UI data or `api` for the current live serving snapshot.  |
+| `NEXT_PUBLIC_CRIMENET_API_URL`   | Central FastAPI origin; live local development defaults to `http://localhost:8000`.  |
+| `NEXT_PUBLIC_MAP_STYLE_URL`      | MapLibre style URL. May contain a public map-style token, but never a server secret. |
+| `NEXT_PUBLIC_MAPTILER_KEY`       | Public browser key for MapTiler geocoding and optional satellite imagery.           |
 
-Do not place private service credentials in `NEXT_PUBLIC_*`; those values are bundled for the browser. `.env.local` is git-ignored.
+Do not place private service credentials in `NEXT_PUBLIC_*`; those values are bundled for the browser. Keep machine-specific values in `.env.local` and review that file before publishing changes.
+
+The Explorer's existing command palette uses `@maptiler/client` for debounced US address and place autocomplete. The current map center is passed only as a proximity bias, so a nationwide search remains possible. Selecting a result navigates the existing MapLibre camera; its normal `moveend` event triggers the CrimeNet viewport request and backend-selected H3 LOD. Production MapTiler keys should be restricted in MapTiler Cloud to the deployed origins (for example, local development and the approved production domains) rather than unrestricted or embedded as private server credentials.
 
 ## Architecture
 
@@ -51,7 +55,7 @@ Next.js App Router / React 19
              └── MapLibre camera + labels
                          │
                          └── deck.gl interleaved overlay
-                                  └── H3HexagonLayer (resolution 9)
+                                  └── H3HexagonLayer (backend-selected r4–r9)
 ```
 
 The surface is dynamically imported to avoid SSR/WebGL conflicts. City, timestamp, horizon, and selected H3 cell are encoded in URL search parameters. Query keys include city and time so a city transition cannot reuse the previous city's prediction surface. Expensive spatial data remains outside the React DOM.
@@ -66,21 +70,25 @@ The frontend uses facts defined by the Python repository rather than presentatio
 
 - jurisdictions: Baltimore, Chicago, Dallas, Fort Worth, New York, San Francisco, Seattle, and Washington, DC;
 - city-specific IANA time zones;
-- H3 as a cross-layer spatial primitive, with workflows spanning resolutions 6, 8, and 9 and the Explorer currently rendering resolution 9;
+- H3 as a cross-layer spatial primitive, with the Explorer rendering backend-selected r4–r9 LOD cells derived from the canonical r9 model surface;
 - model output: point-process intensity in events per cell-hour;
 - validation year: 2024;
 - full-v1 model: 63 inputs including city identity, six calendar fields, 27 weather/context fields, three lighting fields, and 26 leakage-safe crime-history fields;
 - required feature concepts: temporal, lighting, weather, OSM/built environment, socioeconomic, local crime history, and neighbor crime history.
 
-The complete platform also includes a Databricks lakehouse and broader online-serving direction. This checkout does **not** contain the FastAPI/OpenAPI implementation, viewport incident queries, cell-level explanations, or an explicitly deployed model record, so the frontend keeps those precise behaviors behind documented contracts.
+The complete platform also includes a Databricks lakehouse and broader online-serving direction. The browser consumes the separately running CrimeNet FastAPI service through a narrow adapter and keeps raw serving JSON out of UI components.
 
-## Required backend API
+## Serving API and frontend domain
 
-The only assumed production contracts are isolated in `lib/api.ts`. A backend implementation must expose:
+Live wire contracts are validated in `lib/api.ts` and `lib/inference/api-provider.ts`:
 
-### `GET /v1/predictions`
+- `GET /health` provides status, current `snapshot_id`, `valid_utc_hour`, and mark readiness.
+- `GET /api/v1/intensity/viewport` chooses an H3-r4 through H3-r9 LOD under the render budget and drives the map.
+- `GET /api/v1/predict/cell/{h3}?top_k=87` provides one selected cell's current rate and full mark distribution.
 
-Query parameters: `city`, ISO-8601 `timestamp`, and `horizon_hours`.
+### Frontend `PredictionResponse` domain
+
+The live viewport response and deterministic fixture provider both adapt into this UI contract:
 
 ```ts
 type PredictionResponse = {
@@ -89,9 +97,15 @@ type PredictionResponse = {
   horizonHours: number;
   unit: "events_per_cell_hour";
   modelVersion: string;
+  resolution: number;
+  aggregation?: "native_r9" | "sum_r9_child_intensity";
   cells: Array<{
     h3: string;
+    // Total expected events/hour over the displayed H3 cell.
     intensity: number | null;
+    // Mean r9-cell intensity used for zoom-stable map color.
+    visualIntensity?: number | null;
+    modeledR9Cells?: number;
     percentile: number | null;
     coverage: "full" | "partial" | "unsupported";
     missingReason: string | null;
@@ -121,15 +135,17 @@ unsupported geography ≠ safe geography
 
 The current repository defines no cold-start model. Fixture mode therefore emits only `full` and `unsupported`; the adapter and UI can represent `partial` only if a future backend explicitly supplies it.
 
-### `GET /v1/model`
+### Model metadata
 
-Returns model name/version, deployment status, validation year, H3 resolution, exact feature count, intensity unit, supported cities, and optionally validated metrics/global feature importance. The `/model` route omits performance visualizations until this contract is backed by a service.
+In live mode the model page derives service/model readiness and version identity from `/health`. It continues to omit performance visualizations because the serving API does not expose validated metrics, explanations, or feature-freshness details.
 
 Recommended future endpoints, not currently invoked, are viewport/time-bounded historical vector tiles and cell-level explanation/feature-freshness details. Do not return entire city event datasets as GeoJSON.
 
 ## Fixture mode
 
-When `NEXT_PUBLIC_CRIMENET_API_URL` is empty, the interface displays `DEVELOPMENT FIXTURE` persistently. The adapter creates a deterministic H3 contract surface for interaction and visual testing; it is not real inference, is never random, and is never labelled live. Replace the environment variable to remove fixture mode—no UI changes are needed.
+When `NEXT_PUBLIC_CRIMENET_DATA_MODE=fixture`, the interface displays `DEVELOPMENT FIXTURE` persistently. The adapter creates a deterministic H3 contract surface for interaction and visual testing; it is not real inference, is never random, and is never labelled live. Playwright explicitly sets this mode so browser tests stay independent of the serving process.
+
+In `api` mode, `/health` supplies the current snapshot identity and `/api/v1/intensity/viewport` supplies an automatically selected H3 LOD. Coarse r4–r8 clicks drill the camera toward finer data; only a confirmed r9 click invokes `/api/v1/predict/cell/{h3}?top_k=87`. The live service exposes one current hourly snapshot, so arbitrary timeline stepping and multi-hour horizons are disabled rather than sent as inference inputs.
 
 ## Performance and accessibility
 

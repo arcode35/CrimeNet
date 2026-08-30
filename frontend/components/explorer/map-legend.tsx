@@ -11,7 +11,13 @@ export function MapLegend({ data, error }: { data?: PredictionResponse; error: E
   return (
     <aside className="map-legend" aria-label="Map legend">
       <div className="legend-title">
-        <span>{coverage ? "MODEL COVERAGE" : "PREDICTED INTENSITY"}</span>
+        <span>
+          {coverage
+            ? "MODEL COVERAGE"
+            : data?.source === "live"
+              ? "LOCAL MODEL INTENSITY"
+              : "PREDICTED INTENSITY"}
+        </span>
         <Info size={12} />
       </div>
       {coverage ? (
@@ -43,10 +49,25 @@ export function MapLegend({ data, error }: { data?: PredictionResponse; error: E
           <div className="legend-unit">
             <span>UNIT</span>
             <strong>
-              {data?.unit === "events_per_cell_hour" ? "events / cell / hour" : "Establishing…"}
+              {data?.source === "live"
+                ? "events / r9-equivalent cell / hour"
+                : data?.unit === "events_per_cell_hour"
+                  ? "events / cell / hour"
+                  : "Establishing…"}
             </strong>
           </div>
         </>
+      )}
+      {data && (
+        <div className="legend-lod">
+          <span>
+            <small>SPATIAL RESOLUTION</small>
+            <strong>H3-R{data.resolution}</strong>
+          </span>
+          <small>
+            {data.resolution < 9 ? "Aggregated from modeled r9 cells" : "Native model cells"}
+          </small>
+        </div>
       )}
     </aside>
   );
