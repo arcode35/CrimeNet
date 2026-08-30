@@ -78,6 +78,7 @@ torchvision = [
 ]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 python_files = ["test.py", "test_*.py"]
 
 [[tool.uv.index]]
