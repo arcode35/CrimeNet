@@ -1,4 +1,4 @@
-# CrimeNet / CrimeSense
+# CrimeNet
 
 [![CI](https://github.com/arcode35/crimenet/actions/workflows/ci.yml/badge.svg)](https://github.com/arcode35/crimenet/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.11+-blue)
@@ -12,7 +12,7 @@
 ![Next.js](https://img.shields.io/badge/Product-Next.js-black)
 ![MapLibre](https://img.shields.io/badge/Maps-MapLibre-396CB2)
 
-<p align="center"><strong>Live:</strong> <a href="https://crimesense.ai">crimesense.ai</a></p>
+> **Live product:** [https://crimesense.ai](https://crimesense.ai)
 
 **CrimeSense** is the interactive forecasting product.  
 **CrimeNet** is the data, feature, machine-learning, and inference system that powers it.
@@ -21,21 +21,9 @@ CrimeNet turns more than a decade of heterogeneous public-safety data into a rol
 
 The project is deliberately **data-first and modeling-second**: the core engineering problem is building a temporally correct, spatially consistent feature and inference system that can support ML reliably from historical training through live serving.
 
-<p align="center">
-  <a href="#00--architecture">Architecture</a> ·
-  <a href="#01--product">Product</a> ·
-  <a href="#02--data-platform">Data</a> ·
-  <a href="#03--feature-infrastructure">Features</a> ·
-  <a href="#06--modeling">Modeling</a> ·
-  <a href="#07--production-inference">Inference</a> ·
-  <a href="#08--geospatial-serving">Serving</a> ·
-  <a href="#16--status">Status</a> ·
-  <a href="https://crimesense.ai">Live Demo</a>
-</p>
-
 ---
 
-<h2 align="center">System Scale</h2>
+## At a Glance
 
 | Metric                                                      |                               Current scale |
 | ----------------------------------------------------------- | ------------------------------------------: |
@@ -75,15 +63,9 @@ The project is deliberately **data-first and modeling-second**: the core enginee
 
 Additional source adapters exist for other jurisdictions, but the current audited production forecasting footprint is the 15-source set above.
 
-<br>
-
 ---
 
-<a id="00--architecture"></a>
-
-<p align="center"><sub>00</sub></p>
-<h2 align="center">SYSTEM ARCHITECTURE</h2>
-<p align="center"><i>Raw data → national feature infrastructure → ML → future-state inference → interactive product</i></p>
+# System Architecture
 
 ```mermaid
 flowchart TD
@@ -170,15 +152,9 @@ flowchart TD
 
 The same canonical feature definitions are used from historical training through forecast-time inference. This is a core design constraint: **training-serving consistency is enforced by the data system rather than recreated ad hoc inside the API.**
 
-<br>
-
 ---
 
-<a id="01--product"></a>
-
-<p align="center"><sub>01</sub></p>
-<h2 align="center">PRODUCT</h2>
-<p align="center"><i>The interactive forecasting layer</i></p>
+# CrimeSense
 
 [**CrimeSense**](https://crimesense.ai) is the interactive product layer built on CrimeNet.
 
@@ -195,15 +171,9 @@ It supports:
 
 The UI is intentionally the final layer of the architecture. The larger project is the infrastructure required to generate the surface correctly and reproducibly.
 
-<br>
-
 ---
 
-<a id="02--data-platform"></a>
-
-<p align="center"><sub>02</sub></p>
-<h2 align="center">DATA PLATFORM</h2>
-<p align="center"><i>From heterogeneous source records to one canonical event model</i></p>
+# Data Platform
 
 ## Immutable landing
 
@@ -255,15 +225,9 @@ Normalization handles differences in:
 
 The result is a single crime-event contract that can be consumed by downstream spatial indexing, feature generation, training, evaluation, and inference.
 
-<br>
-
 ---
 
-<a id="03--feature-infrastructure"></a>
-
-<p align="center"><sub>03</sub></p>
-<h2 align="center">FEATURE INFRASTRUCTURE</h2>
-<p align="center"><i>National socioeconomic, built-environment, environmental, and temporal context</i></p>
+# National Feature Infrastructure
 
 CrimeNet uses national-scale contextual feature stores so each modeled location is represented through the same feature contract regardless of city.
 
@@ -322,15 +286,9 @@ TIGER/Line boundaries connect locations and H3 cells to historical Census geogra
 
 Boundary vintage and release timing are part of the feature contract rather than silently applying current geography to historical rows.
 
-<br>
-
 ---
 
-<a id="04--temporal-correctness"></a>
-
-<p align="center"><sub>04</sub></p>
-<h2 align="center">TEMPORAL CORRECTNESS</h2>
-<p align="center"><i>Leakage prevention as a system-level contract</i></p>
+# Point-in-Time Correctness
 
 Leakage prevention is enforced in the data platform, not left to individual model-training scripts.
 
@@ -402,15 +360,9 @@ The model table also includes local historical crime context over multiple lookb
 
 These features are computed using only events observable before the prediction timestamp.
 
-<br>
-
 ---
 
-<a id="05--training-data"></a>
-
-<p align="center"><sub>05</sub></p>
-<h2 align="center">TRAINING DATA</h2>
-<p align="center"><i>Leakage-safe event and non-event space-time construction</i></p>
+# Event Spine, Integration Sampling, and Final Model Table
 
 CrimeNet represents crime as a spatiotemporal event-intensity problem rather than only as ordinary row-wise classification.
 
@@ -481,15 +433,9 @@ Publication checks include:
 - source/split/row-type counts
 - immutable snapshot identity
 
-<br>
-
 ---
 
-<a id="06--modeling"></a>
-
-<p align="center"><sub>06</sub></p>
-<h2 align="center">MODELING</h2>
-<p align="center"><i>Intensity, conditional marks, and point-process research</i></p>
+# Machine Learning
 
 CrimeNet currently separates forecasting into two production modeling problems.
 
@@ -543,15 +489,9 @@ Research directions include:
 
 Omega is evaluated against production tree-based and historical baselines rather than assumed to be superior.
 
-<br>
-
 ---
 
-<a id="07--production-inference"></a>
-
-<p align="center"><sub>07</sub></p>
-<h2 align="center">PRODUCTION INFERENCE</h2>
-<p align="center"><i>Future-state reconstruction and 24 independently inferred forecast hours</i></p>
+# Production Inference
 
 The serving system does not simply send a static training row through a model.
 
@@ -575,15 +515,9 @@ Each hour is materialized into an inference snapshot and passed through spatial 
 
 This produces a rolling H3 risk surface that can be queried efficiently at multiple map zoom levels.
 
-<br>
-
 ---
 
-<a id="08--geospatial-serving"></a>
-
-<p align="center"><sub>08</sub></p>
-<h2 align="center">GEOSPATIAL SERVING</h2>
-<p align="center"><i>Viewport-aware H3 aggregation for interactive exploration</i></p>
+# Multi-Resolution Geospatial Serving
 
 Rendering a large H3 surface directly at full resolution is unnecessarily expensive.
 
@@ -600,15 +534,9 @@ The serving layer is responsible for:
 
 The result is a map that can move between regional overview and local inspection without requiring the browser to load the entire high-resolution surface.
 
-<br>
-
 ---
 
-<a id="09--compute"></a>
-
-<p align="center"><sub>09</sub></p>
-<h2 align="center">COMPUTE</h2>
-<p align="center"><i>Disposable workers, durable data and model artifacts</i></p>
+# Distributed Compute
 
 CrimeNet separates durable data from disposable compute.
 
@@ -638,15 +566,9 @@ Large experiments have run on cloud machines with **up to 8× RTX 5090-class GPU
 
 Training and inference workers are disposable. Dataset snapshots, manifests, feature versions, and model artifacts are durable.
 
-<br>
-
 ---
 
-<a id="10--imagery"></a>
-
-<p align="center"><sub>10</sub></p>
-<h2 align="center">IMAGERY</h2>
-<p align="center"><i>Experimental aerial and satellite enrichment</i></p>
+# Imagery Pipeline
 
 CrimeNet also contains an imagery feature pipeline using:
 
@@ -664,15 +586,9 @@ The pipeline supports:
 
 Image-derived representations are currently an experimental enrichment path rather than a required dependency of the production CrimeSense forecast.
 
-<br>
-
 ---
 
-<a id="11--orchestration"></a>
-
-<p align="center"><sub>11</sub></p>
-<h2 align="center">ORCHESTRATION</h2>
-<p align="center"><i>Dependency-aware offline data and ML workflows</i></p>
+# Orchestration
 
 The data platform is orchestrated with **Dagster**.
 
@@ -702,15 +618,9 @@ This provides:
 
 Production serving is kept operationally separate from offline training orchestration so forecast generation and the web product are not coupled to a Dagster development process.
 
-<br>
-
 ---
 
-<a id="12--quality-lineage"></a>
-
-<p align="center"><sub>12</sub></p>
-<h2 align="center">QUALITY & LINEAGE</h2>
-<p align="center"><i>Auditable data contracts from source object to model artifact</i></p>
+# Data Quality and Reproducibility
 
 CrimeNet fails closed when core contracts are violated.
 
@@ -749,15 +659,9 @@ Bronze source data
 original landing object
 ```
 
-<br>
-
 ---
 
-<a id="13--stack"></a>
-
-<p align="center"><sub>13</sub></p>
-<h2 align="center">STACK</h2>
-<p align="center"><i>Core technologies used across the system</i></p>
+# Technology Stack
 
 ## Data engineering
 
@@ -808,15 +712,9 @@ original landing object
 - configuration-driven pipelines
 - immutable dataset / model artifacts
 
-<br>
-
 ---
 
-<a id="14--repository"></a>
-
-<p align="center"><sub>14</sub></p>
-<h2 align="center">REPOSITORY</h2>
-<p align="center"><i>Project organization</i></p>
+# Repository Layout
 
 ```text
 crimenet/
@@ -847,15 +745,9 @@ crimenet/
 
 Large datasets, model artifacts, source downloads, inference snapshots, and experiment outputs are intentionally excluded from Git.
 
-<br>
-
 ---
 
-<a id="15--development"></a>
-
-<p align="center"><sub>15</sub></p>
-<h2 align="center">DEVELOPMENT</h2>
-<p align="center"><i>Running the project locally</i></p>
+# Local Development
 
 ## Install
 
@@ -877,15 +769,9 @@ uv run pytest
 
 Environment-specific storage and service credentials should be provided through environment variables and must not be committed.
 
-<br>
-
 ---
 
-<a id="16--status"></a>
-
-<p align="center"><sub>16</sub></p>
-<h2 align="center">STATUS</h2>
-<p align="center"><i>What is complete, in progress, and planned</i></p>
+# Current Status
 
 ## Completed
 
@@ -939,15 +825,9 @@ Environment-specific storage and service credentials should be provided through 
 - [ ] Low-latency online feature retrieval where justified
 - [ ] Expansion of the production forecast footprint beyond the current 15 geographies
 
-<br>
-
 ---
 
-<a id="17--responsible-use"></a>
-
-<p align="center"><sub>17</sub></p>
-<h2 align="center">RESPONSIBLE USE</h2>
-<p align="center"><i>Scope, limitations, and intended interpretation</i></p>
+# Responsible Use
 
 CrimeNet models **observed crime and reporting patterns across geographic areas and time windows**.
 
@@ -973,15 +853,9 @@ A technically calibrated prediction of recorded crime is therefore **not necessa
 
 CrimeSense should be interpreted as a geospatial forecasting and systems-engineering project, not as a person-level decision system.
 
-<br>
-
 ---
 
-<a id="18--background"></a>
-
-<p align="center"><sub>18</sub></p>
-<h2 align="center">BACKGROUND</h2>
-<p align="center"><i>How CrimeNet evolved</i></p>
+# Background
 
 CrimeNet grew out of **AcciNet**, an earlier statewide geospatial crash-risk platform.
 
@@ -1000,27 +874,15 @@ CrimeNet extends that engineering approach into a substantially larger system wi
 
 The project is intentionally built as an engineering and ML system rather than a one-off modeling notebook.
 
-<br>
-
 ---
 
-<a id="19--live-demo"></a>
-
-<p align="center"><sub>19</sub></p>
-<h2 align="center">LIVE DEMO</h2>
-<p align="center"><i>Explore CrimeSense</i></p>
+# Live Demo
 
 **CrimeSense:** [https://crimesense.ai](https://crimesense.ai)
 
-<br>
-
 ---
 
-<a id="20--license"></a>
-
-<p align="center"><sub>20</sub></p>
-<h2 align="center">LICENSE</h2>
-<p align="center"><i>Project license</i></p>
+# License
 
 Copyright 2026 Aldrin Roshan.
 
