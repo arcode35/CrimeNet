@@ -93,39 +93,64 @@ describe("fixture cell inference", () => {
 });
 
 describe("API inference adapter", () => {
-  it("maps an explicit backend class order into canonical order", () => {
-    const reversed = [...CRIME_SUBTYPES].reverse();
+  const liveResponse = (classes = CRIME_SUBTYPES.length) => {
+    const reversed = [...CRIME_SUBTYPES].reverse().slice(0, classes);
     const weights = reversed.map((_, index) => index + 1);
     const total = weights.reduce((sum, value) => sum + value, 0);
-    const result = adaptApiPrediction({
+    return {
       h3: request.h3,
-      cityId: request.cityId,
-      timestamp: request.timestamp,
-      horizonSeconds: 3600,
-      totalIntensity: 0.1,
-      coverage: "full",
-      classCodes: reversed.map((item) => item.subtypeCode),
-      probabilities: weights.map((value) => value / total),
-      model: { name: "test", version: "test" },
+      snapshot_id: "20260829T2200",
+      valid_utc_hour: "2026-08-29T22:00:00+00:00",
+      intensity: {
+        log_intensity: -13.9,
+        events_per_second: 0.1 / 3600,
+        events_per_hour: 0.1,
+      },
+      mark: {
+        model_run_id: "test-run",
+        num_classes: 87,
+        labels_available: true,
+        distribution: reversed.map((item, index) => ({
+          class_id: CRIME_SUBTYPES.indexOf(item),
+          subtype: item.subtypeKey,
+          probability: weights[index] / total,
+          events_per_hour: (0.1 * weights[index]) / total,
+        })),
+      },
+      center: { lat: 41.8781, lon: -87.6298 },
+    };
+  };
+
+  it("maps class_id identity and preserves backend subtype intensities", () => {
+    const result = adaptApiPrediction(liveResponse(), request.cityId);
+    expect(result.subtypeDistribution).toHaveLength(87);
+    expect(result.snapshotId).toBe("20260829T2200");
+    expect(result.timestamp).toBe("2026-08-29T22:00:00.000Z");
+    const simpleAssault = result.subtypeDistribution.find((item) => item.subtypeCode === "F04.02");
+    const raw = liveResponse().mark.distribution.find((item) => item.class_id === 11)!;
+    expect(simpleAssault).toMatchObject({
+      subtypeKey: "simple_assault",
+      familyCode: "F04",
+      conditionalProbability: raw.probability,
+      intensity: raw.events_per_hour,
     });
-    expect(result.subtypeDistribution.map((item) => item.subtypeCode)).toEqual(
-      CRIME_SUBTYPES.map((item) => item.subtypeCode),
+    expect(
+      result.subtypeDistribution.reduce((sum, item) => sum + item.conditionalProbability, 0),
+    ).toBeCloseTo(1, 10);
+    expect(result.subtypeDistribution.reduce((sum, item) => sum + item.intensity, 0)).toBeCloseTo(
+      result.totalIntensity!,
+      10,
+    );
+    expect(
+      result.familyDistribution.reduce((sum, item) => sum + item.conditionalProbability, 0),
+    ).toBeCloseTo(1, 10);
+    expect(result.familyDistribution.reduce((sum, item) => sum + item.intensity, 0)).toBeCloseTo(
+      result.totalIntensity!,
+      10,
     );
   });
 
   it("rejects missing authoritative class mappings", () => {
-    expect(() =>
-      adaptApiPrediction({
-        h3: request.h3,
-        cityId: request.cityId,
-        timestamp: request.timestamp,
-        horizonSeconds: 3600,
-        totalIntensity: 0.1,
-        coverage: "full",
-        classCodes: CRIME_SUBTYPES.slice(0, 86).map((item) => item.subtypeCode),
-        probabilities: Array(86).fill(1 / 86),
-        model: { name: "test", version: "test" },
-      }),
-    ).toThrow(/87 class codes/);
+    expect(() => adaptApiPrediction(liveResponse(86), request.cityId)).toThrow(/87 mark classes/);
   });
 });

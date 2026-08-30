@@ -479,7 +479,7 @@ export function LandingPage() {
             index="05"
             eyebrow="GEOSPATIAL ENGINE"
             title="The city becomes a graph of stable cells."
-            copy="H3 is an architectural primitive across spatial joins, aggregation, neighborhoods, model observations, inference, and rendering. CrimeNet workflows span resolutions 6, 8, and 9; the current Explorer contract renders resolution-9 cells."
+            copy="H3 is an architectural primitive across spatial joins, aggregation, neighborhoods, model observations, inference, and rendering. The Explorer renders backend-selected H3-r4 through H3-r9 LOD cells derived from one canonical r9 inference surface."
           />
           <div className="geo-diagram">
             <div className="geo-rings">

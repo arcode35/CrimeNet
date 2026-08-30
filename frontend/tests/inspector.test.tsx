@@ -78,4 +78,29 @@ describe("cell inspector", () => {
     expect(screen.queryByText("0.000")).not.toBeInTheDocument();
     expect(screen.queryByText("CRIME MIX")).not.toBeInTheDocument();
   });
+
+  it("does not request or render mark inference for a coarse LOD response", () => {
+    const coarseH3 = latLngToCell(41.8781, -87.6298, 6);
+    useExplorerStore.setState({ selectedH3: coarseH3 });
+    const data = predictionResponseSchema.parse({
+      ...base,
+      resolution: 6,
+      aggregation: "sum_r9_child_intensity",
+      cells: [
+        {
+          h3: coarseH3,
+          intensity: 2.4,
+          visualIntensity: 0.0012,
+          modeledR9Cells: 2000,
+          percentile: null,
+          coverage: "full",
+          missingReason: null,
+          features: [],
+        },
+      ],
+    });
+    renderInspector(data);
+    expect(screen.queryByText("H3 CELL INSPECTOR")).not.toBeInTheDocument();
+    expect(screen.queryByText("CRIME MIX")).not.toBeInTheDocument();
+  });
 });

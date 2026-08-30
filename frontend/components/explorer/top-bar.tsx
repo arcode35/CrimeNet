@@ -4,7 +4,15 @@ import Link from "next/link";
 import { Activity, Command, Cpu, Hexagon, Search } from "lucide-react";
 import { useExplorerStore } from "@/stores/explorer-store";
 
-export function TopBar({ fixtureMode }: { fixtureMode: boolean }) {
+export function TopBar({
+  fixtureMode,
+  snapshotId,
+  serviceDegraded = false,
+}: {
+  fixtureMode: boolean;
+  snapshotId?: string;
+  serviceDegraded?: boolean;
+}) {
   const setCommandOpen = useExplorerStore((state) => state.setCommandOpen);
   return (
     <header className="top-bar">
@@ -29,8 +37,20 @@ export function TopBar({ fixtureMode }: { fixtureMode: boolean }) {
             <span /> DEVELOPMENT FIXTURE
           </span>
         )}
-        <span className="system-state">
-          <Activity size={13} /> {fixtureMode ? "CONTRACT PREVIEW" : "SERVICE NOMINAL"}
+        {!fixtureMode && (
+          <span className="live-flag">
+            <span /> LIVE API
+          </span>
+        )}
+        <span className={`system-state ${serviceDegraded ? "degraded" : ""}`}>
+          <Activity size={13} />
+          {fixtureMode
+            ? "CONTRACT PREVIEW"
+            : serviceDegraded
+              ? "SERVICE DEGRADED"
+              : snapshotId
+                ? `SNAPSHOT ${snapshotId}`
+                : "CONNECTING"}
         </span>
         <button
           className="command-trigger"

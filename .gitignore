@@ -18,6 +18,8 @@ downloads/
 eggs/
 .eggs/
 lib/
+!frontend/lib/
+!frontend/lib/**
 lib64/
 parts/
 sdist/
@@ -234,6 +236,7 @@ src/crimenet_data/scripts/
 # Frontend generated files
 frontend/node_modules/
 frontend/.next/
+frontend/.next-e2e/
 frontend/out/
 frontend/dist/
 frontend/coverage/

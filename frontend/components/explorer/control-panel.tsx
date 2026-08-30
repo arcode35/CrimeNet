@@ -15,6 +15,7 @@ import {
   PanelLeftOpen,
 } from "lucide-react";
 import { CITIES, getCity } from "@/lib/domain";
+import { isLiveMode } from "@/lib/config";
 import { formatTimestamp } from "@/lib/format";
 import { type LayerKey, useExplorerStore } from "@/stores/explorer-store";
 
@@ -126,7 +127,8 @@ export function ControlPanel() {
           ))}
         </FieldSelect>
         <div className="coverage-line">
-          <span className="coverage-dot" /> MODEL JURISDICTION <small>H3 · R9</small>
+          <span className="coverage-dot" /> MODEL JURISDICTION
+          <small>{isLiveMode ? "H3 · AUTO" : "H3 · R9"}</small>
         </div>
       </section>
       <section className="control-section">
@@ -142,11 +144,15 @@ export function ControlPanel() {
       <section className="control-section">
         <div className="field-label split">
           <span>PREDICTION TIME</span>
-          <span>LOCAL</span>
+          <span>{isLiveMode ? "LIVE UTC" : "LOCAL"}</span>
         </div>
         <div className="time-field">
-          <span>{formatTimestamp(state.timestamp, city.timezone)}</span>
-          <small>Model time is shareable via URL</small>
+          <span>{formatTimestamp(state.timestamp, isLiveMode ? "UTC" : city.timezone)}</span>
+          <small>
+            {isLiveMode
+              ? "Current backend snapshot · read only"
+              : "Model time is shareable via URL"}
+          </small>
         </div>
         <label className="field-label section-gap">HORIZON</label>
         <div className="segment-control">
@@ -155,6 +161,7 @@ export function ControlPanel() {
               key={hours}
               className={state.horizonHours === hours ? "active" : ""}
               onClick={() => state.setHorizon(hours)}
+              disabled={isLiveMode}
             >
               {hours}h
             </button>
