@@ -1,4 +1,4 @@
-# CrimeNet / CrimeSense
+# CrimeNet
 
 [![CI](https://github.com/arcode35/crimenet/actions/workflows/ci.yml/badge.svg)](https://github.com/arcode35/crimenet/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.11+-blue)
