@@ -10,6 +10,9 @@ export type CellPredictionRequest = {
   timestamp: string;
   horizonHours: number;
   snapshotId?: string;
+  validUtcHour?: string;
+  asOfUtcHour?: string;
+  forecastHorizonHours?: number;
   surfaceCell?: PredictionCell;
   signal?: AbortSignal;
 };

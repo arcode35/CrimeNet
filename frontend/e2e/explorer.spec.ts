@@ -20,6 +20,8 @@ test("primary explorer and model flow", async ({ page }, testInfo) => {
     timeout: 15_000,
   });
   await expect(page.locator("canvas").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "3D" })).toHaveClass(/active/);
+  await expect(page.locator(".map-canvas")).toHaveAttribute("data-map-mode", "3d");
   await expect(
     page.locator(".map-legend").getByText("PREDICTED INTENSITY", { exact: true }),
   ).toBeVisible();
@@ -49,8 +51,6 @@ test("primary explorer and model flow", async ({ page }, testInfo) => {
     await expect(page.getByText("EVENT INTENSITY")).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("satellite-selected.png"), fullPage: true });
   }
-  await page.getByRole("button", { name: "3D" }).click();
-  await expect(page.getByRole("button", { name: "3D" })).toHaveClass(/active/);
   await expect(page.locator(".map-canvas")).toHaveAttribute("data-prediction-layer", "ready");
   await page.getByRole("button", { name: "DARK" }).click();
   await expect(page.locator(".map-canvas")).toHaveAttribute("data-basemap-mode", "dark");
@@ -85,8 +85,49 @@ test("primary explorer and model flow", async ({ page }, testInfo) => {
   }
 
   await page.goto("/model");
-  await expect(page.getByText("SUPPORTED GEOGRAPHIES")).toBeVisible();
-  await expect(page.getByText("Evaluation artifact API required")).toBeVisible();
+  await expect(
+    page.getByRole("heading", {
+      name: "Data infrastructure first, forecasting system second.",
+    }),
+  ).toBeVisible();
+  const heroExplorerCta = page.getByRole("link", { name: "Open Explorer", exact: true });
+  await expect(heroExplorerCta).toBeVisible();
+  await expect(heroExplorerCta).toHaveAttribute("href", "/explorer");
+  await expect(
+    page.locator(".cs-infrastructure-copy").getByText("POWERED BY CRIMENET"),
+  ).toBeVisible();
+  await expect(page.getByText("STAGE 01", { exact: true })).toBeVisible();
+  await expect(page.getByText("STAGE 02", { exact: true })).toBeVisible();
+  await expect(page.getByText("16.7M", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("180M+", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(/H3 r9/).first()).toBeVisible();
+  await expect(page.getByText("SUPPORTED GEOGRAPHIES")).toHaveCount(0);
+  await expect(page.getByText("Evaluation artifact API required")).toHaveCount(0);
+  await expect(page.getByText("GET /v1/model/metrics")).toHaveCount(0);
+  await expect(page.locator("body")).toHaveCSS("scrollbar-width", "none");
+  const modelScrollState = await page.evaluate(() => ({
+    clientHeight: document.scrollingElement!.clientHeight,
+    scrollHeight: document.scrollingElement!.scrollHeight,
+  }));
+  expect(modelScrollState.scrollHeight).toBeGreaterThan(modelScrollState.clientHeight);
+  await page.evaluate(() => {
+    document.scrollingElement!.scrollTop = document.scrollingElement!.scrollHeight;
+  });
+  await expect
+    .poll(() => page.evaluate(() => document.scrollingElement!.scrollTop))
+    .toBeGreaterThan(0);
+  const explorerCta = page.getByRole("link", { name: "Open CrimeSense Explorer" });
+  await expect(explorerCta).toBeVisible();
+  await expect(explorerCta).toHaveAttribute("href", "/explorer");
+  const modelOverflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - window.innerWidth,
+  );
+  expect(modelOverflow).toBeLessThanOrEqual(1);
+  await page.evaluate(() => {
+    document.scrollingElement!.scrollTop = 0;
+  });
+  await expect.poll(() => page.evaluate(() => document.scrollingElement!.scrollTop)).toBe(0);
+  await page.screenshot({ path: testInfo.outputPath("model-system.png"), fullPage: true });
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -126,12 +167,28 @@ test("prediction surface survives a basemap style failure", async ({ page }, tes
   await expect(page.locator(".map-canvas")).toHaveAttribute("data-prediction-layer", "ready", {
     timeout: 15_000,
   });
-  const viewport = page.viewportSize();
-  if (viewport) await page.mouse.click(viewport.width * 0.55, viewport.height * 0.57);
+  const mapBounds = await page.locator(".map-canvas").boundingBox();
+  expect(mapBounds).not.toBeNull();
+  if (mapBounds) {
+    await expect
+      .poll(
+        async () => {
+          await page.mouse.click(
+            mapBounds.x + mapBounds.width * 0.5,
+            mapBounds.y + mapBounds.height * 0.5,
+          );
+          return page.getByText("H3 CELL INSPECTOR").isVisible();
+        },
+        { timeout: 10_000 },
+      )
+      .toBe(true);
+  }
   await expect(page.getByText("H3 CELL INSPECTOR")).toBeVisible();
 });
 
-test("location search selects a suggestion and moves the existing map", async ({ page }, testInfo) => {
+test("location search selects a suggestion and moves the existing map", async ({
+  page,
+}, testInfo) => {
   test.skip(
     testInfo.project.name !== "desktop-1440",
     "One deterministic geocoding browser check is sufficient",
@@ -170,7 +227,7 @@ test("location search selects a suggestion and moves the existing map", async ({
     .getAttribute("data-map-center-longitude");
   await page.getByRole("button", { name: "Open command palette" }).click();
   await page
-    .getByRole("combobox", { name: "Search addresses, places, and CrimeNet commands" })
+    .getByRole("combobox", { name: "Search addresses, places, and CrimeSense commands" })
     .fill("1234 Westheimer Rd, Houston TX");
   await expect(page.getByText("1234 Westheimer Road", { exact: true })).toBeVisible();
   await page.getByRole("option", { name: /1234 Westheimer Road/ }).click();

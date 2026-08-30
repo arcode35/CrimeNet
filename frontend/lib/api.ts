@@ -1,6 +1,6 @@
 import { cellToLatLng, gridDisk, gridDistance, latLngToCell } from "h3-js";
 import { z } from "zod";
-import { crimeNetApiUrl, isFixtureMode } from "@/lib/config";
+import { crimeSenseApiUrl, isFixtureMode } from "@/lib/config";
 import {
   CITIES,
   getCity,
@@ -11,7 +11,7 @@ import {
   type PredictionResponse,
 } from "@/lib/domain";
 
-export { crimeNetApiUrl, isFixtureMode, isLiveMode } from "@/lib/config";
+export { crimeSenseApiUrl, isFixtureMode, isLiveMode } from "@/lib/config";
 
 export type ViewportBounds = {
   west: number;
@@ -71,8 +71,30 @@ const viewportResponseSchema = z.object({
   ),
 });
 
+export const intensityTimelineSnapshotSchema = z.object({
+  snapshot_id: z.string().min(1),
+  valid_utc_hour: z.string().datetime({ offset: true }),
+  horizon_hours: z.number().int().nonnegative(),
+  kind: z.enum(["live", "forecast"]),
+});
+
+export const intensityTimelineSchema = z.object({
+  schema: z.literal("crimenet_intensity_timeline_v1"),
+  generated_at_utc: z.string().datetime({ offset: true }),
+  as_of_utc_hour: z.string().datetime({ offset: true }),
+  hours_requested: z.number().int().nonnegative(),
+  hours_available: z.number().int().nonnegative(),
+  snapshots: z.array(intensityTimelineSnapshotSchema).min(1),
+  live: z.object({
+    snapshot_id: z.string().min(1),
+    valid_utc_hour: z.string().datetime({ offset: true }),
+  }),
+});
+
 export type ServiceHealth = z.infer<typeof serviceHealthSchema>;
 export type LiveViewportResponse = z.infer<typeof viewportResponseSchema>;
+export type IntensityTimelineSnapshot = z.infer<typeof intensityTimelineSnapshotSchema>;
+export type IntensityTimeline = z.infer<typeof intensityTimelineSchema>;
 
 function errorKindForStatus(status: number): CrimeNetApiErrorKind {
   if (status === 400) return "bad-request";
@@ -82,13 +104,23 @@ function errorKindForStatus(status: number): CrimeNetApiErrorKind {
   return "bad-request";
 }
 
-export async function fetchCrimeNetJson(path: string, signal?: AbortSignal): Promise<unknown> {
+export function buildCrimeSenseApiUrl(path: string, params?: URLSearchParams) {
+  const url = new URL(path, `${crimeSenseApiUrl}/`);
+  if (params) url.search = params.toString();
+  return url;
+}
+
+export async function fetchCrimeNetJson(
+  path: string,
+  signal?: AbortSignal,
+  params?: URLSearchParams,
+): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetch(`${crimeNetApiUrl}${path}`, { signal });
+    response = await fetch(buildCrimeSenseApiUrl(path, params), { signal });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw error;
-    throw new CrimeNetApiError("Unable to reach the CrimeNet serving API.", "network");
+    throw new CrimeNetApiError("Unable to reach the CrimeSense service.", "network");
   }
   if (!response.ok) {
     const kind = errorKindForStatus(response.status);
@@ -97,13 +129,13 @@ export async function fetchCrimeNetJson(path: string, signal?: AbortSignal): Pro
         ? "Zoom in to load live H3 predictions."
         : kind === "not-found"
           ? "No live prediction coverage was found for this area."
-          : `CrimeNet serving API returned ${response.status}.`;
+          : `CrimeSense service returned ${response.status}.`;
     throw new CrimeNetApiError(message, kind, response.status);
   }
   try {
     return await response.json();
   } catch {
-    throw new CrimeNetApiError("CrimeNet returned an invalid JSON response.", "contract");
+    throw new CrimeNetApiError("CrimeSense received an invalid service response.", "contract");
   }
 }
 
@@ -122,6 +154,13 @@ export async function getServiceHealth(signal?: AbortSignal): Promise<ServiceHea
 
 export const serviceHealthQueryKey = ["crime-net-health"] as const;
 
+export const intensityTimelineQueryKey = ["intensity-timeline"] as const;
+
+export async function fetchIntensityTimeline(signal?: AbortSignal): Promise<IntensityTimeline> {
+  const raw = await fetchCrimeNetJson("/api/v1/intensity/timeline", signal);
+  return parseContract(intensityTimelineSchema, raw, "Intensity timeline response");
+}
+
 export function roundViewportBounds(bounds: ViewportBounds): ViewportBounds {
   const round = (value: number) => Number(value.toFixed(4));
   return {
@@ -133,11 +172,16 @@ export function roundViewportBounds(bounds: ViewportBounds): ViewportBounds {
   };
 }
 
-export const liveViewportQueryKey = (snapshotId: string, bounds: ViewportBounds) => {
+export const liveViewportQueryKey = (
+  asOfUtcHour: string,
+  validUtcHour: string,
+  bounds: ViewportBounds,
+) => {
   const rounded = roundViewportBounds(bounds);
   return [
-    "live-intensity",
-    snapshotId,
+    "intensity-viewport",
+    asOfUtcHour,
+    validUtcHour,
     rounded.west,
     rounded.south,
     rounded.east,
@@ -178,6 +222,7 @@ export function adaptViewportResponse(cityId: string, raw: unknown): PredictionR
 export async function getLiveViewport(
   cityId: string,
   bounds: ViewportBounds,
+  validUtcHour: string,
   signal?: AbortSignal,
 ): Promise<PredictionResponse> {
   const rounded = roundViewportBounds(bounds);
@@ -186,9 +231,17 @@ export async function getLiveViewport(
     south: String(rounded.south),
     east: String(rounded.east),
     north: String(rounded.north),
+    valid_utc_hour: validUtcHour,
   });
-  const raw = await fetchCrimeNetJson(`/api/v1/intensity/viewport?${params}`, signal);
-  return adaptViewportResponse(cityId, raw);
+  const raw = await fetchCrimeNetJson("/api/v1/intensity/viewport", signal, params);
+  const response = adaptViewportResponse(cityId, raw);
+  if (response.timestamp !== new Date(validUtcHour).toISOString()) {
+    throw new CrimeNetApiError(
+      "Viewport response did not match the requested forecast hour.",
+      "contract",
+    );
+  }
+  return response;
 }
 
 export const predictionQueryKey = (cityId: string, timestamp: string, horizonHours: number) =>
@@ -299,24 +352,24 @@ export async function getPredictions(
 export async function getModelMetadata(signal?: AbortSignal): Promise<ModelMetadata> {
   if (isFixtureMode) {
     return modelMetadataSchema.parse({
-      name: "CrimeNet XGBoost Point Process",
+      name: "CrimeNet Two-Stage XGBoost System",
       version: "xgb_pp_full_train_v1_depth12",
       description:
-        "Full-feature point-process baseline using calendar, contextual, lighting, and leakage-safe history features.",
+        "National point-process intensity and conditional mark architecture using static spatial context and dynamic hourly features.",
       status: "fixture",
       validationYear: 2024,
       h3Resolution: 9,
-      featureCount: 63,
+      featureCount: 38,
       intensityUnit: "events_per_cell_hour",
       supportedCities: CITIES.map((city) => city.id),
     });
   }
   const health = await getServiceHealth(signal);
   return modelMetadataSchema.parse({
-    name: "CrimeNet National Intensity + Mark Model",
+    name: "CrimeNet Two-Stage XGBoost System",
     version: health.mark_model.run_id ?? health.snapshot_id,
     description:
-      "Current-hour national H3 intensity snapshot with an on-demand 87-class mark model.",
+      "National H3 intensity inference with an on-demand 87-class mark model and independently materialized hourly forecast states.",
     status:
       health.status === "ok" && health.mark_model.status === "ready" ? "available" : "unavailable",
     h3Resolution: 9,

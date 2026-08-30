@@ -133,12 +133,12 @@ export function CommandPalette({ mapNavigation }: { mapNavigation: MapNavigation
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay" />
         <Dialog.Content className="command-dialog" aria-describedby={undefined}>
-          <Dialog.Title className="sr-only">Search locations and CrimeNet commands</Dialog.Title>
+          <Dialog.Title className="sr-only">Search locations and CrimeSense commands</Dialog.Title>
           <div className="command-search">
             <Search size={17} />
             <input
               autoFocus
-              aria-label="Search addresses, places, and CrimeNet commands"
+              aria-label="Search addresses, places, and CrimeSense commands"
               aria-autocomplete="list"
               aria-controls={results.length > 0 ? listboxId : undefined}
               aria-expanded={results.length > 0}
@@ -234,9 +234,7 @@ export function CommandPalette({ mapNavigation }: { mapNavigation: MapNavigation
                       <small>Change analytical elevation</small>
                     </span>
                   </button>
-                  <button
-                    onClick={() => run(() => store.setTimestamp("2024-08-21T22:00:00.000Z"))}
-                  >
+                  <button onClick={() => run(() => store.setTimestamp("2024-08-21T22:00:00.000Z"))}>
                     <Clock3 size={15} />
                     <span>
                       <strong>Reset model time</strong>
@@ -265,7 +263,7 @@ export function CommandPalette({ mapNavigation }: { mapNavigation: MapNavigation
           </div>
           <div className="command-footer">
             <span>
-              <Activity size={12} /> CrimeNet command interface
+              <Activity size={12} /> CrimeSense command interface
             </span>
             <span>
               <kbd>↑↓</kbd> Navigate <kbd>↵</kbd> Select

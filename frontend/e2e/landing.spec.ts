@@ -6,9 +6,13 @@ test("landing page explains the platform without overflow", async ({ page }, tes
   await page.emulateMedia({ reducedMotion: "reduce" });
 
   await page.goto("/");
+  await expect(page.getByText("CRIMESENSE").first()).toBeVisible();
+  await expect(page.getByText("POWERED BY CRIMENET")).toHaveCount(1);
   await expect(page.getByRole("heading", { name: /spatiotemporal intelligence/i })).toBeVisible();
-  await expect(page.getByText("13M+")).toBeVisible();
-  await expect(page.getByText("Databricks + Spark")).toBeVisible();
+  await expect(
+    page.getByText(/More than 17 million municipal and county crime records/),
+  ).toBeVisible();
+  await expect(page.getByText("Spark / Databricks")).toBeVisible();
   await expect(page.getByRole("link", { name: /open explorer/i }).first()).toHaveAttribute(
     "href",
     "/explorer",

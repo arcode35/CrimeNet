@@ -16,9 +16,14 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { serviceHealthQueryKey } from "@/lib/api";
+import {
+  intensityTimelineQueryKey,
+  serviceHealthQueryKey,
+  type IntensityTimelineSnapshot,
+} from "@/lib/api";
 import type { PredictionResponse } from "@/lib/domain";
 import { coverageLabel, featureLabels, formatIntensity, formatTimestamp } from "@/lib/format";
+import { coordinateCellLocation, reverseCellLocation } from "@/lib/geocoding";
 import {
   cellPredictionQueryKey,
   inferenceProvider,
@@ -26,7 +31,6 @@ import {
   type FamilyPrediction,
   type SubtypePrediction,
 } from "@/lib/inference";
-import { getCity } from "@/lib/domain";
 import { isNativeMarkCell, NATIVE_MARK_RESOLUTION } from "@/lib/map/lod";
 import { CRIME_FAMILIES } from "@/lib/taxonomy";
 import { useExplorerStore } from "@/stores/explorer-store";
@@ -216,14 +220,15 @@ function AllTypesPanel({
 
 export function Inspector({
   data,
-  snapshotId,
+  selectedSnapshot,
+  asOfUtcHour,
 }: {
   data?: PredictionResponse;
-  snapshotId?: string;
+  selectedSnapshot?: IntensityTimelineSnapshot;
+  asOfUtcHour?: string;
 }) {
   const selectedH3 = useExplorerStore((state) => state.selectedH3);
   const close = useExplorerStore((state) => state.selectCell);
-  const cityId = useExplorerStore((state) => state.cityId);
   const [metric, setMetric] = useState<DistributionMetric>("probability");
   const [selectedFamilyCode, setSelectedFamilyCode] = useState<string | null>(null);
   const [showAllFamilies, setShowAllFamilies] = useState(false);
@@ -235,14 +240,25 @@ export function Inspector({
   const cell = nativeSelection
     ? data?.cells.find((candidate) => candidate.h3 === selectedH3)
     : undefined;
+  const cellCenter = cell ? cellToLatLng(cell.h3) : null;
+  const cellLocationQuery = useQuery({
+    queryKey: cell ? ["cell-location", cell.h3] : ["cell-location", "idle"],
+    queryFn: () => reverseCellLocation(cellCenter![1], cellCenter![0]),
+    enabled: Boolean(cellCenter),
+    staleTime: Number.POSITIVE_INFINITY,
+    retry: false,
+  });
   const request =
     selectedH3 && data && cell
       ? {
-          cityId,
+          cityId: data.city,
           h3: selectedH3,
           timestamp: data.timestamp,
           horizonHours: data.horizonHours,
-          snapshotId: snapshotId ?? data.snapshotId,
+          snapshotId: selectedSnapshot?.snapshot_id ?? data.snapshotId,
+          validUtcHour: selectedSnapshot?.valid_utc_hour ?? data.timestamp,
+          asOfUtcHour,
+          forecastHorizonHours: selectedSnapshot?.horizon_hours ?? 0,
           surfaceCell: cell,
         }
       : null;
@@ -261,12 +277,18 @@ export function Inspector({
       predictionQuery.data?.snapshotId &&
       request.snapshotId !== predictionQuery.data.snapshotId,
   );
-  const prediction = snapshotMismatch ? undefined : predictionQuery.data;
+  const timestampMismatch = Boolean(
+    selectedSnapshot &&
+      predictionQuery.data?.timestamp &&
+      predictionQuery.data.timestamp !== new Date(selectedSnapshot.valid_utc_hour).toISOString(),
+  );
+  const prediction = snapshotMismatch || timestampMismatch ? undefined : predictionQuery.data;
   useEffect(() => {
-    if (snapshotMismatch) {
+    if (snapshotMismatch || timestampMismatch) {
+      void queryClient.invalidateQueries({ queryKey: intensityTimelineQueryKey });
       void queryClient.invalidateQueries({ queryKey: serviceHealthQueryKey });
     }
-  }, [queryClient, snapshotMismatch]);
+  }, [queryClient, snapshotMismatch, timestampMismatch]);
   const rankedFamilies = useMemo(
     () =>
       [...(prediction?.familyDistribution ?? [])].sort(
@@ -295,8 +317,8 @@ export function Inspector({
         </div>
       </aside>
     );
-  const city = getCity(cityId);
-  const [latitude, longitude] = cellToLatLng(cell.h3);
+  const [latitude, longitude] = cellCenter!;
+  const cellLocation = cellLocationQuery.data ?? coordinateCellLocation(longitude, latitude);
   const coverage =
     cell.coverage === "unsupported" ? "unsupported" : (prediction?.coverage ?? cell.coverage);
   const unsupported = coverage === "unsupported";
@@ -328,7 +350,7 @@ export function Inspector({
         <div>
           <small>H3 CELL INSPECTOR</small>
           <strong>
-            {city.name} · {cell.h3}
+            {cellLocation.label} · {cell.h3}
           </strong>
         </div>
         <div>
@@ -364,7 +386,7 @@ export function Inspector({
           {cell.missingReason && <p>{cell.missingReason}</p>}
         </div>
       </div>
-      {(predictionQuery.isPending || snapshotMismatch) && (
+      {(predictionQuery.isPending || snapshotMismatch || timestampMismatch) && (
         <div className="prediction-skeleton" aria-label="Loading cell prediction">
           <i />
           <i />
@@ -383,7 +405,7 @@ export function Inspector({
         <section className="unsupported-callout">
           <strong>Inference unavailable</strong>
           <p>
-            CrimeNet does not have sufficient feature coverage for this cell. Missing data is not
+            CrimeSense does not have sufficient feature coverage for this cell. Missing data is not
             interpreted as zero intensity.
           </p>
         </section>
@@ -393,7 +415,7 @@ export function Inspector({
             <section className="intensity-hero">
               <div
                 className="hero-intensity"
-                title="CrimeNet's estimated rate of modeled events at this location and time."
+                title="CrimeSense's estimated rate of modeled events at this location and time."
               >
                 <small>
                   EVENT INTENSITY <Info size={10} />
@@ -517,7 +539,7 @@ export function Inspector({
                       style={{
                         height: `${Math.max(8, (point.totalIntensity / temporalMax) * 100)}%`,
                       }}
-                      title={`${formatTimestamp(point.timestamp, city.timezone, false)} · ${formatMarkIntensity(point.totalIntensity)}`}
+                      title={`${formatTimestamp(point.timestamp, "UTC", false)} · ${formatMarkIntensity(point.totalIntensity)}`}
                     />
                   ))}
                 </div>
@@ -530,12 +552,14 @@ export function Inspector({
             ) : prediction.provider.kind === "api" ? (
               <section className="inspector-section current-hour-note">
                 <div className="section-title">
-                  <span>CURRENT-HOUR INFERENCE</span>
-                  <span>{prediction.snapshotId}</span>
+                  <span>
+                    {selectedSnapshot?.kind === "forecast"
+                      ? `+${selectedSnapshot.horizon_hours}H FORECAST`
+                      : "LIVE HOURLY INFERENCE"}
+                  </span>
+                  <span>{formatTimestamp(prediction.timestamp, "UTC", false)}</span>
                 </div>
-                <p>
-                  The live service exposes one current hourly rate; no temporal curve is inferred.
-                </p>
+                <p>This detail uses the same authoritative hourly snapshot as the map surface.</p>
               </section>
             ) : null}
             <section className="inspector-section model-strip">

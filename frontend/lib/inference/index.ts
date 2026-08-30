@@ -2,19 +2,28 @@ import { ApiInferenceProvider } from "./api-provider";
 import type { CellPredictionRequest } from "./contracts";
 import { FixtureInferenceProvider } from "./fixture-provider";
 import type { CrimeNetInferenceProvider } from "./provider";
-import { crimeNetApiUrl, crimeNetDataMode } from "@/lib/config";
+import { crimeSenseApiUrl, crimeNetDataMode } from "@/lib/config";
 
 export const inferenceProvider: CrimeNetInferenceProvider =
   crimeNetDataMode === "api"
-    ? new ApiInferenceProvider(crimeNetApiUrl)
+    ? new ApiInferenceProvider(crimeSenseApiUrl)
     : new FixtureInferenceProvider(70);
 
-export const liveCellPredictionQueryKey = (snapshotId: string | undefined, h3: string) =>
-  ["cell-prediction", "api", snapshotId, h3] as const;
+export const liveCellPredictionQueryKey = (
+  asOfUtcHour: string | undefined,
+  validUtcHour: string | undefined,
+  snapshotId: string | undefined,
+  h3: string,
+) => ["cell-prediction", "api", asOfUtcHour, validUtcHour, snapshotId, h3] as const;
 
 export const cellPredictionQueryKey = (request: CellPredictionRequest) =>
   inferenceProvider.kind === "api"
-    ? liveCellPredictionQueryKey(request.snapshotId, request.h3)
+    ? liveCellPredictionQueryKey(
+        request.asOfUtcHour,
+        request.validUtcHour,
+        request.snapshotId,
+        request.h3,
+      )
     : ([
         "cell-prediction",
         "fixture",

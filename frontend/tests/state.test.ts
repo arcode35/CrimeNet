@@ -16,6 +16,10 @@ describe("city-scoped state", () => {
     expect(useExplorerStore.getState().basemapMode).toBe("dark");
   });
 
+  it("defaults to the 3D prediction surface", () => {
+    expect(useExplorerStore.getState().mode).toBe("3d");
+  });
+
   it("changes basemap without changing analytical state", () => {
     const timestamp = useExplorerStore.getState().timestamp;
     useExplorerStore.getState().selectCell("892664c1a8fffff");

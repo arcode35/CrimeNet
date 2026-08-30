@@ -38,7 +38,7 @@ export const useExplorerStore = create<ExplorerState>((set) => ({
   horizonHours: 1,
   selectedH3: null,
   hoveredH3: null,
-  mode: "2d",
+  mode: "3d",
   basemapMode: "dark",
   layers: { prediction: true, coverage: false, historical: false },
   playing: false,

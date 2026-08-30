@@ -88,8 +88,8 @@ export function GeospatialMap({
         "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
       center: city.center,
       zoom: city.zoom,
-      pitch: 0,
-      bearing: -8,
+      pitch: mode === "3d" ? 48 : 0,
+      bearing: mode === "3d" ? -18 : -8,
       attributionControl: false,
       maxPitch: 68,
       minZoom: 3,
@@ -236,6 +236,7 @@ export function GeospatialMap({
       overlayRef.current?.setProps({ layers: [] });
       containerRef.current?.removeAttribute("data-prediction-layer");
       containerRef.current?.removeAttribute("data-h3-resolution");
+      containerRef.current?.removeAttribute("data-snapshot-timestamp");
       return;
     }
     const firstLabelLayer = map.getStyle().layers?.find((layer) => layer.type === "symbol")?.id;
@@ -330,11 +331,12 @@ export function GeospatialMap({
     } else overlayRef.current.setProps({ layers: [buildLayer()] });
     containerRef.current?.setAttribute("data-prediction-layer", "ready");
     containerRef.current?.setAttribute("data-h3-resolution", String(data.resolution));
+    containerRef.current?.setAttribute("data-snapshot-timestamp", data.timestamp);
   }, [data, selectedH3, layers, mode, isFetching, styleRevision, basemapMode]);
 
   return (
     <div className="map-stage">
-      <div ref={containerRef} className="map-canvas" />
+      <div ref={containerRef} className="map-canvas" data-map-mode={mode} />
       <div ref={tooltipRef} className="map-tooltip" aria-hidden="true" />
       {satelliteError && (
         <div className="basemap-alert" role="status">

@@ -21,8 +21,8 @@ export function TopBar({
           <Hexagon size={17} strokeWidth={1.5} />
         </span>
         <div>
-          <strong>CRIMENET</strong>
-          <small>SPATIAL INTELLIGENCE</small>
+          <strong>CRIMESENSE</strong>
+          <small>POWERED BY CRIMENET</small>
         </div>
       </div>
       <nav aria-label="Primary navigation">
