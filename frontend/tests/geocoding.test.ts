@@ -1,9 +1,12 @@
 import type { GeocodingFeature, GeocodingSearchResult } from "@maptiler/client";
 import { describe, expect, it, vi } from "vitest";
 import {
+  adaptReverseGeocodingResult,
   adaptMapTilerFeature,
   buildGeocodingOptions,
+  coordinateCellLocation,
   parseCoordinateQuery,
+  reverseCellLocation,
   searchLocations,
 } from "@/lib/geocoding";
 import { navigateToGeocodingResult, type MapNavigation } from "@/lib/map/navigation";
@@ -79,6 +82,64 @@ describe("MapTiler geocoding adapter", () => {
     });
     expect(parseCoordinateQuery("1234 Westheimer Rd, Houston")).toBeNull();
     expect(parseCoordinateQuery("95, -200")).toBeNull();
+  });
+
+  it("uses reverse-geocoded municipality identity for a clicked cell", async () => {
+    const response: GeocodingSearchResult = {
+      type: "FeatureCollection",
+      features: [
+        feature({
+          id: "place.1",
+          text: "Little Tokyo",
+          place_name: "Little Tokyo, Los Angeles, California, United States",
+          place_type: ["place"],
+          context: [
+            { id: "municipality.1", text: "Los Angeles", ref: "la", country_code: "us" },
+            { id: "region.1", text: "California", ref: "ca", country_code: "us" },
+          ],
+        }),
+      ],
+      query: ["-118.2437", "34.0522"],
+      attribution: "MapTiler",
+    };
+    const reverse = vi.fn(async () => response);
+
+    await expect(reverseCellLocation(-118.2437, 34.0522, reverse)).resolves.toMatchObject({
+      label: "Los Angeles, California",
+      primaryLabel: "Los Angeles",
+      secondaryLabel: "California",
+      source: "reverse-geocoder",
+    });
+    expect(reverse).toHaveBeenCalledWith(
+      [-118.2437, 34.0522],
+      expect.objectContaining({
+        language: ["en"],
+        limit: 1,
+        types: ["municipality", "place", "locality", "region"],
+      }),
+    );
+  });
+
+  it("falls back to honest coordinates when no named place is available", async () => {
+    const response: GeocodingSearchResult = {
+      type: "FeatureCollection",
+      features: [],
+      query: ["-118.58", "34.42"],
+      attribution: "MapTiler",
+    };
+    expect(adaptReverseGeocodingResult(response, -118.58, 34.42)).toEqual(
+      coordinateCellLocation(-118.58, 34.42),
+    );
+    await expect(
+      reverseCellLocation(
+        -118.58,
+        34.42,
+        vi.fn(async () => Promise.reject(new Error("offline"))),
+      ),
+    ).resolves.toMatchObject({
+      label: "34.4200° N, 118.5800° W",
+      source: "coordinates",
+    });
   });
 });
 

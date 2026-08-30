@@ -24,7 +24,7 @@ export default defineConfig({
     timeout: 120_000,
     env: {
       NEXT_DIST_DIR: ".next-e2e",
-      NEXT_PUBLIC_CRIMENET_API_URL: "",
+      NEXT_PUBLIC_API_BASE_URL: "https://api.crimesense.ai",
       NEXT_PUBLIC_CRIMENET_DATA_MODE: "fixture",
     },
   },

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { fetchCrimeNetJson } from "@/lib/api";
-import { crimeNetApiUrl } from "@/lib/config";
+import { crimeSenseApiUrl } from "@/lib/config";
 import { MARK_CLASS_BY_ID } from "@/lib/taxonomy";
 import { cellPredictionSchema, type CellPrediction, type CellPredictionRequest } from "./contracts";
 import { aggregateFamilyDistributions } from "./distribution";
@@ -31,7 +31,11 @@ export const combinedPredictionResponseSchema = z.object({
   center: z.object({ lat: z.number(), lon: z.number() }).optional(),
 });
 
-export function adaptApiPrediction(raw: unknown, cityId = "unknown"): CellPrediction {
+export function adaptApiPrediction(
+  raw: unknown,
+  cityId = "unknown",
+  providerLabel = "LIVE INFERENCE",
+): CellPrediction {
   const parsed = combinedPredictionResponseSchema.parse(raw);
   if (parsed.mark.distribution.length !== 87) {
     throw new Error("Live prediction must expose all 87 mark classes");
@@ -80,26 +84,36 @@ export function adaptApiPrediction(raw: unknown, cityId = "unknown"): CellPredic
       name: "CrimeNet marked point process",
       version: parsed.mark.model_run_id,
     },
-    provider: { kind: "api", label: "LIVE INFERENCE" },
+    provider: { kind: "api", label: providerLabel },
   });
 }
 
 export class ApiInferenceProvider implements CrimeNetInferenceProvider {
   readonly kind = "api" as const;
 
-  constructor(private readonly apiUrl = crimeNetApiUrl) {}
+  constructor(private readonly apiUrl = crimeSenseApiUrl) {}
 
   async getCellPrediction(request: CellPredictionRequest) {
-    if (!this.apiUrl) throw new Error("NEXT_PUBLIC_CRIMENET_API_URL is required in API mode");
-    const path = `/api/v1/predict/cell/${encodeURIComponent(request.h3)}?top_k=87`;
+    if (!this.apiUrl) throw new Error("NEXT_PUBLIC_API_BASE_URL is required in API mode");
+    const path = `/api/v1/predict/cell/${encodeURIComponent(request.h3)}`;
+    const params = new URLSearchParams({ top_k: "87" });
+    if (request.validUtcHour) params.set("valid_utc_hour", request.validUtcHour);
     let raw: unknown;
-    if (this.apiUrl === crimeNetApiUrl) {
-      raw = await fetchCrimeNetJson(path, request.signal);
+    if (this.apiUrl === crimeSenseApiUrl) {
+      raw = await fetchCrimeNetJson(path, request.signal, params);
     } else {
-      const response = await fetch(`${this.apiUrl}${path}`, { signal: request.signal });
+      const url = new URL(path, `${this.apiUrl.replace(/\/$/, "")}/`);
+      url.search = params.toString();
+      const response = await fetch(url, { signal: request.signal });
       if (!response.ok) throw new Error(`Cell inference service returned ${response.status}`);
       raw = await response.json();
     }
-    return adaptApiPrediction(raw, request.cityId);
+    return adaptApiPrediction(
+      raw,
+      request.cityId,
+      request.forecastHorizonHours && request.forecastHorizonHours > 0
+        ? "FORECAST INFERENCE"
+        : "LIVE INFERENCE",
+    );
   }
 }

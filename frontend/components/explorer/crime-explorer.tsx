@@ -2,14 +2,16 @@
 
 import dynamic from "next/dynamic";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CrimeNetApiError,
+  fetchIntensityTimeline,
   getLiveViewport,
   getPredictions,
   getServiceHealth,
   isFixtureMode,
   isLiveMode,
+  intensityTimelineQueryKey,
   liveViewportQueryKey,
   predictionQueryKey,
   roundViewportBounds,
@@ -17,6 +19,7 @@ import {
   type ViewportBounds,
 } from "@/lib/api";
 import { getCity } from "@/lib/domain";
+import { adjacentForecastIndexes, resolveForecastSelection } from "@/lib/forecast";
 import { shouldClearSelectionForResolution } from "@/lib/map/lod";
 import type { MapNavigation } from "@/lib/map/navigation";
 import { parseExplorerUrl, serializeExplorerUrl } from "@/lib/url-state";
@@ -51,6 +54,7 @@ export function CrimeExplorer() {
   const basemapMode = useExplorerStore((state) => state.basemapMode);
   const [viewport, setViewport] = useState<ViewportBounds | null>(null);
   const [mapNavigation, setMapNavigation] = useState<MapNavigation | null>(null);
+  const [preferredForecastHour, setPreferredForecastHour] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const city = getCity(cityId);
 
@@ -61,22 +65,51 @@ export function CrimeExplorer() {
     refetchInterval: 60_000,
     retry: 2,
   });
-  const snapshotId = healthQuery.data?.snapshot_id;
-  const liveReady = Boolean(isLiveMode && snapshotId && viewport);
+  const timelineQuery = useQuery({
+    queryKey: intensityTimelineQueryKey,
+    queryFn: ({ signal }) => fetchIntensityTimeline(signal),
+    enabled: isLiveMode,
+    refetchInterval: 60_000,
+    retry: 2,
+  });
+  const fallbackSnapshots = useMemo(
+    () =>
+      healthQuery.data
+        ? [
+            {
+              snapshot_id: healthQuery.data.snapshot_id,
+              valid_utc_hour: healthQuery.data.valid_utc_hour,
+              horizon_hours: 0,
+              kind: "live" as const,
+            },
+          ]
+        : [],
+    [healthQuery.data],
+  );
+  const snapshots = timelineQuery.data?.snapshots ?? fallbackSnapshots;
+  const resolvedForecast = useMemo(
+    () => resolveForecastSelection(snapshots, preferredForecastHour),
+    [preferredForecastHour, snapshots],
+  );
+  const selectedSnapshot = resolvedForecast?.snapshot;
+  const selectedForecastIndex = resolvedForecast?.index ?? 0;
+  const asOfUtcHour =
+    timelineQuery.data?.as_of_utc_hour ?? healthQuery.data?.valid_utc_hour ?? null;
+  const liveReady = Boolean(isLiveMode && asOfUtcHour && selectedSnapshot && viewport);
 
   const predictionQuery = useQuery({
     queryKey: isLiveMode
       ? liveReady
-        ? liveViewportQueryKey(snapshotId!, viewport!)
-        : (["live-intensity", "waiting"] as const)
+        ? liveViewportQueryKey(asOfUtcHour!, selectedSnapshot!.valid_utc_hour, viewport!)
+        : (["intensity-viewport", "waiting"] as const)
       : predictionQueryKey(cityId, timestamp, horizonHours),
     queryFn: ({ signal }) =>
       isLiveMode
-        ? getLiveViewport(cityId, viewport!, signal)
+        ? getLiveViewport(cityId, viewport!, selectedSnapshot!.valid_utc_hour, signal)
         : getPredictions(cityId, timestamp, horizonHours, signal),
     enabled: !isLiveMode || liveReady,
     placeholderData: (previous) => {
-      if (isLiveMode) return previous?.snapshotId === snapshotId ? previous : undefined;
+      if (isLiveMode) return previous;
       return previous?.city === cityId ? previous : undefined;
     },
     retry: (failures, error) =>
@@ -100,25 +133,42 @@ export function CrimeExplorer() {
     );
   }, []);
 
+  const handleForecastIndexChange = useCallback(
+    (index: number) => {
+      const snapshot = snapshots[index];
+      if (!snapshot) return;
+      setPreferredForecastHour(snapshot.kind === "live" ? null : snapshot.valid_utc_hour);
+      useExplorerStore.getState().hoverCell(null);
+    },
+    [snapshots],
+  );
+
   useEffect(() => {
-    if (!isLiveMode || !healthQuery.data) return;
+    if (!isLiveMode || !selectedSnapshot) return;
     const store = useExplorerStore.getState();
-    const liveTimestamp = new Date(healthQuery.data.valid_utc_hour).toISOString();
-    if (store.timestamp !== liveTimestamp) store.setTimestamp(liveTimestamp);
+    const selectedTimestamp = new Date(selectedSnapshot.valid_utc_hour).toISOString();
+    if (store.timestamp !== selectedTimestamp) store.setTimestamp(selectedTimestamp);
     if (store.horizonHours !== 1) store.setHorizon(1);
-    if (store.playing) store.setPlaying(false);
-  }, [healthQuery.data]);
+  }, [selectedSnapshot]);
 
   useEffect(() => {
     if (
-      isLiveMode &&
-      predictionQuery.data?.snapshotId &&
-      snapshotId &&
-      predictionQuery.data.snapshotId !== snapshotId
+      !isLiveMode ||
+      selectedSnapshot?.kind !== "live" ||
+      predictionQuery.isPlaceholderData ||
+      !predictionQuery.data?.snapshotId ||
+      predictionQuery.data.snapshotId === selectedSnapshot.snapshot_id
     ) {
-      void queryClient.invalidateQueries({ queryKey: serviceHealthQueryKey });
+      return;
     }
-  }, [predictionQuery.data?.snapshotId, queryClient, snapshotId]);
+    void queryClient.invalidateQueries({ queryKey: intensityTimelineQueryKey });
+    void queryClient.invalidateQueries({ queryKey: serviceHealthQueryKey });
+  }, [
+    predictionQuery.data?.snapshotId,
+    predictionQuery.isPlaceholderData,
+    queryClient,
+    selectedSnapshot,
+  ]);
 
   useEffect(() => {
     if (shouldClearSelectionForResolution(predictionQuery.data?.resolution, selectedH3)) {
@@ -175,16 +225,44 @@ export function CrimeExplorer() {
     });
   }, [cityId, timestamp, horizonHours, queryClient]);
 
+  useEffect(() => {
+    if (!isLiveMode || !viewport || !asOfUtcHour || !timelineQuery.data || !selectedSnapshot) {
+      return;
+    }
+    for (const index of adjacentForecastIndexes(
+      selectedForecastIndex,
+      timelineQuery.data.snapshots.length,
+    )) {
+      const snapshot = timelineQuery.data.snapshots[index];
+      void queryClient.prefetchQuery({
+        queryKey: liveViewportQueryKey(asOfUtcHour, snapshot.valid_utc_hour, viewport),
+        queryFn: ({ signal }) => getLiveViewport(cityId, viewport, snapshot.valid_utc_hour, signal),
+        staleTime: 30_000,
+      });
+    }
+  }, [
+    asOfUtcHour,
+    cityId,
+    queryClient,
+    selectedForecastIndex,
+    selectedSnapshot,
+    timelineQuery.data,
+    viewport,
+  ]);
+
   const viewportError =
     predictionQuery.error instanceof CrimeNetApiError ? predictionQuery.error : null;
+  const forecastHourUnavailable = Boolean(
+    viewportError?.kind === "not-found" && selectedSnapshot?.kind === "forecast",
+  );
   const zoomState =
     viewportError?.kind === "viewport-too-large"
       ? "Zoom in to load live H3 predictions"
-      : viewportError?.kind === "not-found"
+      : viewportError?.kind === "not-found" && !forecastHourUnavailable
         ? "No live prediction coverage in this view"
         : null;
   const data = zoomState ? undefined : predictionQuery.data;
-  const genericPredictionError = predictionQuery.isError && !zoomState;
+  const genericPredictionError = predictionQuery.isError && !zoomState && !forecastHourUnavailable;
 
   return (
     <main className="app-shell">
@@ -198,7 +276,7 @@ export function CrimeExplorer() {
       <div className="map-vignette" aria-hidden="true" />
       <TopBar
         fixtureMode={isFixtureMode}
-        snapshotId={snapshotId}
+        snapshotId={selectedSnapshot?.snapshot_id}
         serviceDegraded={
           isLiveMode &&
           (healthQuery.isError ||
@@ -211,10 +289,28 @@ export function CrimeExplorer() {
       />
       <ControlPanel />
       <MapLegend data={data} error={genericPredictionError ? predictionQuery.error : null} />
-      <Inspector data={data} snapshotId={snapshotId} />
-      <Timeline data={data} isFetching={predictionQuery.isFetching} liveMode={isLiveMode} />
+      <Inspector
+        data={data}
+        selectedSnapshot={selectedSnapshot}
+        asOfUtcHour={asOfUtcHour ?? undefined}
+      />
+      <Timeline
+        data={data}
+        isFetching={predictionQuery.isFetching}
+        liveMode={isLiveMode}
+        snapshots={snapshots}
+        selectedIndex={selectedForecastIndex}
+        onSelectedIndexChange={handleForecastIndexChange}
+        forecastUnavailable={timelineQuery.isError}
+        forecastLoading={timelineQuery.isPending}
+      />
       <CommandPalette mapNavigation={mapNavigation} />
       {zoomState && <div className="viewport-notice">{zoomState}</div>}
+      {forecastHourUnavailable && (
+        <div className="viewport-notice forecast-notice">
+          Forecast hour unavailable. Showing the previous surface.
+        </div>
+      )}
       {genericPredictionError && (
         <div className="service-alert" role="alert">
           <strong>Inference temporarily unavailable</strong>
@@ -225,7 +321,7 @@ export function CrimeExplorer() {
       {isLiveMode && healthQuery.isError && (
         <div className="service-alert health-alert" role="alert">
           <strong>Live snapshot status unavailable</strong>
-          <span>Check that the local serving API is running.</span>
+          <span>The public CrimeSense API could not be reached.</span>
           <button onClick={() => healthQuery.refetch()}>Retry</button>
         </div>
       )}

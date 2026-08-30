@@ -1,6 +1,6 @@
-# CrimeNet frontend
+# CrimeSense frontend
 
-CrimeNet's frontend is a map-first geospatial model-operations interface. MapLibre owns the basemap and camera; deck.gl renders the backend-selected H3-r4 through H3-r9 analytical surface directly on the GPU. React owns controls and small analytical views, never individual spatial features.
+CrimeSense is the public, map-first geospatial model-operations application powered by CrimeNet infrastructure. MapLibre owns the basemap and camera; deck.gl renders the backend-selected H3-r4 through H3-r9 analytical surface directly on the GPU. React owns controls and small analytical views, never individual spatial features.
 
 ## Requirements and setup
 
@@ -30,10 +30,10 @@ npm run build
 
 | Variable                         | Purpose                                                                              |
 | -------------------------------- | ------------------------------------------------------------------------------------ |
-| `NEXT_PUBLIC_CRIMENET_DATA_MODE` | `fixture` for deterministic UI data or `api` for the current live serving snapshot.  |
-| `NEXT_PUBLIC_CRIMENET_API_URL`   | Central FastAPI origin; live local development defaults to `http://localhost:8000`.  |
+| `NEXT_PUBLIC_CRIMENET_DATA_MODE` | `api` for production live/forecast data or `fixture` for deterministic UI tests.     |
+| `NEXT_PUBLIC_API_BASE_URL`       | CrimeSense API origin; defaults to `https://api.crimesense.ai` when it is omitted.   |
 | `NEXT_PUBLIC_MAP_STYLE_URL`      | MapLibre style URL. May contain a public map-style token, but never a server secret. |
-| `NEXT_PUBLIC_MAPTILER_KEY`       | Public browser key for MapTiler geocoding and optional satellite imagery.           |
+| `NEXT_PUBLIC_MAPTILER_KEY`       | Public browser key for MapTiler geocoding and optional satellite imagery.            |
 
 Do not place private service credentials in `NEXT_PUBLIC_*`; those values are bundled for the browser. Keep machine-specific values in `.env.local` and review that file before publishing changes.
 
@@ -83,6 +83,7 @@ The complete platform also includes a Databricks lakehouse and broader online-se
 Live wire contracts are validated in `lib/api.ts` and `lib/inference/api-provider.ts`:
 
 - `GET /health` provides status, current `snapshot_id`, `valid_utc_hour`, and mark readiness.
+- `GET /api/v1/intensity/timeline` provides the rolling LIVE plus forecast snapshot indexes.
 - `GET /api/v1/intensity/viewport` chooses an H3-r4 through H3-r9 LOD under the render budget and drives the map.
 - `GET /api/v1/predict/cell/{h3}?top_k=87` provides one selected cell's current rate and full mark distribution.
 
@@ -145,7 +146,7 @@ Recommended future endpoints, not currently invoked, are viewport/time-bounded h
 
 When `NEXT_PUBLIC_CRIMENET_DATA_MODE=fixture`, the interface displays `DEVELOPMENT FIXTURE` persistently. The adapter creates a deterministic H3 contract surface for interaction and visual testing; it is not real inference, is never random, and is never labelled live. Playwright explicitly sets this mode so browser tests stay independent of the serving process.
 
-In `api` mode, `/health` supplies the current snapshot identity and `/api/v1/intensity/viewport` supplies an automatically selected H3 LOD. Coarse r4–r8 clicks drill the camera toward finer data; only a confirmed r9 click invokes `/api/v1/predict/cell/{h3}?top_k=87`. The live service exposes one current hourly snapshot, so arbitrary timeline stepping and multi-hour horizons are disabled rather than sent as inference inputs.
+In `api` mode, the timeline drives a discrete LIVE through +24h forecast slider using exactly the entries returned by the service. Viewport cache identity includes both the timeline generation hour and selected valid UTC hour. Slider changes retain the previous surface while loading and prefetch only the two adjacent entries on each side for the current viewport. The same `valid_utc_hour` is sent to selected-cell mark inference, keeping map and inspector time-consistent. Coarse r4–r8 clicks still drill the camera toward finer data; only a confirmed r9 click invokes the timestamp-aware `/api/v1/predict/cell/{h3}` request.
 
 ## Performance and accessibility
 

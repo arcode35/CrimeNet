@@ -1,10 +1,19 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { latLngToCell } from "h3-js";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Inspector } from "@/components/explorer/inspector";
 import { Providers } from "@/components/providers";
 import { predictionResponseSchema } from "@/lib/domain";
+import * as geocoding from "@/lib/geocoding";
+import { inferenceProvider } from "@/lib/inference";
 import { useExplorerStore } from "@/stores/explorer-store";
+
+vi.mock("@/lib/geocoding", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/geocoding")>()),
+  reverseCellLocation: vi.fn(),
+}));
+
+const reverseCellLocation = vi.mocked(geocoding.reverseCellLocation);
 
 const h3 = latLngToCell(41.8781, -87.6298, 9);
 const base = {
@@ -16,7 +25,18 @@ const base = {
 } as const;
 
 describe("cell inspector", () => {
-  beforeEach(() => useExplorerStore.setState({ cityId: "chicago", selectedH3: h3 }));
+  beforeEach(() => {
+    reverseCellLocation.mockReset();
+    reverseCellLocation.mockResolvedValue({
+      label: "Chicago, Illinois",
+      primaryLabel: "Chicago",
+      secondaryLabel: "Illinois",
+      longitude: -87.6298,
+      latitude: 41.8781,
+      source: "reverse-geocoder",
+    });
+    useExplorerStore.setState({ cityId: "chicago", selectedH3: h3 });
+  });
 
   const renderInspector = (data: ReturnType<typeof predictionResponseSchema.parse>) =>
     render(
@@ -102,5 +122,148 @@ describe("cell inspector", () => {
     renderInspector(data);
     expect(screen.queryByText("H3 CELL INSPECTOR")).not.toBeInTheDocument();
     expect(screen.queryByText("CRIME MIX")).not.toBeInTheDocument();
+  });
+
+  it("displays the clicked cell location instead of the sidebar city", async () => {
+    const losAngelesH3 = latLngToCell(34.0522, -118.2437, 9);
+    reverseCellLocation.mockResolvedValue({
+      label: "Los Angeles, California",
+      primaryLabel: "Los Angeles",
+      secondaryLabel: "California",
+      longitude: -118.2437,
+      latitude: 34.0522,
+      source: "reverse-geocoder",
+    });
+    useExplorerStore.setState({ cityId: "chicago", selectedH3: losAngelesH3 });
+    const data = predictionResponseSchema.parse({
+      ...base,
+      cells: [
+        {
+          h3: losAngelesH3,
+          intensity: 0.125,
+          percentile: 0.8,
+          coverage: "full",
+          missingReason: null,
+          features: [],
+        },
+      ],
+    });
+    renderInspector(data);
+
+    expect(await screen.findByText(/Los Angeles, California/)).toBeInTheDocument();
+    expect(screen.queryByText(/Chicago ·/)).not.toBeInTheDocument();
+
+    useExplorerStore.setState({ cityId: "seattle" });
+    expect(screen.getByText(/Los Angeles, California/)).toBeInTheDocument();
+    expect(screen.queryByText(/Seattle ·/)).not.toBeInTheDocument();
+    expect(reverseCellLocation).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps clicked-cell location and exact forecast hour aligned", async () => {
+    const losAngelesH3 = latLngToCell(34.0522, -118.2437, 9);
+    const validUtcHour = "2026-08-31T04:00:00.000Z";
+    reverseCellLocation.mockResolvedValue({
+      label: "Los Angeles, California",
+      primaryLabel: "Los Angeles",
+      secondaryLabel: "California",
+      longitude: -118.2437,
+      latitude: 34.0522,
+      source: "reverse-geocoder",
+    });
+    useExplorerStore.setState({ cityId: "chicago", selectedH3: losAngelesH3 });
+    const predictionSpy = vi.spyOn(inferenceProvider, "getCellPrediction");
+    const data = predictionResponseSchema.parse({
+      ...base,
+      timestamp: validUtcHour,
+      horizonHours: 6,
+      cells: [
+        {
+          h3: losAngelesH3,
+          intensity: 0.125,
+          percentile: 0.8,
+          coverage: "full",
+          missingReason: null,
+          features: [],
+        },
+      ],
+    });
+    const rendered = render(
+      <Providers>
+        <Inspector
+          data={data}
+          asOfUtcHour="2026-08-30T22:00:00.000Z"
+          selectedSnapshot={{
+            snapshot_id: "forecast-plus-6",
+            valid_utc_hour: validUtcHour,
+            horizon_hours: 6,
+            kind: "forecast",
+          }}
+        />
+      </Providers>,
+    );
+
+    expect(await screen.findByText(/Los Angeles, California/)).toBeInTheDocument();
+    expect(predictionSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        h3: losAngelesH3,
+        validUtcHour,
+        forecastHorizonHours: 6,
+      }),
+    );
+
+    const nextValidUtcHour = "2026-08-31T05:00:00.000Z";
+    const nextData = predictionResponseSchema.parse({
+      ...data,
+      timestamp: nextValidUtcHour,
+    });
+    rendered.rerender(
+      <Providers>
+        <Inspector
+          data={nextData}
+          asOfUtcHour="2026-08-30T22:00:00.000Z"
+          selectedSnapshot={{
+            snapshot_id: "forecast-plus-7",
+            valid_utc_hour: nextValidUtcHour,
+            horizon_hours: 7,
+            kind: "forecast",
+          }}
+        />
+      </Providers>,
+    );
+
+    await waitFor(() =>
+      expect(predictionSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          h3: losAngelesH3,
+          validUtcHour: nextValidUtcHour,
+          forecastHorizonHours: 7,
+        }),
+      ),
+    );
+    expect(useExplorerStore.getState().selectedH3).toBe(losAngelesH3);
+    predictionSpy.mockRestore();
+  });
+
+  it("uses coordinates for an unknown cell instead of the sidebar city", async () => {
+    const unknownH3 = latLngToCell(34.42, -118.58, 9);
+    reverseCellLocation.mockResolvedValue(geocoding.coordinateCellLocation(-118.58, 34.42));
+    useExplorerStore.setState({ cityId: "chicago", selectedH3: unknownH3 });
+    const data = predictionResponseSchema.parse({
+      ...base,
+      cells: [
+        {
+          h3: unknownH3,
+          intensity: null,
+          percentile: null,
+          coverage: "unsupported",
+          missingReason: "Outside supported features",
+          features: [],
+        },
+      ],
+    });
+    renderInspector(data);
+
+    expect(await screen.findByText(/34\.4200° N, 118\.5800° W/)).toBeInTheDocument();
+    expect(screen.queryByText(/Chicago ·/)).not.toBeInTheDocument();
   });
 });

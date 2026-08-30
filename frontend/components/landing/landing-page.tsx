@@ -77,8 +77,14 @@ const technology = [
     "Data platform",
     [
       ["Dagster + Polars", "Asset orchestration and lazy columnar feature construction"],
-      ["S3 + Delta / Parquet", "Immutable snapshots, partitioned storage, and reproducible lineage"],
-      ["Spark / Databricks", "Used for earlier distributed ingestion and large-scale feature assembly"],
+      [
+        "S3 + Delta / Parquet",
+        "Immutable snapshots, partitioned storage, and reproducible lineage",
+      ],
+      [
+        "Spark / Databricks",
+        "Used for earlier distributed ingestion and large-scale feature assembly",
+      ],
       ["DuckDB", "Local spatial joins and boundary processing"],
       ["Python + SQL", "Transformation, audit, and analytical interfaces"],
     ],
@@ -380,8 +386,9 @@ export function LandingPage() {
           <Workflow size={16} />
           <span>
             Dagster and Polars orchestrate the current immutable-snapshot pipeline. S3 with
-            Delta/Parquet stores versioned data products, while frozen lineage ties event, integration,
-            environmental, and final-model snapshots together. Typed contracts protect the interface.
+            Delta/Parquet stores versioned data products, while frozen lineage ties event,
+            integration, environmental, and final-model snapshots together. Typed contracts protect
+            the interface.
           </span>
         </div>
       </section>
@@ -398,9 +405,9 @@ export function LandingPage() {
             <small>BRONZE / SOURCE-FAITHFUL</small>
             <h3>Ingest with identity intact.</h3>
             <p>
-              More than 17 million municipal and county crime records have been ingested across
-              the expanded source footprint, with source identity, lineage, and time semantics
-              preserved before canonicalization.
+              More than 17 million municipal and county crime records have been ingested across the
+              expanded source footprint, with source identity, lineage, and time semantics preserved
+              before canonicalization.
             </p>
             <code>_ingestion_run_id · _ingested_at_utc</code>
           </article>
@@ -586,8 +593,8 @@ export function LandingPage() {
             </div>
           </div>
           <p>
-            Current geographic-CV runs use deterministic training and validation samples across
-            five held-out geographic folds. These bars show the global split policy; each source is
+            Current geographic-CV runs use deterministic training and validation samples across five
+            held-out geographic folds. These bars show the global split policy; each source is
             further clipped to its documented temporal support. The test split remains untouched
             during model selection and is reserved for final evaluation.
           </p>
@@ -862,7 +869,7 @@ export function LandingPage() {
           </span>
           <div>
             <strong>CRIMESENSE</strong>
-            <small>SPATIOTEMPORAL INTELLIGENCE</small>
+            <small>POWERED BY CRIMENET</small>
           </div>
         </div>
         <p>

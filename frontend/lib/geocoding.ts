@@ -5,6 +5,7 @@ import {
   type GeocodingOptions,
   type GeocodingPlaceType,
   type GeocodingSearchResult,
+  type ReverseGeocodingOptions,
 } from "@maptiler/client";
 
 export const MIN_GEOCODING_QUERY_LENGTH = 3;
@@ -19,6 +20,15 @@ export type GeocodingResult = {
   latitude: number;
   bbox?: [west: number, south: number, east: number, north: number];
   type?: GeocodingPlaceType | "coordinate";
+};
+
+export type CellLocation = {
+  label: string;
+  primaryLabel: string;
+  secondaryLabel?: string;
+  longitude: number;
+  latitude: number;
+  source: "reverse-geocoder" | "coordinates";
 };
 
 export type GeocodingErrorKind = "missing-key" | "provider";
@@ -42,6 +52,13 @@ export const GEOCODING_TYPES: GeocodingPlaceType[] = [
   "neighbourhood",
   "poi",
   "postal_code",
+];
+
+export const CELL_LOCATION_TYPES: GeocodingPlaceType[] = [
+  "municipality",
+  "place",
+  "locality",
+  "region",
 ];
 
 const mapTilerApiKey = process.env.NEXT_PUBLIC_MAPTILER_KEY?.trim() ?? "";
@@ -91,7 +108,8 @@ export function adaptMapTilerFeature(feature: GeocodingFeature): GeocodingResult
     feature.geometry.type === "Point" && finitePosition(feature.geometry.coordinates)
       ? feature.geometry.coordinates
       : undefined;
-  const position = geometryPosition ?? (finitePosition(feature.center) ? feature.center : undefined);
+  const position =
+    geometryPosition ?? (finitePosition(feature.center) ? feature.center : undefined);
   if (!position) throw new GeocodingError("MapTiler returned an invalid location.", "provider");
 
   const [longitude, latitude] = position;
@@ -137,6 +155,84 @@ type ForwardGeocoder = (
   query: string,
   options?: GeocodingOptions,
 ) => Promise<GeocodingSearchResult>;
+
+type ReverseGeocoder = (
+  position: [longitude: number, latitude: number],
+  options?: ReverseGeocodingOptions,
+) => Promise<GeocodingSearchResult>;
+
+function coordinateLabel(latitude: number, longitude: number) {
+  const latitudeDirection = latitude >= 0 ? "N" : "S";
+  const longitudeDirection = longitude >= 0 ? "E" : "W";
+  return `${Math.abs(latitude).toFixed(4)}° ${latitudeDirection}, ${Math.abs(longitude).toFixed(4)}° ${longitudeDirection}`;
+}
+
+export function coordinateCellLocation(longitude: number, latitude: number): CellLocation {
+  const label = coordinateLabel(latitude, longitude);
+  return {
+    label,
+    primaryLabel: label,
+    longitude,
+    latitude,
+    source: "coordinates",
+  };
+}
+
+function hierarchyEntry(
+  feature: GeocodingFeature,
+  type: "municipality" | "place" | "locality" | "region",
+) {
+  if (feature.place_type.includes(type)) return feature;
+  return feature.context?.find((entry) => entry.id.startsWith(`${type}.`));
+}
+
+export function adaptReverseGeocodingResult(
+  response: GeocodingSearchResult,
+  longitude: number,
+  latitude: number,
+): CellLocation {
+  for (const feature of response.features) {
+    const municipality = hierarchyEntry(feature, "municipality");
+    const place = hierarchyEntry(feature, "place");
+    const locality = hierarchyEntry(feature, "locality");
+    const region = hierarchyEntry(feature, "region");
+    const primary = municipality?.text ?? place?.text ?? locality?.text;
+    if (!primary) continue;
+
+    const secondary = region?.text && region.text !== primary ? region.text : undefined;
+    return {
+      label: secondary ? `${primary}, ${secondary}` : primary,
+      primaryLabel: primary,
+      ...(secondary ? { secondaryLabel: secondary } : {}),
+      longitude,
+      latitude,
+      source: "reverse-geocoder",
+    };
+  }
+  return coordinateCellLocation(longitude, latitude);
+}
+
+export async function reverseCellLocation(
+  longitude: number,
+  latitude: number,
+  reverse: ReverseGeocoder = geocoding.reverse,
+): Promise<CellLocation> {
+  if (!mapTilerApiKey && reverse === geocoding.reverse) {
+    return coordinateCellLocation(longitude, latitude);
+  }
+
+  try {
+    const response = await reverse([longitude, latitude], {
+      language: ["en"],
+      limit: 1,
+      types: CELL_LOCATION_TYPES,
+    });
+    return adaptReverseGeocodingResult(response, longitude, latitude);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    return coordinateCellLocation(longitude, latitude);
+  }
+}
 
 export async function searchLocations(
   query: string,

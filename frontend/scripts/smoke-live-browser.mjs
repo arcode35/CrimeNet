@@ -1,6 +1,7 @@
 import { chromium } from "@playwright/test";
 
 const appUrl = process.env.CRIMENET_FRONTEND_URL || "http://localhost:3000";
+const apiUrl = (process.env.CRIMESENSE_API_URL || "https://api.crimesense.ai").replace(/\/$/, "");
 const browser = await chromium.launch({ channel: "chrome" });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 const runtimeErrors = [];
@@ -20,9 +21,9 @@ page.on("response", (response) => {
 });
 page.on("request", (request) => {
   const url = new URL(request.url());
-  if (url.port === "8000") requestPaths.push(`${url.pathname}${url.search}`);
+  if (url.origin === apiUrl) requestPaths.push(`${url.pathname}${url.search}`);
 });
-await page.route("http://localhost:8000/api/v1/intensity/viewport?*", async (route) => {
+await page.route(`${apiUrl}/api/v1/intensity/viewport?*`, async (route) => {
   if (holdNextViewport) {
     holdNextViewport = false;
     await new Promise((resolve) => {
@@ -53,7 +54,7 @@ try {
     { timeout: 20_000 },
   );
   await page
-    .getByRole("combobox", { name: "Search addresses, places, and CrimeNet commands" })
+    .getByRole("combobox", { name: "Search addresses, places, and CrimeSense commands" })
     .fill("1234 Westheimer Rd, Houston, TX");
   const providerResponse = await geocodingResponse;
   if (!providerResponse.ok()) {
@@ -70,6 +71,29 @@ try {
   if (!centerAfterSearch || centerAfterSearch === centerBeforeSearch) {
     throw new Error("Selecting a real MapTiler suggestion did not move MapLibre");
   }
+
+  const productionTimeline = await fetch(`${apiUrl}/api/v1/intensity/timeline`).then((response) => {
+    if (!response.ok) throw new Error(`Production timeline returned ${response.status}`);
+    return response.json();
+  });
+  const forecastSnapshot = productionTimeline.snapshots.find(
+    (snapshot) => snapshot.horizon_hours === 6,
+  );
+  if (!forecastSnapshot) throw new Error("Production timeline did not expose a +6h forecast");
+  const nextForecastSnapshot = productionTimeline.snapshots.find(
+    (snapshot) => snapshot.horizon_hours === 7,
+  );
+  if (!nextForecastSnapshot) throw new Error("Production timeline did not expose a +7h forecast");
+  const forecastSlider = page.getByRole("slider", { name: "Forecast hour" });
+  await forecastSlider.waitFor({ timeout: 20_000 });
+  await forecastSlider.focus();
+  for (let step = 0; step < 6; step += 1) await forecastSlider.press("ArrowRight");
+  await page.getByText("+6H FORECAST", { exact: true }).waitFor();
+  await page
+    .locator(
+      `.map-canvas[data-snapshot-timestamp="${new Date(forecastSnapshot.valid_utc_hour).toISOString()}"]`,
+    )
+    .waitFor({ timeout: 30_000 });
 
   let nativeResolution = Number(await canvas.getAttribute("data-h3-resolution"));
   for (let attempt = 0; nativeResolution !== 9 && attempt < 3; attempt += 1) {
@@ -102,16 +126,82 @@ try {
   await nextViewportResponse;
   await page.locator(".map-canvas[data-prediction-layer=ready]").waitFor({ timeout: 20_000 });
 
+  const reverseGeocodingResponse = page.waitForResponse(
+    (response) =>
+      response.url().includes("api.maptiler.com/geocoding/") &&
+      !response.url().includes(encodeURIComponent("1234 Westheimer")),
+    { timeout: 20_000 },
+  );
   await page.mouse.click(box.x + box.width * 0.62, box.y + box.height * 0.48);
   await page.getByText("H3 CELL INSPECTOR").waitFor({ timeout: 20_000 });
-  await page.getByText("LIVE INFERENCE", { exact: true }).waitFor({ timeout: 120_000 });
+  const locationProviderResponse = await reverseGeocodingResponse;
+  if (!locationProviderResponse.ok()) {
+    throw new Error(`MapTiler reverse geocoding failed with ${locationProviderResponse.status()}`);
+  }
+  await page.waitForFunction(
+    () => document.querySelector(".inspector-header strong")?.textContent?.includes("Houston"),
+    undefined,
+    { timeout: 20_000 },
+  );
+  const inspectorLocation = (await page.locator(".inspector-header strong").textContent())?.trim();
+  if (!inspectorLocation || inspectorLocation.includes("Chicago")) {
+    throw new Error(
+      `Clicked-cell location incorrectly followed sidebar city: ${inspectorLocation}`,
+    );
+  }
+  await page.getByText("FORECAST INFERENCE", { exact: true }).waitFor({ timeout: 120_000 });
   await page.getByText("EVENT INTENSITY", { exact: true }).waitFor();
   await page.getByRole("button", { name: "INTENSITY", exact: true }).click();
   await page.getByRole("button", { name: "VIEW ALL 87 →" }).click();
   await page.getByRole("dialog").waitFor();
   const markRows = await page.locator(".types-table > button").count();
   if (markRows !== 87) throw new Error(`Expected 87 inspector rows, received ${markRows}`);
+  const forecastMarkPath = [...requestPaths]
+    .reverse()
+    .find((path) => path.startsWith("/api/v1/predict/cell/"));
+  const markValidUtcHour = forecastMarkPath
+    ? new URL(forecastMarkPath, apiUrl).searchParams.get("valid_utc_hour")
+    : null;
+  if (markValidUtcHour !== forecastSnapshot.valid_utc_hour) {
+    throw new Error("Selected-cell inference did not use the map's +6h UTC forecast hour");
+  }
   await page.getByRole("button", { name: "Close all crime types" }).click();
+  const inspectedCellBeforeForecastStep = await page
+    .locator(".inspector-header strong")
+    .textContent();
+  const updatedCellResponse = page.waitForResponse(
+    (response) => {
+      if (!response.url().includes("/api/v1/predict/cell/")) return false;
+      return (
+        new URL(response.url()).searchParams.get("valid_utc_hour") ===
+        nextForecastSnapshot.valid_utc_hour
+      );
+    },
+    { timeout: 120_000 },
+  );
+  await forecastSlider.focus();
+  await forecastSlider.press("ArrowRight");
+  await page.getByText("+7H FORECAST", { exact: true }).waitFor();
+  await page
+    .locator(
+      `.map-canvas[data-snapshot-timestamp="${new Date(nextForecastSnapshot.valid_utc_hour).toISOString()}"]`,
+    )
+    .waitFor({ timeout: 30_000 });
+  const refreshedCellResponse = await updatedCellResponse;
+  if (!refreshedCellResponse.ok()) {
+    throw new Error(`Updated cell inference returned ${refreshedCellResponse.status()}`);
+  }
+  await page.getByText("H3 CELL INSPECTOR").waitFor();
+  await page.getByText("EVENT INTENSITY", { exact: true }).waitFor({ timeout: 120_000 });
+  const inspectedCellAfterForecastStep = await page
+    .locator(".inspector-header strong")
+    .textContent();
+  if (
+    !inspectedCellBeforeForecastStep ||
+    inspectedCellAfterForecastStep !== inspectedCellBeforeForecastStep
+  ) {
+    throw new Error("Forecast stepping did not retain the selected H3 cell inspector");
+  }
   await page.keyboard.press("Escape");
 
   let coarseResolution = 9;
@@ -193,8 +283,14 @@ try {
         live_geocoding: true,
         selected_geocoding_suggestion: selectedSuggestion,
         search_triggered_viewport_inference: true,
+        selected_forecast_horizon: forecastSnapshot.horizon_hours,
+        forecast_surface_timestamp: forecastSnapshot.valid_utc_hour,
+        forecast_cell_timestamp_consistent: true,
+        forecast_step_retained_inspector: true,
         native_resolution: nativeResolution,
         native_selected_cell_inference: true,
+        clicked_cell_location: inspectorLocation,
+        clicked_cell_location_independent_of_sidebar: true,
         mark_rows: markRows,
         viewport_refetched_after_pan: true,
         national_resolution: coarseResolution,

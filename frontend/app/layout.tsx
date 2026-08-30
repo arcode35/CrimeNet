@@ -8,19 +8,19 @@ const sans = Geist({ variable: "--font-sans", subsets: ["latin"] });
 const mono = Geist_Mono({ variable: "--font-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "CrimeNet — Spatiotemporal Crime Intelligence",
+  title: "CrimeSense — Spatiotemporal Crime Intelligence",
   description:
-    "CrimeNet is an end-to-end geospatial machine-learning platform for modeling reported crime intensity across space and time.",
-  applicationName: "CrimeNet",
+    "CrimeSense is an interactive geospatial application for exploring reported crime intensity across space and time.",
+  applicationName: "CrimeSense",
   openGraph: {
-    title: "CrimeNet — Spatiotemporal Crime Intelligence",
+    title: "CrimeSense — Spatiotemporal Crime Intelligence",
     description:
       "A data-to-model geospatial platform for reported crime intensity across space and time.",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "CrimeNet — Spatiotemporal Crime Intelligence",
+    title: "CrimeSense — Spatiotemporal Crime Intelligence",
     description:
       "A data-to-model geospatial platform for reported crime intensity across space and time.",
   },
