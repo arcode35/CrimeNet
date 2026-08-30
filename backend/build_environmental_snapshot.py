@@ -258,6 +258,15 @@ parser.add_argument(
     ),
 )
 
+parser.add_argument(
+    "--no-publish-current",
+    action="store_true",
+    help=(
+        "Build the timestamped environmental snapshot without "
+        "advancing environmental_current.json. Used for forecasts."
+    ),
+)
+
 args = parser.parse_args()
 
 valid_utc = normalize_utc_hour(
@@ -278,6 +287,32 @@ target_open_meteo_time = (
     .strftime(
         "%Y-%m-%dT%H:00"
     )
+)
+
+# Request enough Open-Meteo range to include the exact target hour.
+# The live builder normally needs only a few hours, while forecast
+# materialization may ask for +24h, +48h, +72h, etc.
+now_utc_hour = (
+    datetime.now(timezone.utc)
+    .replace(
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+)
+
+hours_delta = (
+    valid_utc - now_utc_hour
+).total_seconds() / 3600.0
+
+request_forecast_hours = max(
+    FORECAST_HOURS,
+    int(math.ceil(max(0.0, hours_delta))) + 2,
+)
+
+request_past_hours = max(
+    PAST_HOURS,
+    int(math.ceil(max(0.0, -hours_delta))) + 2,
 )
 
 
@@ -439,10 +474,10 @@ def fetch_weather_batch(
             "GMT",
 
         "past_hours":
-            PAST_HOURS,
+            request_past_hours,
 
         "forecast_hours":
-            FORECAST_HOURS,
+            request_forecast_hours,
     }
 
 
@@ -1189,6 +1224,19 @@ try:
         "weather_workers":
             WEATHER_WORKERS,
 
+        "open_meteo_past_hours_requested":
+            request_past_hours,
+
+        "open_meteo_forecast_hours_requested":
+            request_forecast_hours,
+
+        "publication_mode":
+            (
+                "timestamp_only"
+                if args.no_publish_current
+                else "current"
+            ),
+
         "weather_available_rows":
             weather_available_count,
 
@@ -1339,10 +1387,11 @@ try:
     }
 
 
-    atomic_json_write(
-        CURRENT_POINTER,
-        pointer,
-    )
+    if not args.no_publish_current:
+        atomic_json_write(
+            CURRENT_POINTER,
+            pointer,
+        )
 
 
 except Exception:
@@ -1425,8 +1474,12 @@ print(
 )
 
 print(
-    f"Current pointer: "
-    f"{CURRENT_POINTER}"
+    "Publication:     "
+    + (
+        f"current pointer -> {CURRENT_POINTER}"
+        if not args.no_publish_current
+        else "timestamp-only forecast snapshot"
+    )
 )
 
 print()

@@ -19,27 +19,47 @@ import {
   Sparkles,
   Workflow,
 } from "lucide-react";
-import { CITIES } from "@/lib/domain";
+
+const jurisdictions = [
+  ["atlanta", "Atlanta", "America/New_York"],
+  ["baltimore", "Baltimore", "America/New_York"],
+  ["chandler_az", "Chandler, AZ", "America/Phoenix"],
+  ["chicago", "Chicago", "America/Chicago"],
+  ["dallas", "Dallas", "America/Chicago"],
+  ["denver", "Denver", "America/Denver"],
+  ["fort_worth", "Fort Worth", "America/Chicago"],
+  ["los_angeles_county_sheriff", "Los Angeles County Sheriff", "America/Los_Angeles"],
+  ["marin_county_sheriff_ca", "Marin County Sheriff, CA", "America/Los_Angeles"],
+  ["montgomery_county_md", "Montgomery County, MD", "America/New_York"],
+  ["new_york", "New York City", "America/New_York"],
+  ["san_francisco", "San Francisco", "America/Los_Angeles"],
+  ["seattle", "Seattle", "America/Los_Angeles"],
+  ["sonoma_county_sheriff_ca", "Sonoma County Sheriff, CA", "America/Los_Angeles"],
+  ["washington_dc", "Washington, DC", "America/New_York"],
+] as const;
 
 const architecture = [
-  ["01", "Raw sources", "Municipal records · OSM · weather · ACS · solar"],
-  ["02", "Lakehouse", "Databricks · Spark · Delta · Unity Catalog"],
-  ["03", "Medallion", "Bronze → canonical Silver → ML-ready Gold"],
-  ["04", "Features", "H3 context · spatial joins · leakage-safe history"],
-  ["05", "Training", "XGBoost · Optuna · MLflow · GPU where applicable"],
-  ["06", "Online path", "API · feature retrieval · coverage · inference"],
-  ["07", "Explorer", "Next.js · MapLibre camera · deck.gl GPU surface"],
+  ["01", "Raw sources", "Municipal + county records · OSM · weather · ACS · solar"],
+  ["02", "Versioned lake", "S3 · Delta / Parquet · immutable snapshot lineage"],
+  ["03", "Canonical spine", "Bronze → Silver → leakage-safe Gold event spine"],
+  ["04", "Integration", "H3 support sampling · exposure weights · temporal support"],
+  ["05", "Feature contract", "Point-in-time H3 · environment · causal event history"],
+  ["06", "Training", "XGBoost point process · geographic CV · GPU acceleration"],
+  ["07", "Explorer", "FastAPI · Next.js · MapLibre · deck.gl GPU surface"],
 ] as const;
 
 const featureFamilies = [
   [
-    "Historical",
-    "26",
-    "6h / 24h / 7d / 28d cell, city, and k=1 activity; recency and relative state",
+    "Causal history",
+    "35",
+    "Canonical temporal-history columns in the event-spine contract, built strictly from prior events",
   ],
-  ["Temporal", "06", "Local hour and day-of-week with cyclical encodings"],
-  ["Environment", "02", "Canonical temperature and relative humidity observations"],
-  ["Lighting", "03", "Solar elevation, daylight flag, and lighting condition"],
+  ["Baseline temporal", "06", "Local hour and day-of-week with cyclical encodings"],
+  [
+    "Weather + solar",
+    "07",
+    "Temperature, humidity, availability, solar geometry, daylight, and lighting state",
+  ],
   [
     "Built environment",
     "17",
@@ -56,17 +76,17 @@ const technology = [
   [
     "Data platform",
     [
-      ["Databricks + Spark", "Distributed lakehouse processing at billion-row scan scale"],
-      ["Delta + Unity Catalog", "Medallion tables, catalog organization, and governance"],
-      ["Dagster + Polars", "Asset orchestration and lazy columnar development pipelines"],
+      ["Dagster + Polars", "Asset orchestration and lazy columnar feature construction"],
+      ["S3 + Delta / Parquet", "Immutable snapshots, partitioned storage, and reproducible lineage"],
+      ["Spark / Databricks", "Used for earlier distributed ingestion and large-scale feature assembly"],
       ["DuckDB", "Local spatial joins and boundary processing"],
-      ["Parquet · Python · SQL", "Portable columnar data and transformation languages"],
+      ["Python + SQL", "Transformation, audit, and analytical interfaces"],
     ],
   ],
   [
     "Geospatial + sources",
     [
-      ["Uber H3", "Spatial joins, neighborhoods, features, inference, and rendering"],
+      ["Uber H3", "Stable cells for joins, support sampling, features, inference, and rendering"],
       ["OSM + Geofabrik", "Built-environment features"],
       ["Open-Meteo + pvlib", "Weather observations and deterministic solar state"],
       ["Census ACS / TIGER", "Socioeconomic context and jurisdiction masks"],
@@ -75,19 +95,19 @@ const technology = [
   [
     "Machine learning",
     [
-      ["XGBoost", "Current point-process baseline and mark classifiers"],
-      ["Optuna", "Journal-backed distributed hyperparameter search"],
-      ["MLflow", "Experiment tracking and artifact lineage"],
-      ["PyTorch", "CrimeNet Omega research implementation"],
+      ["XGBoost", "Current Poisson point-process baseline and geographic-CV experiments"],
+      ["Optuna", "Distributed hyperparameter search and reproducible study state"],
+      ["PyTorch", "Neural marked point-process research track"],
+      ["CUDA", "GPU acceleration for large training and evaluation runs"],
     ],
   ],
   [
     "Serving + interface",
     [
-      ["FastAPI · Redis · Flink", "Broader online-serving and streaming direction"],
+      ["FastAPI", "Local inference API and typed model-serving boundary"],
       ["Next.js 16 + React 19", "Application routing and analytical surfaces"],
       ["MapLibre GL + deck.gl", "Synchronized GPU map and H3 rendering"],
-      ["TanStack Query", "Cancellable, city-scoped server state"],
+      ["TanStack Query", "Cancellable, jurisdiction-scoped server state"],
       ["Zustand + Zod", "Local UI state and runtime contract validation"],
     ],
   ],
@@ -189,7 +209,7 @@ function PublicNav() {
           <Hexagon size={17} strokeWidth={1.5} />
         </span>
         <div>
-          <strong>CRIMENET</strong>
+          <strong>CRIMESENSE</strong>
           <small>SPATIOTEMPORAL INTELLIGENCE</small>
         </div>
       </Link>
@@ -224,9 +244,9 @@ export function LandingPage() {
             INTELLIGENCE.
           </h1>
           <p>
-            CrimeNet models where and when reported crime intensity changes by combining historical
-            incidents with spatial, temporal, environmental, infrastructural, and socioeconomic
-            context.
+            CrimeSense models how reported crime intensity changes across space and time using a
+            leakage-safe event spine, sampled point-process support, and spatial, temporal,
+            environmental, infrastructural, and socioeconomic context.
           </p>
           <div className="hero-actions">
             <Link href="/explorer" className="primary-action">
@@ -249,39 +269,39 @@ export function LandingPage() {
       </section>
       <section className="scale-strip" id="scale">
         <div>
-          <strong>13M+</strong>
+          <strong>17M+</strong>
           <span>
-            CANONICAL
+            RAW CRIME
             <br />
-            CRIME RECORDS
+            RECORDS INGESTED
           </span>
         </div>
         <div>
-          <strong>79M+</strong>
+          <strong>15.95M</strong>
           <span>
-            GENERATED
+            CANONICAL EVENT
             <br />
-            ML OBSERVATIONS
+            SPINE RECORDS
           </span>
         </div>
         <div>
-          <strong>2.3–2.6B</strong>
+          <strong>180M+</strong>
           <span>
-            ROWS SCANNED IN
+            POINT-PROCESS
             <br />
-            LARGE SPARK JOBS
+            MODEL EXAMPLES
           </span>
         </div>
         <div>
-          <strong>~200 GB</strong>
+          <strong>74,689</strong>
           <span>
-            MATERIALIZED
+            UNIQUE EVENT-SPINE
             <br />
-            PARQUET DATA
+            H3 CELLS
           </span>
         </div>
         <div>
-          <strong>08</strong>
+          <strong>15</strong>
           <span>
             SUPPORTED
             <br />
@@ -295,7 +315,7 @@ export function LandingPage() {
           index="01"
           eyebrow="SYSTEM DEFINITION"
           title="More than a prediction model."
-          copy="CrimeNet is the connected system required to make spatiotemporal modeling valid: data lineage, canonical geography, leakage-safe features, experiment tracking, explicit eligibility, and GPU-backed analytical delivery."
+          copy="CrimeSense is the public analytical system built on CrimeNet's current 15-jurisdiction data and ML pipeline: immutable lineage, canonical geography, leakage-safe features, explicit eligibility, and GPU-backed analytical delivery."
         />
         <div className="definition-stack">
           {[
@@ -339,7 +359,7 @@ export function LandingPage() {
           index="02"
           eyebrow="END-TO-END ARCHITECTURE"
           title="A traceable path from source to surface."
-          copy="CrimeNet spans a Databricks lakehouse, offline feature and model systems, an online-serving direction, and the GPU Explorer. The current checkout contains only part of that multi-system platform."
+          copy="The current system spans immutable S3/Parquet snapshots, a canonical event spine, exposure-weighted integration sampling, point-in-time feature enrichment, XGBoost training, a FastAPI serving boundary, and the GPU Explorer."
         />
         <div className="architecture-flow">
           {architecture.map(([number, title, copy], index) => (
@@ -349,7 +369,7 @@ export function LandingPage() {
                 {index < architecture.length - 1 && <i />}
               </div>
               <small>
-                {index === 5 ? "ONLINE SYSTEM" : index === 6 ? "INTERFACE" : "DATA / ML PLATFORM"}
+                {index === 6 ? "INTERFACE" : index === 5 ? "ML PLATFORM" : "DATA PLATFORM"}
               </small>
               <h3>{title}</h3>
               <p>{copy}</p>
@@ -359,9 +379,9 @@ export function LandingPage() {
         <div className="architecture-note">
           <Workflow size={16} />
           <span>
-            Unity Catalog organizes lakehouse assets. Spark and Delta execute distributed medallion
-            processing. Dagster, Polars, and DuckDB support orchestration and development workflows.
-            Typed contracts protect the final interface.
+            Dagster and Polars orchestrate the current immutable-snapshot pipeline. S3 with
+            Delta/Parquet stores versioned data products, while frozen lineage ties event, integration,
+            environmental, and final-model snapshots together. Typed contracts protect the interface.
           </span>
         </div>
       </section>
@@ -371,16 +391,16 @@ export function LandingPage() {
           index="03"
           eyebrow="DATA ENGINEERING"
           title="Heterogeneous urban data, one analytical contract."
-          copy="CrimeNet's Databricks lakehouse uses Apache Spark, Delta Lake, Unity Catalog, and a Bronze–Silver–Gold design. Dagster, Polars, DuckDB, Python, SQL, and Parquet support complementary orchestration and development workflows."
+          copy="CrimeSense uses a Bronze–Silver–Gold data contract, but the current pipeline is no longer coupled to one managed compute platform. Dagster, Polars, S3, Delta/Parquet, DuckDB, Python, and SQL carry the active snapshot and feature workflow."
         />
         <div className="medallion-grid">
           <article>
             <small>BRONZE / SOURCE-FAITHFUL</small>
             <h3>Ingest with identity intact.</h3>
             <p>
-              More than 13.5 million historical source records enter source-aligned tables with
-              lineage and partition identity. Weather and socioeconomic inputs retain explicit
-              provenance.
+              More than 17 million municipal and county crime records have been ingested across
+              the expanded source footprint, with source identity, lineage, and time semantics
+              preserved before canonicalization.
             </p>
             <code>_ingestion_run_id · _ingested_at_utc</code>
           </article>
@@ -391,22 +411,23 @@ export function LandingPage() {
               Offense mappings, units, timestamps, H3 identifiers, OSM values, and socioeconomic
               periods are validated and projected into stable schemas.
             </p>
-            <code>crime_canonical_v1_3</code>
+            <code>source schema → canonical event contract</code>
           </article>
           <article>
             <small>GOLD / MODEL-READY</small>
             <h3>Build context without leakage.</h3>
             <p>
-              Gold materializations generate tens of millions of ML observations by combining
-              exact-cell, neighbor, city, temporal, weather, lighting, OSM, and ACS context.
+              The current point-process dataset expands observed events with exposure-weighted
+              integration support to more than 180 million model examples, enriched with temporal,
+              weather, lighting, OSM, ACS, and causal history context.
             </p>
-            <code>model_row_id · cell-seconds exposure</code>
+            <code>event rows · integration rows · exposure weights</code>
           </article>
         </div>
         <div className="source-lineage">
           <span>SOURCE LINEAGE</span>
           {[
-            "Municipal open data",
+            "Municipal + county open data",
             "OpenStreetMap / Geofabrik",
             "Open-Meteo archive",
             "Census ACS 5-year",
@@ -425,7 +446,7 @@ export function LandingPage() {
           index="04"
           eyebrow="TEMPORAL CORRECTNESS"
           title="The future is not a feature."
-          copy="Offline scores are meaningless when future state leaks into historical examples. CrimeNet constructs rolling history strictly before each model timestamp and keeps the 2025+ test partition sealed during training and validation."
+          copy="Offline scores are meaningless when future state leaks into historical examples. CrimeSense constructs causal history strictly before each model timestamp, freezes support by split, and keeps the 2025+ test partition sealed during training and validation."
         />
         <div className="leakage-visual">
           <div className="leakage-labels">
@@ -501,7 +522,7 @@ export function LandingPage() {
         </div>
         <div className="feature-engine">
           <div className="feature-title">
-            <small>FEATURE SYSTEM / FULL_V1</small>
+            <small>FEATURE CONTRACT / CURRENT</small>
             <strong>Context at every cell and time.</strong>
           </div>
           <div className="feature-matrix">
@@ -524,12 +545,12 @@ export function LandingPage() {
           index="06"
           eyebrow="MACHINE LEARNING"
           title="Event intensity as a point process."
-          copy="The current configured baseline uses XGBoost with a Poisson point-process objective. Exposure-weighted integration samples estimate λ(x,t) in events per cell-hour; separate mark classifiers model event categories conditional on an event."
+          copy="The current baseline uses XGBoost with a Poisson point-process objective over exposure-weighted integration samples. The active geographic-CV baseline uses 37 numeric features plus one categorical lighting feature; richer causal-history columns remain available in the final model contract."
         />
         <div className="model-flow">
           <div className="feature-vector">
-            <small>63-D FEATURE VECTOR</small>
-            {Array.from({ length: 63 }, (_, i) => (
+            <small>38-FEATURE BASELINE INPUT</small>
+            {Array.from({ length: 38 }, (_, i) => (
               <i key={i} style={{ opacity: 0.18 + (i % 9) / 12 }} />
             ))}
           </div>
@@ -537,7 +558,7 @@ export function LandingPage() {
           <div className="model-core">
             <span>XGBOOST</span>
             <strong>POINT PROCESS</strong>
-            <small>hist · depth 12 configuration</small>
+            <small>Poisson objective · CUDA hist</small>
           </div>
           <ArrowRight size={18} />
           <div className="lambda-output">
@@ -565,10 +586,10 @@ export function LandingPage() {
             </div>
           </div>
           <p>
-            Validation code evaluates a future year using models trained exclusively on earlier
-            information. Archived mark-classifier artifacts exist; performance claims are
-            intentionally deferred until an authoritative serving contract exposes the selected
-            model and metrics.
+            Current geographic-CV runs use deterministic training and validation samples across
+            five held-out geographic folds. These bars show the global split policy; each source is
+            further clipped to its documented temporal support. The test split remains untouched
+            during model selection and is reserved for final evaluation.
           </p>
         </div>
       </section>
@@ -578,7 +599,7 @@ export function LandingPage() {
           index="07"
           eyebrow="INFERENCE COVERAGE"
           title="Eligibility before estimation."
-          copy="A geographic coordinate is not automatically a valid model input. CrimeNet must establish every required feature group before the full model can return an intensity."
+          copy="A geographic coordinate is not automatically a valid model input. CrimeSense establishes required feature state before displaying intensity; the current event-spine audit reports 99.969% modeled coverage while preserving missingness explicitly."
         />
         <div className="coverage-machine">
           <div className="coverage-request">
@@ -656,7 +677,7 @@ export function LandingPage() {
         <div className="explorer-preview">
           <div className="preview-top">
             <span>
-              <Hexagon size={14} /> CRIMENET
+              <Hexagon size={14} /> CRIMESENSE
             </span>
             <small>INFERENCE EXPLORER</small>
             <i />
@@ -664,7 +685,7 @@ export function LandingPage() {
           <div className="preview-panel">
             <small>SUPPORTED REGION</small>
             <strong>Chicago</strong>
-            <span>MODEL JURISDICTION · H3 R9</span>
+            <span>MODEL JURISDICTION · H3 R9 SURFACE</span>
             <small>PREDICTION TIME</small>
             <code>AUG 21, 2024 · 17:00 CDT</code>
           </div>
@@ -694,7 +715,7 @@ export function LandingPage() {
           </div>
         </div>
         <Link href="/explorer" className="large-explorer-link">
-          Open CrimeNet Explorer <ArrowRight size={17} />
+          Open CrimeSense Explorer <ArrowRight size={17} />
         </Link>
       </section>
 
@@ -702,24 +723,27 @@ export function LandingPage() {
         <SectionHead
           index="09"
           eyebrow="SUPPORTED GEOGRAPHIES"
-          title="Eight municipal systems, one spatial vocabulary."
-          copy="CrimeNet normalizes heterogeneous municipal records into a shared schema while preserving city identity and local time. Jurisdiction support does not imply that every H3 cell has complete feature coverage."
+          title="Fifteen jurisdictions, one spatial vocabulary."
+          copy="CrimeSense normalizes heterogeneous municipal and county records into one event contract while preserving source identity and local time. The current event spine spans 15 jurisdictions and 74,689 unique H3 cells; support still does not imply complete covariate coverage for every cell-time."
         />
         <div className="city-field">
           <div className="city-orbit">
             <Globe2 size={180} strokeWidth={0.45} />
-            {CITIES.map((city, index) => (
-              <i key={city.id} style={{ "--angle": `${index * 45}deg` } as CSSProperties}>
+            {jurisdictions.map(([id], index) => (
+              <i
+                key={id}
+                style={{ "--angle": `${index * (360 / jurisdictions.length)}deg` } as CSSProperties}
+              >
                 <span />
               </i>
             ))}
           </div>
           <div className="city-list">
-            {CITIES.map((city, index) => (
-              <div key={city.id}>
+            {jurisdictions.map(([id, name, timezone], index) => (
+              <div key={id}>
                 <span>{String(index + 1).padStart(2, "0")}</span>
-                <strong>{city.name}</strong>
-                <small>{city.timezone}</small>
+                <strong>{name}</strong>
+                <small>{timezone}</small>
               </div>
             ))}
           </div>
@@ -755,28 +779,28 @@ export function LandingPage() {
         <div>
           <SectionHead
             index="11"
-            eyebrow="CRIMENET OMEGA"
-            title="A neural marked point-process direction."
-            copy="The repository contains an experimental PyTorch architecture—not a deployed replacement for the XGBoost baseline. Omega-0 conditions a continuous-time marked point process on the same contextual feature contract."
+            eyebrow="CRIMENET Ω / RESEARCH TRACK"
+            title="Beyond the boosted-tree baseline."
+            copy="CrimeNet Ω remains a research track rather than the selected serving baseline. It explores neural marked point-process formulations over the same leakage-safe spatial, temporal, and contextual contracts."
           />
           <div className="research-spec">
             <span>
-              <small>ARCHITECTURE</small>Context-only marked point process
+              <small>ARCHITECTURE</small>Neural marked point-process research
             </span>
             <span>
-              <small>INTENSITY</small>Softplus · events per cell-hour
+              <small>INTENSITY</small>Continuous-time event intensity
             </span>
             <span>
-              <small>MARK HEAD</small>Canonical subtype code
+              <small>MARK SPACE</small>Canonical offense taxonomy
             </span>
             <span>
-              <small>TRAINING CONFIG</small>CUDA · bfloat16 · AdamW
+              <small>STATUS</small>Experimental · not serving baseline
             </span>
           </div>
           <p className="research-boundary">
-            Graph state, Hawkes dynamics, raw event history, multiscale memory, and latent spatial
-            components are explicitly disabled in Omega-0. They are research directions, not product
-            claims.
+            Neural history, graph structure, Hawkes-style excitation, multiscale state, and
+            reporting-process components remain research directions. They are not presented as
+            properties of the current XGBoost serving baseline.
           </p>
         </div>
         <div className="omega-visual">
@@ -796,7 +820,7 @@ export function LandingPage() {
           index="12"
           eyebrow="ENGINEERING PRINCIPLES"
           title="Correctness is part of the product."
-          copy="CrimeNet's strongest guarantees are the ones that prevent an attractive interface from overstating what the data and model can support."
+          copy="CrimeSense's strongest guarantees are the ones that prevent an attractive interface from overstating what the data and model can support."
         />
         <div className="principle-grid">
           {principles.map(([title, copy], index) => (
@@ -815,7 +839,7 @@ export function LandingPage() {
             <i key={index} />
           ))}
         </div>
-        <small>CRIMENET / DATA → CONTEXT → INTENSITY</small>
+        <small>CRIMESENSE / DATA → CONTEXT → INTENSITY</small>
         <h2>
           FROM RAW URBAN DATA
           <br />
@@ -837,7 +861,7 @@ export function LandingPage() {
             <Hexagon size={16} />
           </span>
           <div>
-            <strong>CRIMENET</strong>
+            <strong>CRIMESENSE</strong>
             <small>SPATIOTEMPORAL INTELLIGENCE</small>
           </div>
         </div>

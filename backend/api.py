@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import threading
+from collections import OrderedDict
+from datetime import datetime, timezone
 from pathlib import Path
 
 import h3
@@ -39,6 +41,16 @@ INTENSITY_POINTER = (
     / "intensity_current.json"
 )
 
+INTENSITY_SNAPSHOT_ROOT = (
+    ROOT
+    / "intensity_snapshots"
+)
+
+INTENSITY_TIMELINE = (
+    ROOT
+    / "intensity_timeline.json"
+)
+
 
 # ============================================================
 # Configuration
@@ -53,6 +65,10 @@ MAX_VIEWPORT_RESOLUTION = H3_RESOLUTION
 # H3 resolution until the visible surface fits under this budget.
 MAX_VIEWPORT_CELLS = 25_000
 
+# Forecast slider requests typically bounce among adjacent hours. Keep a
+# small mmap cache so repeated slider movement does not reopen every file.
+MAX_TIMESTAMPED_SNAPSHOT_CACHE = 6
+
 
 # ============================================================
 # Helpers
@@ -64,6 +80,55 @@ def load_json(
 
     with path.open("r") as f:
         return json.load(f)
+
+
+def normalize_utc_hour_text(
+    value: str,
+) -> tuple[datetime, str]:
+
+    try:
+        dt = datetime.fromisoformat(
+            value.replace("Z", "+00:00")
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "valid_utc_hour must be an ISO-8601 datetime"
+        ) from exc
+
+    if dt.tzinfo is None:
+        dt = dt.replace(
+            tzinfo=timezone.utc
+        )
+
+    dt = dt.astimezone(
+        timezone.utc
+    )
+
+    if (
+        dt.minute != 0
+        or dt.second != 0
+        or dt.microsecond != 0
+    ):
+        raise ValueError(
+            "valid_utc_hour must be aligned to an exact UTC hour"
+        )
+
+    return (
+        dt,
+        dt.isoformat(
+            timespec="seconds"
+        ),
+    )
+
+
+def snapshot_id_for_hour(
+    dt: datetime,
+) -> str:
+
+    return (
+        dt.astimezone(timezone.utc)
+        .strftime("%Y%m%dT%H%M")
+    )
 
 
 def viewport_polygon(
@@ -289,6 +354,8 @@ class IntensityStore:
         self.log_intensity = None
         self.intensity = None
         self.lod_intensity = {}
+
+        self.timestamped_cache = OrderedDict()
 
         self.reload_if_needed(
             force=True
@@ -521,6 +588,267 @@ class IntensityStore:
 
 
     # ========================================================
+    # Timestamped forecast snapshot resolution
+    # ========================================================
+
+    def _load_timestamped_snapshot(
+        self,
+        snapshot_path: Path,
+    ) -> dict:
+
+        metadata = load_json(
+            snapshot_path
+            / "metadata.json"
+        )
+
+        snapshot_id = str(
+            metadata[
+                "snapshot_id"
+            ]
+        )
+
+        valid_utc_hour = str(
+            metadata[
+                "valid_utc_hour"
+            ]
+        )
+
+        log_intensity = np.load(
+            snapshot_path
+            / "log_intensity.npy",
+            mmap_mode="r",
+        )
+
+        intensity = np.load(
+            snapshot_path
+            / "intensity.npy",
+            mmap_mode="r",
+        )
+
+        if (
+            len(log_intensity)
+            != len(self.h3_keys)
+            or len(intensity)
+            != len(self.h3_keys)
+        ):
+            raise RuntimeError(
+                "Timestamped intensity snapshot row count "
+                "does not match H3 index"
+            )
+
+        lod_intensity = {
+            H3_RESOLUTION:
+                intensity,
+        }
+
+        for resolution in range(
+            MIN_VIEWPORT_RESOLUTION,
+            H3_RESOLUTION,
+        ):
+            path = (
+                snapshot_path
+                / "lod"
+                / f"r{resolution}"
+                / "intensity.npy"
+            )
+
+            if not path.exists():
+                raise RuntimeError(
+                    "Timestamped intensity snapshot missing LOD artifact: "
+                    f"{path}"
+                )
+
+            values = np.load(
+                path,
+                mmap_mode="r",
+            )
+
+            if len(values) != len(
+                self.lod_h3_keys[resolution]
+            ):
+                raise RuntimeError(
+                    f"H3-r{resolution} timestamped intensity row count "
+                    "does not match static LOD index"
+                )
+
+            lod_intensity[resolution] = values
+
+        return {
+            "snapshot_id": snapshot_id,
+            "snapshot_path": snapshot_path,
+            "metadata_mtime_ns": (
+                snapshot_path
+                / "metadata.json"
+            ).stat().st_mtime_ns,
+            "valid_utc_hour": valid_utc_hour,
+            "log_intensity": log_intensity,
+            "intensity": intensity,
+            "lod_intensity": lod_intensity,
+        }
+
+
+    def snapshot_for_hour(
+        self,
+        valid_utc_hour: str | None,
+    ) -> dict:
+
+        self.reload_if_needed()
+
+        # Existing API behavior: no timestamp means the live pointer.
+        if valid_utc_hour is None:
+            with self.lock:
+                return {
+                    "snapshot_id": self.snapshot_id,
+                    "snapshot_path": Path(self.snapshot_path),
+                    "valid_utc_hour": self.valid_utc_hour,
+                    "log_intensity": self.log_intensity,
+                    "intensity": self.intensity,
+                    "lod_intensity": self.lod_intensity,
+                }
+
+        dt, canonical_hour = normalize_utc_hour_text(
+            valid_utc_hour
+        )
+
+        with self.lock:
+            if canonical_hour == self.valid_utc_hour:
+                return {
+                    "snapshot_id": self.snapshot_id,
+                    "snapshot_path": Path(self.snapshot_path),
+                    "valid_utc_hour": self.valid_utc_hour,
+                    "log_intensity": self.log_intensity,
+                    "intensity": self.intensity,
+                    "lod_intensity": self.lod_intensity,
+                }
+
+        snapshot_id = snapshot_id_for_hour(
+            dt
+        )
+
+        snapshot_path = (
+            INTENSITY_SNAPSHOT_ROOT
+            / snapshot_id
+        )
+
+        metadata_path = (
+            snapshot_path
+            / "metadata.json"
+        )
+
+        with self.lock:
+            cached = self.timestamped_cache.get(
+                snapshot_id
+            )
+
+            if (
+                cached is not None
+                and metadata_path.exists()
+                and cached.get(
+                    "metadata_mtime_ns"
+                ) == metadata_path.stat().st_mtime_ns
+            ):
+                self.timestamped_cache.move_to_end(
+                    snapshot_id
+                )
+                return cached
+
+            if cached is not None:
+                self.timestamped_cache.pop(
+                    snapshot_id,
+                    None,
+                )
+
+        if not snapshot_path.exists():
+            raise FileNotFoundError(
+                f"No intensity snapshot for {canonical_hour}"
+            )
+
+        loaded = self._load_timestamped_snapshot(
+            snapshot_path
+        )
+
+        _, metadata_hour = normalize_utc_hour_text(
+            loaded[
+                "valid_utc_hour"
+            ]
+        )
+
+        if metadata_hour != canonical_hour:
+            raise RuntimeError(
+                "Timestamped intensity snapshot metadata hour mismatch: "
+                f"requested={canonical_hour}, metadata={metadata_hour}"
+            )
+
+        if loaded["snapshot_id"] != snapshot_id:
+            raise RuntimeError(
+                "Timestamped intensity snapshot ID mismatch"
+            )
+
+        with self.lock:
+            self.timestamped_cache[
+                snapshot_id
+            ] = loaded
+
+            self.timestamped_cache.move_to_end(
+                snapshot_id
+            )
+
+            while len(
+                self.timestamped_cache
+            ) > MAX_TIMESTAMPED_SNAPSHOT_CACHE:
+                self.timestamped_cache.popitem(
+                    last=False
+                )
+
+        return loaded
+
+
+    def timeline(
+        self,
+    ) -> dict:
+
+        self.reload_if_needed()
+
+        if INTENSITY_TIMELINE.exists():
+            payload = load_json(
+                INTENSITY_TIMELINE
+            )
+
+            # Always report the actual live pointer independently of the
+            # forecast manifest, which may have been generated slightly earlier.
+            with self.lock:
+                payload[
+                    "live"
+                ] = {
+                    "snapshot_id": self.snapshot_id,
+                    "valid_utc_hour": self.valid_utc_hour,
+                }
+
+            return payload
+
+        with self.lock:
+            return {
+                "schema": "crimenet_intensity_timeline_v1",
+                "generated_at_utc": None,
+                "as_of_utc_hour": self.valid_utc_hour,
+                "hours_requested": 0,
+                "hours_available": 0,
+                "live": {
+                    "snapshot_id": self.snapshot_id,
+                    "valid_utc_hour": self.valid_utc_hour,
+                },
+                "snapshots": [
+                    {
+                        "snapshot_id": self.snapshot_id,
+                        "valid_utc_hour": self.valid_utc_hour,
+                        "horizon_hours": 0,
+                        "kind": "live",
+                    }
+                ],
+            }
+
+
+    # ========================================================
     # State
     # ========================================================
 
@@ -601,67 +929,44 @@ class IntensityStore:
     def lookup_h3(
         self,
         cell: str,
+        valid_utc_hour: str | None = None,
     ) -> dict | None:
 
-        self.reload_if_needed()
-
+        snapshot = self.snapshot_for_hour(
+            valid_utc_hour
+        )
 
         row = self.row_for_h3(
             cell
         )
 
-
         if row is None:
-
             return None
 
+        log_lambda = float(
+            snapshot[
+                "log_intensity"
+            ][row]
+        )
 
-        with self.lock:
-
-            log_lambda = float(
-                self.log_intensity[
-                    row
-                ]
-            )
-
-            lambda_per_second = float(
-                self.intensity[
-                    row
-                ]
-            )
-
-            snapshot_id = (
-                self.snapshot_id
-            )
-
-            valid_utc_hour = (
-                self.valid_utc_hour
-            )
-
+        lambda_per_second = float(
+            snapshot[
+                "intensity"
+            ][row]
+        )
 
         return {
-
-            "h3":
-                cell,
-
-            "row":
-                row,
-
-            "snapshot_id":
-                snapshot_id,
-
-            "valid_utc_hour":
-                valid_utc_hour,
-
-            "log_intensity":
-                log_lambda,
-
-            "events_per_second":
-                lambda_per_second,
-
-            "events_per_hour":
-                lambda_per_second
-                * 3600.0,
+            "h3": cell,
+            "row": row,
+            "snapshot_id": snapshot[
+                "snapshot_id"
+            ],
+            "valid_utc_hour": snapshot[
+                "valid_utc_hour"
+            ],
+            "log_intensity": log_lambda,
+            "events_per_second": lambda_per_second,
+            "events_per_hour": lambda_per_second * 3600.0,
         }
 
 
@@ -675,79 +980,59 @@ class IntensityStore:
     def lookup_for_prediction(
         self,
         cell: str,
+        valid_utc_hour: str | None = None,
     ) -> tuple[
         dict,
         str,
         Path,
     ] | None:
 
-        self.reload_if_needed()
-
+        snapshot = self.snapshot_for_hour(
+            valid_utc_hour
+        )
 
         row = self.row_for_h3(
             cell
         )
 
-
         if row is None:
-
             return None
 
+        snapshot_id = str(
+            snapshot[
+                "snapshot_id"
+            ]
+        )
 
-        with self.lock:
+        snapshot_path = Path(
+            snapshot[
+                "snapshot_path"
+            ]
+        )
 
-            snapshot_id = (
-                str(
-                    self.snapshot_id
-                )
-            )
+        log_lambda = float(
+            snapshot[
+                "log_intensity"
+            ][row]
+        )
 
-            snapshot_path = Path(
-                self.snapshot_path
-            )
-
-            valid_utc_hour = (
-                self.valid_utc_hour
-            )
-
-            log_lambda = float(
-                self.log_intensity[
-                    row
-                ]
-            )
-
-            lambda_per_second = float(
-                self.intensity[
-                    row
-                ]
-            )
-
+        lambda_per_second = float(
+            snapshot[
+                "intensity"
+            ][row]
+        )
 
         intensity_result = {
-
-            "h3":
-                cell,
-
-            "row":
-                row,
-
-            "snapshot_id":
-                snapshot_id,
-
-            "valid_utc_hour":
-                valid_utc_hour,
-
-            "log_intensity":
-                log_lambda,
-
-            "events_per_second":
-                lambda_per_second,
-
-            "events_per_hour":
-                lambda_per_second
-                * 3600.0,
+            "h3": cell,
+            "row": row,
+            "snapshot_id": snapshot_id,
+            "valid_utc_hour": snapshot[
+                "valid_utc_hour"
+            ],
+            "log_intensity": log_lambda,
+            "events_per_second": lambda_per_second,
+            "events_per_hour": lambda_per_second * 3600.0,
         }
-
 
         return (
             intensity_result,
@@ -910,18 +1195,20 @@ class IntensityStore:
         self,
         cells: list[str],
         resolution: int,
+        valid_utc_hour: str | None = None,
     ) -> tuple[
         list[dict],
         dict,
     ]:
 
-        self.reload_if_needed()
+        snapshot = self.snapshot_for_hour(
+            valid_utc_hour
+        )
 
         if (
             resolution
             < MIN_VIEWPORT_RESOLUTION
-            or
-            resolution
+            or resolution
             > H3_RESOLUTION
         ):
             raise RuntimeError(
@@ -929,33 +1216,25 @@ class IntensityStore:
                 f"resolution: {resolution}"
             )
 
-        index = (
-            self.lod_h3_keys[
-                resolution
-            ]
-        )
+        index = self.lod_h3_keys[
+            resolution
+        ]
+
+        state = {
+            "snapshot_id": snapshot[
+                "snapshot_id"
+            ],
+            "valid_utc_hour": snapshot[
+                "valid_utc_hour"
+            ],
+        }
 
         if not cells:
-
-            with self.lock:
-
-                state = {
-                    "snapshot_id":
-                        self.snapshot_id,
-                    "valid_utc_hour":
-                        self.valid_utc_hour,
-                }
-
-            return (
-                [],
-                state,
-            )
+            return ([], state)
 
         keys = np.asarray(
             [
-                h3.str_to_int(
-                    cell
-                )
+                h3.str_to_int(cell)
                 for cell in cells
             ],
             dtype=np.uint64,
@@ -966,138 +1245,72 @@ class IntensityStore:
             keys,
         )
 
-        valid = (
-            rows
-            < len(
-                index
-            )
-        )
+        valid = rows < len(index)
 
         matched = np.zeros(
-            len(
-                cells
-            ),
+            len(cells),
             dtype=bool,
         )
 
-        valid_positions = (
-            np.flatnonzero(
-                valid
-            )
+        valid_positions = np.flatnonzero(
+            valid
         )
 
-        if len(
-            valid_positions
-        ):
-
+        if len(valid_positions):
             matched[
                 valid_positions
             ] = (
                 index[
-                    rows[
-                        valid_positions
-                    ]
+                    rows[valid_positions]
                 ]
-                ==
-                keys[
-                    valid_positions
-                ]
+                == keys[valid_positions]
             )
 
         positions = np.flatnonzero(
             matched
         )
 
-        if not len(
+        if not len(positions):
+            return ([], state)
+
+        matched_rows = rows[
             positions
-        ):
+        ]
 
-            with self.lock:
-
-                state = {
-                    "snapshot_id":
-                        self.snapshot_id,
-                    "valid_utc_hour":
-                        self.valid_utc_hour,
-                }
-
-            return (
-                [],
-                state,
-            )
-
-        matched_rows = (
-            rows[
-                positions
-            ]
+        lambda_values = np.asarray(
+            snapshot[
+                "lod_intensity"
+            ][resolution][
+                matched_rows
+            ],
+            dtype=np.float32,
         )
 
-        # Snapshot metadata and values are captured under the
-        # same lock. reload_if_needed() switches r9 + r4-r8
-        # mmaps atomically, so a rollover cannot mix hours.
-        with self.lock:
-
-            lambda_values = np.asarray(
-                self.lod_intensity[
-                    resolution
-                ][
-                    matched_rows
-                ],
-                dtype=np.float32,
+        if resolution == H3_RESOLUTION:
+            child_counts = np.ones(
+                len(matched_rows),
+                dtype=np.uint32,
             )
-
-            if (
-                resolution
-                == H3_RESOLUTION
-            ):
-
-                child_counts = np.ones(
-                    len(
-                        matched_rows
-                    ),
-                    dtype=np.uint32,
-                )
-
-            else:
-
-                child_counts = np.asarray(
-                    self.lod_child_counts[
-                        resolution
-                    ][
-                        matched_rows
-                    ],
-                    dtype=np.uint32,
-                )
-
-            state = {
-                "snapshot_id":
-                    self.snapshot_id,
-                "valid_utc_hour":
-                    self.valid_utc_hour,
-            }
+        else:
+            child_counts = np.asarray(
+                self.lod_child_counts[
+                    resolution
+                ][matched_rows],
+                dtype=np.uint32,
+            )
 
         results = []
 
-        for (
-            i,
-            position,
-        ) in enumerate(
+        for i, position in enumerate(
             positions
         ):
-
             events_per_hour = (
-                float(
-                    lambda_values[
-                        i
-                    ]
-                )
+                float(lambda_values[i])
                 * 3600.0
             )
 
             modeled_r9_cells = int(
-                child_counts[
-                    i
-                ]
+                child_counts[i]
             )
 
             mean_r9_events_per_hour = (
@@ -1109,27 +1322,12 @@ class IntensityStore:
 
             results.append(
                 {
-                    "h3":
-                        cells[
-                            int(
-                                position
-                            )
-                        ],
-
-                    # Correct expected event rate over the
-                    # entire returned H3 cell.
-                    "events_per_hour":
-                        events_per_hour,
-
-                    # Stable spatial-density visualization
-                    # value across H3 resolutions.
-                    "mean_r9_events_per_hour":
-                        mean_r9_events_per_hour,
-
-                    # Number of canonical modeled r9 cells
-                    # represented by this cell.
-                    "modeled_r9_cells":
-                        modeled_r9_cells,
+                    "h3": cells[
+                        int(position)
+                    ],
+                    "events_per_hour": events_per_hour,
+                    "mean_r9_events_per_hour": mean_r9_events_per_hour,
+                    "modeled_r9_cells": modeled_r9_cells,
                 }
             )
 
@@ -1161,6 +1359,11 @@ print(
 mark_runtime = (
     MarkRuntime()
 )
+
+# MarkRuntime maintains one synchronized environmental snapshot at a time.
+# Serialize timestamp changes so concurrent cell-detail requests cannot mix
+# feature rows from different forecast hours.
+mark_snapshot_lock = threading.RLock()
 
 
 # ============================================================
@@ -1251,6 +1454,17 @@ def health():
 
 
 # ============================================================
+# Intensity — available timeline
+# ============================================================
+
+@app.get(
+    "/api/v1/intensity/timeline"
+)
+def intensity_timeline():
+    return store.timeline()
+
+
+# ============================================================
 # Intensity — point
 # ============================================================
 
@@ -1268,6 +1482,13 @@ def intensity_point(
         ge=-180,
         le=180,
     ),
+
+    valid_utc_hour: str | None = Query(
+        default=None,
+        description=(
+            "Exact available UTC forecast hour. Omit for live."
+        ),
+    ),
 ):
 
 
@@ -1280,11 +1501,21 @@ def intensity_point(
     )
 
 
-    result = (
-        store.lookup_h3(
-            cell
+    try:
+        result = store.lookup_h3(
+            cell,
+            valid_utc_hour=valid_utc_hour,
         )
-    )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
 
 
     if result is None:
@@ -1330,6 +1561,13 @@ def intensity_point(
 )
 def intensity_cell(
     cell: str,
+
+    valid_utc_hour: str | None = Query(
+        default=None,
+        description=(
+            "Exact available UTC forecast hour. Omit for live."
+        ),
+    ),
 ):
 
 
@@ -1360,11 +1598,21 @@ def intensity_cell(
         )
 
 
-    result = (
-        store.lookup_h3(
-            cell
+    try:
+        result = store.lookup_h3(
+            cell,
+            valid_utc_hour=valid_utc_hour,
         )
-    )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
 
 
     if result is None:
@@ -1407,6 +1655,13 @@ def intensity_viewport(
     north: float = Query(
         ge=-90,
         le=90,
+    ),
+
+    valid_utc_hour: str | None = Query(
+        default=None,
+        description=(
+            "Exact available UTC forecast hour. Omit for live."
+        ),
     ),
 ):
 
@@ -1458,13 +1713,25 @@ def intensity_viewport(
     )
 
 
-    (
-        values,
-        state,
-    ) = store.lookup_viewport(
-        cells,
-        resolution,
-    )
+    try:
+        (
+            values,
+            state,
+        ) = store.lookup_viewport(
+            cells,
+            resolution,
+            valid_utc_hour=valid_utc_hour,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
 
 
     return {
@@ -1520,14 +1787,25 @@ def intensity_viewport(
 def combined_prediction(
     cell: str,
     top_k: int,
+    valid_utc_hour: str | None = None,
 ) -> dict:
 
 
-    lookup = (
-        store.lookup_for_prediction(
-            cell
+    try:
+        lookup = store.lookup_for_prediction(
+            cell,
+            valid_utc_hour=valid_utc_hour,
         )
-    )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
 
 
     if lookup is None:
@@ -1548,24 +1826,25 @@ def combined_prediction(
     ) = lookup
 
 
-    mark = (
-        mark_runtime.predict(
+    with mark_snapshot_lock:
+        mark = (
+            mark_runtime.predict(
 
-            cell=cell,
+                cell=cell,
 
-            snapshot_id=(
-                snapshot_id
-            ),
+                snapshot_id=(
+                    snapshot_id
+                ),
 
-            intensity_snapshot_path=(
-                snapshot_path
-            ),
+                intensity_snapshot_path=(
+                    snapshot_path
+                ),
 
-            top_k=(
-                top_k
-            ),
+                top_k=(
+                    top_k
+                ),
+            )
         )
-    )
 
 
     overall_events_per_hour = float(
@@ -1691,6 +1970,13 @@ def predict_point(
         ge=1,
         le=87,
     ),
+
+    valid_utc_hour: str | None = Query(
+        default=None,
+        description=(
+            "Exact available UTC forecast hour. Omit for live."
+        ),
+    ),
 ):
 
 
@@ -1707,6 +1993,7 @@ def predict_point(
         combined_prediction(
             cell,
             top_k,
+            valid_utc_hour=valid_utc_hour,
         )
     )
 
@@ -1749,6 +2036,13 @@ def predict_cell(
         ge=1,
         le=87,
     ),
+
+    valid_utc_hour: str | None = Query(
+        default=None,
+        description=(
+            "Exact available UTC forecast hour. Omit for live."
+        ),
+    ),
 ):
 
 
@@ -1782,4 +2076,5 @@ def predict_cell(
     return combined_prediction(
         cell,
         top_k,
+        valid_utc_hour=valid_utc_hour,
     )

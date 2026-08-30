@@ -3,6 +3,7 @@ from __future__ import annotations
 import fcntl
 import json
 import math
+import os
 import subprocess
 import sys
 import time
@@ -53,6 +54,24 @@ ENV_BUILDER = (
 INTENSITY_BUILDER = (
     SERVING_ROOT
     / "build_national_intensity.py"
+)
+
+FORECAST_BUILDER = (
+    SERVING_ROOT
+    / "build_forecast_horizon.py"
+)
+
+FORECAST_TIMELINE = (
+    ROOT
+    / "intensity_timeline.json"
+)
+
+# Set CRIMENET_FORECAST_HOURS=0 to disable forecast materialization.
+FORECAST_HOURS = int(
+    os.environ.get(
+        "CRIMENET_FORECAST_HOURS",
+        "24",
+    )
 )
 
 
@@ -506,6 +525,91 @@ def build_intensity(
         )
 
 
+def forecast_is_current(
+    current_hour: datetime,
+) -> bool:
+
+    if FORECAST_HOURS <= 0:
+        return True
+
+    if not FORECAST_TIMELINE.exists():
+        return False
+
+    try:
+        payload = load_json(
+            FORECAST_TIMELINE
+        )
+
+        as_of = parse_hour(
+            payload[
+                "as_of_utc_hour"
+            ]
+        )
+
+        available = int(
+            payload.get(
+                "hours_available",
+                0,
+            )
+        )
+
+        return (
+            as_of == current_hour
+            and available >= FORECAST_HOURS
+        )
+
+    except Exception:
+        return False
+
+
+def ensure_forecast(
+    current_hour: datetime,
+) -> None:
+
+    if FORECAST_HOURS <= 0:
+        return
+
+    if forecast_is_current(
+        current_hour
+    ):
+        log(
+            "Forecast horizon already current "
+            f"(+{FORECAST_HOURS}h)"
+        )
+        return
+
+    if not FORECAST_BUILDER.exists():
+        raise FileNotFoundError(
+            FORECAST_BUILDER
+        )
+
+    log(
+        "Refreshing forecast horizon "
+        f"(+{FORECAST_HOURS}h)"
+    )
+
+    run_checked(
+        [
+            sys.executable,
+            str(FORECAST_BUILDER),
+            "--hours",
+            str(FORECAST_HOURS),
+        ]
+    )
+
+    if not forecast_is_current(
+        current_hour
+    ):
+        raise RuntimeError(
+            "Forecast builder completed but timeline "
+            "does not match current live hour"
+        )
+
+    log(
+        "Forecast horizon publish complete"
+    )
+
+
 # ============================================================
 # State machine
 # ============================================================
@@ -574,6 +678,10 @@ def reconcile_once() -> None:
             "publish complete"
         )
 
+        ensure_forecast(
+            env_hour
+        )
+
         return
 
 
@@ -606,6 +714,10 @@ def reconcile_once() -> None:
             "No new environmental hour "
             f"(candidate="
             f"{hour_text(candidate)})"
+        )
+
+        ensure_forecast(
+            env_hour
         )
 
         return
@@ -671,6 +783,10 @@ def reconcile_once() -> None:
         f"{hour_text(candidate)}"
     )
 
+    ensure_forecast(
+        candidate
+    )
+
 
 # ============================================================
 # Main loop
@@ -686,6 +802,14 @@ def main() -> None:
     if not INTENSITY_BUILDER.exists():
         raise FileNotFoundError(
             INTENSITY_BUILDER
+        )
+
+    if (
+        FORECAST_HOURS > 0
+        and not FORECAST_BUILDER.exists()
+    ):
+        raise FileNotFoundError(
+            FORECAST_BUILDER
         )
 
     LOCK_PATH.parent.mkdir(
