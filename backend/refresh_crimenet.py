@@ -44,8 +44,6 @@ INTENSITY_POINTER = (
 )
 
 
-# Change ONLY this line if your environmental builder
-# currently has a different filename.
 ENV_BUILDER = (
     SERVING_ROOT
     / "build_environmental_snapshot.py"

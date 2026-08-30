@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CrimeNetApiError,
   fetchIntensityTimeline,
@@ -19,7 +19,8 @@ import {
   type ViewportBounds,
 } from "@/lib/api";
 import { getCity } from "@/lib/domain";
-import { adjacentForecastIndexes, resolveForecastSelection } from "@/lib/forecast";
+import { resolveForecastSelection } from "@/lib/forecast";
+import { isAbortError, LatestRequest } from "@/lib/interaction";
 import { shouldClearSelectionForResolution } from "@/lib/map/lod";
 import type { MapNavigation } from "@/lib/map/navigation";
 import { parseExplorerUrl, serializeExplorerUrl } from "@/lib/url-state";
@@ -55,6 +56,8 @@ export function CrimeExplorer() {
   const [viewport, setViewport] = useState<ViewportBounds | null>(null);
   const [mapNavigation, setMapNavigation] = useState<MapNavigation | null>(null);
   const [preferredForecastHour, setPreferredForecastHour] = useState<string | null>(null);
+  const timelineRequest = useRef(new LatestRequest());
+  const viewportRequest = useRef(new LatestRequest());
   const queryClient = useQueryClient();
   const city = getCity(cityId);
 
@@ -67,7 +70,8 @@ export function CrimeExplorer() {
   });
   const timelineQuery = useQuery({
     queryKey: intensityTimelineQueryKey,
-    queryFn: ({ signal }) => fetchIntensityTimeline(signal),
+    queryFn: ({ signal }) =>
+      timelineRequest.current.run((latestSignal) => fetchIntensityTimeline(latestSignal), signal),
     enabled: isLiveMode,
     refetchInterval: 60_000,
     retry: 2,
@@ -104,17 +108,24 @@ export function CrimeExplorer() {
         : (["intensity-viewport", "waiting"] as const)
       : predictionQueryKey(cityId, timestamp, horizonHours),
     queryFn: ({ signal }) =>
-      isLiveMode
-        ? getLiveViewport(cityId, viewport!, selectedSnapshot!.valid_utc_hour, signal)
-        : getPredictions(cityId, timestamp, horizonHours, signal),
+      viewportRequest.current.run(
+        (latestSignal) =>
+          isLiveMode
+            ? getLiveViewport(cityId, viewport!, selectedSnapshot!.valid_utc_hour, latestSignal)
+            : getPredictions(cityId, timestamp, horizonHours, latestSignal),
+        signal,
+      ),
     enabled: !isLiveMode || liveReady,
     placeholderData: (previous) => {
       if (isLiveMode) return previous;
       return previous?.city === cityId ? previous : undefined;
     },
     retry: (failures, error) =>
-      error instanceof CrimeNetApiError &&
-      (error.kind === "viewport-too-large" || error.kind === "not-found")
+      isAbortError(error) ||
+      (error instanceof CrimeNetApiError &&
+        (error.kind === "viewport-too-large" ||
+          error.kind === "not-found" ||
+          error.kind === "busy"))
         ? false
         : failures < 2,
   });
@@ -126,12 +137,19 @@ export function CrimeExplorer() {
       current.west === rounded.west &&
       current.south === rounded.south &&
       current.east === rounded.east &&
-      current.north === rounded.north &&
-      current.zoom === rounded.zoom
+      current.north === rounded.north
         ? current
         : rounded,
     );
   }, []);
+
+  useEffect(
+    () => () => {
+      timelineRequest.current.cancel();
+      viewportRequest.current.cancel();
+    },
+    [],
+  );
 
   const handleForecastIndexChange = useCallback(
     (index: number) => {
@@ -224,31 +242,6 @@ export function CrimeExplorer() {
       queryFn: ({ signal }) => getPredictions(cityId, nextTime, horizonHours, signal),
     });
   }, [cityId, timestamp, horizonHours, queryClient]);
-
-  useEffect(() => {
-    if (!isLiveMode || !viewport || !asOfUtcHour || !timelineQuery.data || !selectedSnapshot) {
-      return;
-    }
-    for (const index of adjacentForecastIndexes(
-      selectedForecastIndex,
-      timelineQuery.data.snapshots.length,
-    )) {
-      const snapshot = timelineQuery.data.snapshots[index];
-      void queryClient.prefetchQuery({
-        queryKey: liveViewportQueryKey(asOfUtcHour, snapshot.valid_utc_hour, viewport),
-        queryFn: ({ signal }) => getLiveViewport(cityId, viewport, snapshot.valid_utc_hour, signal),
-        staleTime: 30_000,
-      });
-    }
-  }, [
-    asOfUtcHour,
-    cityId,
-    queryClient,
-    selectedForecastIndex,
-    selectedSnapshot,
-    timelineQuery.data,
-    viewport,
-  ]);
 
   const viewportError =
     predictionQuery.error instanceof CrimeNetApiError ? predictionQuery.error : null;

@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import queue
 import threading
+import time
 from collections import OrderedDict
+from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import cupy as cp
+try:
+    import cupy as cp
+except ImportError:  # CPU-only development and serving remain supported.
+    cp = None
 import h3
 import numpy as np
 import pandas as pd
@@ -62,6 +70,33 @@ EXPECTED_FEATURE_COUNT = 38
 EXPECTED_NUM_CLASSES = 87
 
 CACHE_SIZE = 10_000
+MARK_BENCHMARK_ROWS = max(200, int(os.getenv("CRIMENET_MARK_BENCHMARK_ROWS", "300")))
+MARK_DEVICE = os.getenv("CRIMENET_MARK_DEVICE", "auto").lower()
+MARK_CPU_THREADS = max(1, int(os.getenv("CRIMENET_MARK_CPU_THREADS", "1")))
+GPU_MICROBATCH_WINDOW_SECONDS = 0.003
+GPU_MICROBATCH_MAX_ROWS = 64
+GPU_MICROBATCH_QUEUE_SIZE = 128
+
+performance_logger = logging.getLogger("uvicorn.error")
+
+
+class MarkCapacityExceeded(RuntimeError):
+    pass
+
+
+@dataclass
+class _PredictionFlight:
+    event: threading.Event = field(default_factory=threading.Event)
+    probabilities: np.ndarray | None = None
+    error: BaseException | None = None
+
+
+@dataclass
+class _GpuBatchItem:
+    features: np.ndarray
+    event: threading.Event = field(default_factory=threading.Event)
+    margins: np.ndarray | None = None
+    error: BaseException | None = None
 
 
 # Environmental serving code:
@@ -213,27 +248,33 @@ class MarkRuntime:
             flush=True,
         )
 
-        self.bst = xgb.Booster()
+        self.cpu_bst = xgb.Booster()
 
-        self.bst.load_model(
+        self.cpu_bst.load_model(
             MARK_MODEL_PATH
         )
 
-        self.bst.set_param(
+        self.cpu_bst.set_param(
             {
                 "device":
-                    "cuda:0",
+                    "cpu",
+
+                "nthread":
+                    MARK_CPU_THREADS,
             }
         )
 
+        # Kept as a compatibility alias for runtime diagnostics.
+        self.bst = self.cpu_bst
+
 
         self.model_names = list(
-            self.bst.feature_names
+            self.cpu_bst.feature_names
             or []
         )
 
         self.model_types = list(
-            self.bst.feature_types
+            self.cpu_bst.feature_types
             or []
         )
 
@@ -252,7 +293,7 @@ class MarkRuntime:
 
 
         config = json.loads(
-            self.bst.save_config()
+            self.cpu_bst.save_config()
         )
 
         self.num_classes = int(
@@ -328,11 +369,6 @@ class MarkRuntime:
             threading.RLock()
         )
 
-        # One GPU traversal at a time.
-        self.gpu_lock = (
-            threading.Lock()
-        )
-
         # Cache:
         #
         # (snapshot_id, h3)
@@ -345,14 +381,248 @@ class MarkRuntime:
             OrderedDict()
         )
 
+        # Concurrent duplicate misses share one prediction.
+        self.inflight_lock = threading.Lock()
+        self.inflight: dict[tuple[str, str], _PredictionFlight] = {}
+
+        # Benchmark the actual loaded production model at startup. Interactive
+        # single-row inference uses CPU when it is within 10% of GPU p95. If GPU
+        # is materially faster, requests use the bounded microbatch worker.
+        self.gpu_bst: xgb.Booster | None = None
+        self.gpu_queue: queue.Queue[_GpuBatchItem] | None = None
+        self.inference_device = "cpu"
+        self.inference_benchmark = self._select_inference_device()
+
 
         print(
             "Mark model ready | "
             f"features={len(self.model_names)} "
             f"classes={self.num_classes} "
-            f"labels={self.labels_available}",
+            f"labels={self.labels_available} "
+            f"inference_device={self.inference_device}",
             flush=True,
         )
+
+
+    # ========================================================
+    # Interactive inference device selection
+    # ========================================================
+
+    def _benchmark_feature_rows(self) -> np.ndarray:
+        positions = np.linspace(
+            0,
+            len(self.static_features) - 1,
+            num=MARK_BENCHMARK_ROWS,
+            dtype=np.int64,
+        )
+        features = np.zeros(
+            (MARK_BENCHMARK_ROWS, EXPECTED_FEATURE_COUNT),
+            dtype=np.float32,
+        )
+        for column, name in enumerate(self.model_names):
+            static_column = self.static_col.get(name)
+            if static_column is not None:
+                features[:, column] = self.static_features[positions, static_column]
+        features[:, self.cat_idx] = 0.0
+        return features
+
+
+    @staticmethod
+    def _latency_summary(milliseconds: list[float]) -> dict[str, float]:
+        values = np.asarray(milliseconds, dtype=np.float64)
+        return {
+            "p50_ms": float(np.percentile(values, 50)),
+            "p95_ms": float(np.percentile(values, 95)),
+            "p99_ms": float(np.percentile(values, 99)),
+            "throughput_rps": float(1000.0 / np.mean(values)),
+        }
+
+
+    def _predict_cpu_margins(self, features: np.ndarray) -> np.ndarray:
+        if self.cpu_bst is None:
+            raise RuntimeError("CPU mark inference is unavailable")
+        return np.asarray(
+            self.cpu_bst.inplace_predict(
+                features,
+                predict_type="margin",
+                validate_features=False,
+            ),
+            dtype=np.float32,
+        )
+
+
+    def _predict_gpu_direct(self, features: np.ndarray) -> np.ndarray:
+        if cp is None or self.gpu_bst is None:
+            raise RuntimeError("GPU mark inference is unavailable")
+        features_gpu = cp.asarray(features, dtype=cp.float32)
+        margins_gpu = self.gpu_bst.inplace_predict(
+            features_gpu,
+            predict_type="margin",
+            validate_features=False,
+        )
+        return np.asarray(cp.asnumpy(margins_gpu), dtype=np.float32)
+
+
+    def _select_inference_device(self) -> dict:
+        if MARK_DEVICE not in {"auto", "cpu", "gpu"}:
+            raise RuntimeError("CRIMENET_MARK_DEVICE must be auto, cpu, or gpu")
+
+        rows = self._benchmark_feature_rows()
+        for row in rows[:10]:
+            self._predict_cpu_margins(row.reshape(1, -1))
+        cpu_latencies = []
+        cpu_results = []
+        for row in rows:
+            started = time.perf_counter()
+            cpu_results.append(self._predict_cpu_margins(row.reshape(1, -1)))
+            cpu_latencies.append((time.perf_counter() - started) * 1000.0)
+
+        benchmark: dict[str, object] = {
+            "rows": MARK_BENCHMARK_ROWS,
+            "cpu": self._latency_summary(cpu_latencies),
+            "gpu": None,
+        }
+        gpu_numerically_equivalent = True
+
+        gpu_available = False
+        if cp is not None:
+            try:
+                gpu_available = cp.cuda.runtime.getDeviceCount() > 0
+            except Exception:
+                gpu_available = False
+
+        if gpu_available:
+            try:
+                self.gpu_bst = xgb.Booster()
+                self.gpu_bst.load_model(MARK_MODEL_PATH)
+                self.gpu_bst.set_param({"device": "cuda:0"})
+                for row in rows[:10]:
+                    self._predict_gpu_direct(row.reshape(1, -1))
+                gpu_latencies = []
+                max_margin_difference = 0.0
+                max_probability_difference = 0.0
+                for index, row in enumerate(rows):
+                    started = time.perf_counter()
+                    gpu_result = self._predict_gpu_direct(row.reshape(1, -1))
+                    gpu_latencies.append((time.perf_counter() - started) * 1000.0)
+                    cpu_result = cpu_results[index]
+                    cpu_probabilities = self._probabilities_from_margins(cpu_result)
+                    gpu_probabilities = self._probabilities_from_margins(gpu_result)
+                    if not np.allclose(
+                        cpu_probabilities,
+                        gpu_probabilities,
+                        rtol=1e-5,
+                        atol=1e-6,
+                    ):
+                        gpu_numerically_equivalent = False
+                    max_margin_difference = max(
+                        max_margin_difference,
+                        float(np.max(np.abs(cpu_result - gpu_result))),
+                    )
+                    max_probability_difference = max(
+                        max_probability_difference,
+                        float(np.max(np.abs(cpu_probabilities - gpu_probabilities))),
+                    )
+                benchmark["gpu"] = self._latency_summary(gpu_latencies)
+                benchmark["max_cpu_gpu_margin_difference"] = max_margin_difference
+                benchmark["max_cpu_gpu_probability_difference"] = max_probability_difference
+                benchmark["cpu_gpu_probabilities_equivalent"] = gpu_numerically_equivalent
+            except Exception as exc:
+                if MARK_DEVICE == "gpu":
+                    raise
+                performance_logger.warning("mark_gpu_benchmark_failed error=%r", exc)
+                self.gpu_bst = None
+
+        cpu_p95 = float(benchmark["cpu"]["p95_ms"])
+        gpu_result = benchmark["gpu"]
+        use_gpu = bool(
+            self.gpu_bst is not None
+            and gpu_result is not None
+            and (
+                MARK_DEVICE == "gpu"
+                or (
+                    MARK_DEVICE == "auto"
+                    and (
+                        not gpu_numerically_equivalent
+                        or float(gpu_result["p95_ms"]) < cpu_p95 / 1.10
+                    )
+                )
+            )
+        )
+        if MARK_DEVICE == "gpu" and not use_gpu:
+            raise RuntimeError("GPU mark inference was requested but is unavailable")
+        if use_gpu:
+            self.inference_device = "gpu_microbatch"
+            self.gpu_queue = queue.Queue(maxsize=GPU_MICROBATCH_QUEUE_SIZE)
+            self.bst = self.gpu_bst
+            self.cpu_bst = None
+            threading.Thread(
+                target=self._gpu_batch_worker,
+                name="crimenet-mark-gpu-batcher",
+                daemon=True,
+            ).start()
+        else:
+            self.inference_device = "cpu"
+            self.gpu_bst = None
+            self.bst = self.cpu_bst
+
+        benchmark["selected"] = self.inference_device
+        performance_logger.info(
+            "mark_inference_benchmark %s",
+            json.dumps(benchmark, sort_keys=True, separators=(",", ":")),
+        )
+        return benchmark
+
+
+    def _gpu_batch_worker(self) -> None:
+        assert self.gpu_queue is not None
+        while True:
+            first = self.gpu_queue.get()
+            items = [first]
+            deadline = time.perf_counter() + GPU_MICROBATCH_WINDOW_SECONDS
+            while len(items) < GPU_MICROBATCH_MAX_ROWS:
+                remaining = deadline - time.perf_counter()
+                if remaining <= 0:
+                    break
+                try:
+                    items.append(self.gpu_queue.get(timeout=remaining))
+                except queue.Empty:
+                    break
+            try:
+                batch = np.concatenate([item.features for item in items], axis=0)
+                margins = self._predict_gpu_direct(batch)
+                if margins.ndim == 1:
+                    margins = margins.reshape(1, -1)
+                for index, item in enumerate(items):
+                    item.margins = margins[index]
+            except BaseException as exc:
+                for item in items:
+                    item.error = exc
+            finally:
+                for item in items:
+                    item.event.set()
+
+
+    def _predict_gpu_microbatch(self, features: np.ndarray) -> np.ndarray:
+        if self.gpu_queue is None:
+            raise RuntimeError("GPU microbatch queue is unavailable")
+        item = _GpuBatchItem(features=features)
+        try:
+            self.gpu_queue.put_nowait(item)
+        except queue.Full as exc:
+            raise MarkCapacityExceeded("mark inference queue is full") from exc
+        item.event.wait()
+        if item.error is not None:
+            raise item.error
+        if item.margins is None:
+            raise RuntimeError("GPU microbatch produced no mark result")
+        return item.margins
+
+
+    def _predict_margins(self, features: np.ndarray) -> np.ndarray:
+        if self.inference_device == "gpu_microbatch":
+            return self._predict_gpu_microbatch(features)
+        return self._predict_cpu_margins(features)
 
 
     # ========================================================
@@ -599,6 +869,20 @@ class MarkRuntime:
                 f"utc={env_hour.isoformat()}",
                 flush=True,
             )
+
+
+    def build_feature_row_for_snapshot(
+        self,
+        *,
+        cell: str,
+        snapshot_id: str,
+        intensity_snapshot_path: Path,
+    ) -> tuple[int, np.ndarray]:
+        # Keep only snapshot transition + feature capture atomic. Inference and
+        # response formatting happen after this lock is released.
+        with self.state_lock:
+            self.sync_snapshot(snapshot_id, intensity_snapshot_path)
+            return self.build_feature_row(cell)
 
 
     # ========================================================
@@ -1006,32 +1290,55 @@ class MarkRuntime:
         value,
     ) -> None:
 
-        with self.cache_lock:
+        # A request for the previous hour may finish after a snapshot switch.
+        # Return its result to its caller, but never repopulate stale cache state.
+        with self.state_lock:
+            if key[0] != self.snapshot_id:
+                return
 
-            self.cache[
-                key
-            ] = value
+            with self.cache_lock:
 
-            self.cache.move_to_end(
-                key
-            )
+                self.cache[
+                    key
+                ] = value
 
-
-            while (
-                len(
-                    self.cache
+                self.cache.move_to_end(
+                    key
                 )
-                > CACHE_SIZE
-            ):
 
-                self.cache.popitem(
-                    last=False
-                )
+
+                while (
+                    len(
+                        self.cache
+                    )
+                    > CACHE_SIZE
+                ):
+
+                    self.cache.popitem(
+                        last=False
+                    )
 
 
     # ========================================================
     # Predict P(mark=k | event, x, t)
     # ========================================================
+
+    def _probabilities_from_margins(self, margins: np.ndarray) -> np.ndarray:
+        margins = np.asarray(margins, dtype=np.float32)
+        if margins.ndim == 2:
+            margins = margins[0]
+        if margins.ndim != 1 or len(margins) != self.num_classes:
+            raise RuntimeError(f"Unexpected mark margin shape: {margins.shape}")
+
+        shifted = margins - np.max(margins)
+        exp_values = np.exp(shifted.astype(np.float64))
+        probabilities = (exp_values / np.sum(exp_values)).astype(np.float32)
+        if not np.isfinite(probabilities).all():
+            raise RuntimeError("Non-finite mark probabilities")
+        probability_sum = float(np.sum(probabilities, dtype=np.float64))
+        if not np.isclose(probability_sum, 1.0, atol=1e-5, rtol=0.0):
+            raise RuntimeError(f"Mark probabilities do not sum to 1: {probability_sum}")
+        return probabilities
 
     def predict(
         self,
@@ -1040,169 +1347,80 @@ class MarkRuntime:
         snapshot_id: str,
         intensity_snapshot_path: Path,
         top_k: int,
+        timings: dict[str, float] | None = None,
     ) -> dict:
-
-        self.sync_snapshot(
-            snapshot_id,
-            intensity_snapshot_path,
-        )
-
-
+        prediction_started = time.perf_counter()
         key = (
             snapshot_id,
             cell,
         )
-
-
-        probabilities = (
-            self._cache_get(
-                key
-            )
-        )
-
+        cache_started = time.perf_counter()
+        probabilities = self._cache_get(key)
+        if timings is not None:
+            timings["cache_lookup_ms"] = (
+                time.perf_counter() - cache_started
+            ) * 1000.0
+            timings["cache_hit"] = 1.0 if probabilities is not None else 0.0
+            if probabilities is not None:
+                timings["feature_row_ms"] = 0.0
+                timings["inference_ms"] = 0.0
+                timings["coalesced_wait_ms"] = 0.0
 
         if probabilities is None:
+            with self.inflight_lock:
+                flight = self.inflight.get(key)
+                leader = flight is None
+                if flight is None:
+                    flight = _PredictionFlight()
+                    self.inflight[key] = flight
 
-            (
-                row,
-                X,
-            ) = self.build_feature_row(
-                cell
-            )
-
-
-            # Serialize traversal of the large GPU forest.
-            with self.gpu_lock:
-
-                # Another request may have populated
-                # the cache while this request waited.
-                probabilities = (
-                    self._cache_get(
-                        key
+            if leader:
+                try:
+                    feature_started = time.perf_counter()
+                    _, features = self.build_feature_row_for_snapshot(
+                        cell=cell,
+                        snapshot_id=snapshot_id,
+                        intensity_snapshot_path=intensity_snapshot_path,
                     )
-                )
+                    if timings is not None:
+                        timings["feature_row_ms"] = (
+                            time.perf_counter() - feature_started
+                        ) * 1000.0
 
-
+                    inference_started = time.perf_counter()
+                    margins = self._predict_margins(features)
+                    probabilities = self._probabilities_from_margins(margins)
+                    if timings is not None:
+                        timings["inference_ms"] = (
+                            time.perf_counter() - inference_started
+                        ) * 1000.0
+                        timings["coalesced_wait_ms"] = 0.0
+                    self._cache_put(key, probabilities)
+                    flight.probabilities = probabilities
+                except BaseException as exc:
+                    flight.error = exc
+                    raise
+                finally:
+                    flight.event.set()
+                    with self.inflight_lock:
+                        if self.inflight.get(key) is flight:
+                            self.inflight.pop(key, None)
+            else:
+                wait_started = time.perf_counter()
+                flight.event.wait()
+                if timings is not None:
+                    timings["coalesced_wait_ms"] = (
+                        time.perf_counter() - wait_started
+                    ) * 1000.0
+                    timings["feature_row_ms"] = 0.0
+                    timings["inference_ms"] = 0.0
+                if flight.error is not None:
+                    raise flight.error
+                probabilities = flight.probabilities
                 if probabilities is None:
+                    raise RuntimeError("Coalesced mark request produced no result")
 
-                    X_gpu = cp.asarray(
-                        X,
-                        dtype=cp.float32,
-                    )
-
-
-                    # Use raw multiclass margins and
-                    # explicitly softmax them.
-                    margins_gpu = (
-                        self.bst
-                        .inplace_predict(
-                            X_gpu,
-                            predict_type="margin",
-                            validate_features=False,
-                        )
-                    )
-
-
-                    margins = cp.asnumpy(
-                        margins_gpu
-                    )
-
-
-                    margins = np.asarray(
-                        margins,
-                        dtype=np.float32,
-                    )
-
-
-                    if margins.ndim == 2:
-
-                        margins = (
-                            margins[
-                                0
-                            ]
-                        )
-
-
-                    if (
-                        margins.ndim != 1
-                        or
-                        len(
-                            margins
-                        )
-                        != self.num_classes
-                    ):
-
-                        raise RuntimeError(
-                            "Unexpected mark "
-                            "margin shape: "
-                            f"{margins.shape}"
-                        )
-
-
-                    # Numerically stable softmax.
-                    shifted = (
-                        margins
-                        - np.max(
-                            margins
-                        )
-                    )
-
-
-                    exp_values = np.exp(
-                        shifted.astype(
-                            np.float64
-                        )
-                    )
-
-
-                    probabilities = (
-                        exp_values
-                        / np.sum(
-                            exp_values
-                        )
-                    ).astype(
-                        np.float32
-                    )
-
-
-                    if not np.isfinite(
-                        probabilities
-                    ).all():
-
-                        raise RuntimeError(
-                            "Non-finite mark "
-                            "probabilities"
-                        )
-
-
-                    probability_sum = float(
-                        np.sum(
-                            probabilities,
-                            dtype=np.float64,
-                        )
-                    )
-
-
-                    if not np.isclose(
-                        probability_sum,
-                        1.0,
-                        atol=1e-5,
-                        rtol=0.0,
-                    ):
-
-                        raise RuntimeError(
-                            "Mark probabilities "
-                            "do not sum to 1: "
-                            f"{probability_sum}"
-                        )
-
-
-                    self._cache_put(
-                        key,
-                        probabilities,
-                    )
-
-
+        result_started = time.perf_counter()
         k = min(
             max(
                 int(
@@ -1267,6 +1485,17 @@ class MarkRuntime:
             for class_id
             in order
         ]
+
+        if timings is not None:
+            timings["result_construction_ms"] = (
+                time.perf_counter() - result_started
+            ) * 1000.0
+            timings["mark_runtime_total_ms"] = (
+                time.perf_counter() - prediction_started
+            ) * 1000.0
+            timings["inference_device_gpu"] = (
+                1.0 if self.inference_device == "gpu_microbatch" else 0.0
+            )
 
 
         return {

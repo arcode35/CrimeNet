@@ -2,11 +2,12 @@
 
 import * as Slider from "@radix-ui/react-slider";
 import { ChevronLeft, ChevronRight, Pause, Play, RotateCcw } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { IntensityTimelineSnapshot } from "@/lib/api";
 import { getCity, type PredictionResponse } from "@/lib/domain";
 import { forecastHorizonLabel } from "@/lib/forecast";
 import { formatTimestamp } from "@/lib/format";
+import { createThrottledCommit } from "@/lib/interaction";
 import { useExplorerStore } from "@/stores/explorer-store";
 
 function localForecastParts(validUtcHour: string) {
@@ -54,8 +55,42 @@ export function Timeline({
   const playing = state.playing;
   const stepTime = state.stepTime;
   const city = getCity(state.cityId);
-  const selectedSnapshot = snapshots[selectedIndex];
+  const fixtureDate = new Date(state.timestamp);
+  const fixtureHour = fixtureDate.getUTCHours();
+  const [displayedForecastIndex, setDisplayedForecastIndex] = useState(selectedIndex);
+  const [displayedFixtureHour, setDisplayedFixtureHour] = useState(fixtureHour);
+  const forecastDragging = useRef(false);
+  const fixtureDragging = useRef(false);
+  const forecastCommit = useMemo(
+    () => createThrottledCommit<number>((index) => onSelectedIndexChange?.(index), 200),
+    [onSelectedIndexChange],
+  );
+  const [fixtureCommit] = useState(() =>
+    createThrottledCommit<number>((hour) => {
+      const explorer = useExplorerStore.getState();
+      const next = new Date(explorer.timestamp);
+      next.setUTCHours(hour, 0, 0, 0);
+      explorer.setTimestamp(next.toISOString());
+    }, 200),
+  );
+  const selectedSnapshot = snapshots[displayedForecastIndex];
   const forecastEnabled = liveMode && snapshots.length > 1 && !forecastUnavailable;
+
+  useEffect(() => {
+    if (!forecastDragging.current) setDisplayedForecastIndex(selectedIndex);
+  }, [selectedIndex]);
+
+  useEffect(() => {
+    if (!fixtureDragging.current) setDisplayedFixtureHour(fixtureHour);
+  }, [fixtureHour]);
+
+  useEffect(
+    () => () => {
+      forecastCommit.cancel();
+      fixtureCommit.cancel();
+    },
+    [fixtureCommit, forecastCommit],
+  );
 
   useEffect(() => {
     if (!playing) return;
@@ -83,8 +118,6 @@ export function Timeline({
     stepTime,
   ]);
 
-  const fixtureDate = new Date(state.timestamp);
-  const fixtureHour = fixtureDate.getUTCHours();
   const localTime = selectedSnapshot
     ? localForecastParts(selectedSnapshot.valid_utc_hour)
     : undefined;
@@ -92,11 +125,23 @@ export function Timeline({
   const total = cells.reduce((sum, cell) => sum + (cell.intensity ?? 0), 0);
 
   const setFixtureHour = ([hour]: number[]) => {
-    const next = new Date(state.timestamp);
-    next.setUTCHours(hour, 0, 0, 0);
-    state.setTimestamp(next.toISOString());
+    setDisplayedFixtureHour(hour);
+    fixtureCommit.push(hour);
   };
-  const selectForecast = ([index]: number[]) => onSelectedIndexChange?.(index);
+  const commitFixtureHour = ([hour]: number[]) => {
+    fixtureDragging.current = false;
+    setDisplayedFixtureHour(hour);
+    fixtureCommit.flush(hour);
+  };
+  const selectForecast = ([index]: number[]) => {
+    setDisplayedForecastIndex(index);
+    forecastCommit.push(index);
+  };
+  const commitForecast = ([index]: number[]) => {
+    forecastDragging.current = false;
+    setDisplayedForecastIndex(index);
+    forecastCommit.flush(index);
+  };
   const togglePlayback = () => {
     if (liveMode && selectedIndex >= snapshots.length - 1) onSelectedIndexChange?.(0);
     state.setPlaying(!state.playing);
@@ -161,7 +206,7 @@ export function Timeline({
               {snapshots.map((snapshot, index) => (
                 <i
                   key={snapshot.valid_utc_hour}
-                  className={index === selectedIndex ? "active" : undefined}
+                  className={index === displayedForecastIndex ? "active" : undefined}
                 />
               ))}
             </div>
@@ -170,8 +215,12 @@ export function Timeline({
               min={0}
               max={snapshots.length - 1}
               step={1}
-              value={[selectedIndex]}
+              value={[displayedForecastIndex]}
               onValueChange={selectForecast}
+              onValueCommit={commitForecast}
+              onPointerDown={() => {
+                forecastDragging.current = true;
+              }}
             >
               <Slider.Track className="slider-track">
                 <Slider.Range className="slider-range" />
@@ -214,8 +263,12 @@ export function Timeline({
             min={0}
             max={23}
             step={1}
-            value={[fixtureHour]}
+            value={[displayedFixtureHour]}
             onValueChange={setFixtureHour}
+            onValueCommit={commitFixtureHour}
+            onPointerDown={() => {
+              fixtureDragging.current = true;
+            }}
           >
             <Slider.Track className="slider-track">
               <Slider.Range className="slider-range" />

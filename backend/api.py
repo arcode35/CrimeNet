@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import threading
+import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +15,9 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
-from mark_runtime import MarkRuntime
+from mark_runtime import MarkCapacityExceeded, MarkRuntime
+from request_control import BoundedAdmission, CapacityExceeded
+from viewport_response import build_viewport_rows
 
 
 # ============================================================
@@ -68,6 +73,26 @@ MAX_VIEWPORT_CELLS = 25_000
 # Forecast slider requests typically bounce among adjacent hours. Keep a
 # small mmap cache so repeated slider movement does not reopen every file.
 MAX_TIMESTAMPED_SNAPSHOT_CACHE = 6
+
+MAX_CONCURRENT_VIEWPORT_REQUESTS = max(
+    1,
+    int(os.getenv("CRIMENET_MAX_CONCURRENT_VIEWPORT_REQUESTS", "2")),
+)
+MAX_QUEUED_VIEWPORT_REQUESTS = max(
+    0,
+    int(os.getenv("CRIMENET_MAX_QUEUED_VIEWPORT_REQUESTS", "2")),
+)
+VIEWPORT_ADMISSION_WAIT_SECONDS = max(
+    0.0,
+    float(os.getenv("CRIMENET_VIEWPORT_ADMISSION_WAIT_SECONDS", "0.05")),
+)
+
+performance_logger = logging.getLogger("uvicorn.error")
+viewport_admission = BoundedAdmission(
+    limit=MAX_CONCURRENT_VIEWPORT_REQUESTS,
+    max_waiters=MAX_QUEUED_VIEWPORT_REQUESTS,
+    wait_seconds=VIEWPORT_ADMISSION_WAIT_SECONDS,
+)
 
 
 # ============================================================
@@ -1196,14 +1221,20 @@ class IntensityStore:
         cells: list[str],
         resolution: int,
         valid_utc_hour: str | None = None,
+        timings: dict[str, float] | None = None,
     ) -> tuple[
         list[dict],
         dict,
     ]:
 
+        snapshot_started = time.perf_counter()
         snapshot = self.snapshot_for_hour(
             valid_utc_hour
         )
+        if timings is not None:
+            timings["snapshot_reload_check_ms"] = (
+                time.perf_counter() - snapshot_started
+            ) * 1000.0
 
         if (
             resolution
@@ -1230,14 +1261,19 @@ class IntensityStore:
         }
 
         if not cells:
+            if timings is not None:
+                timings["mmap_index_lookup_ms"] = 0.0
+                timings["result_construction_ms"] = 0.0
             return ([], state)
 
-        keys = np.asarray(
-            [
+        lookup_started = time.perf_counter()
+        keys = np.fromiter(
+            (
                 h3.str_to_int(cell)
                 for cell in cells
-            ],
+            ),
             dtype=np.uint64,
+            count=len(cells),
         )
 
         rows = np.searchsorted(
@@ -1271,6 +1307,11 @@ class IntensityStore:
         )
 
         if not len(positions):
+            if timings is not None:
+                timings["mmap_index_lookup_ms"] = (
+                    time.perf_counter() - lookup_started
+                ) * 1000.0
+                timings["result_construction_ms"] = 0.0
             return ([], state)
 
         matched_rows = rows[
@@ -1299,37 +1340,22 @@ class IntensityStore:
                 dtype=np.uint32,
             )
 
-        results = []
+        if timings is not None:
+            timings["mmap_index_lookup_ms"] = (
+                time.perf_counter() - lookup_started
+            ) * 1000.0
 
-        for i, position in enumerate(
-            positions
-        ):
-            events_per_hour = (
-                float(lambda_values[i])
-                * 3600.0
-            )
-
-            modeled_r9_cells = int(
-                child_counts[i]
-            )
-
-            mean_r9_events_per_hour = (
-                events_per_hour
-                / modeled_r9_cells
-                if modeled_r9_cells
-                else 0.0
-            )
-
-            results.append(
-                {
-                    "h3": cells[
-                        int(position)
-                    ],
-                    "events_per_hour": events_per_hour,
-                    "mean_r9_events_per_hour": mean_r9_events_per_hour,
-                    "modeled_r9_cells": modeled_r9_cells,
-                }
-            )
+        construction_started = time.perf_counter()
+        results = build_viewport_rows(
+            cells,
+            positions,
+            lambda_values,
+            child_counts,
+        )
+        if timings is not None:
+            timings["result_construction_ms"] = (
+                time.perf_counter() - construction_started
+            ) * 1000.0
 
         return (
             results,
@@ -1359,12 +1385,6 @@ print(
 mark_runtime = (
     MarkRuntime()
 )
-
-# MarkRuntime maintains one synchronized environmental snapshot at a time.
-# Serialize timestamp changes so concurrent cell-detail requests cannot mix
-# feature rows from different forecast hours.
-mark_snapshot_lock = threading.RLock()
-
 
 # ============================================================
 # FastAPI
@@ -1405,6 +1425,9 @@ app.add_middleware(
 app.add_middleware(
     GZipMiddleware,
     minimum_size=1000,
+    # A representative 25k-cell payload measured 3.5 ms at level 1 versus
+    # 10.4 ms at level 9 for only ~2% additional bytes (see PERFORMANCE.md).
+    compresslevel=1,
 )
 
 
@@ -1634,6 +1657,62 @@ def intensity_cell(
 # Intensity — viewport
 # ============================================================
 
+def build_viewport_response(
+    *,
+    west: float,
+    south: float,
+    east: float,
+    north: float,
+    valid_utc_hour: str | None,
+    timings: dict[str, float],
+) -> dict:
+    selection_started = time.perf_counter()
+    resolution, cells, candidate_count = choose_viewport_cells(
+        west=west,
+        south=south,
+        east=east,
+        north=north,
+        max_cells=MAX_VIEWPORT_CELLS,
+    )
+    timings["h3_selection_ms"] = (
+        time.perf_counter() - selection_started
+    ) * 1000.0
+
+    try:
+        values, state = store.lookup_viewport(
+            cells,
+            resolution,
+            valid_utc_hour=valid_utc_hour,
+            timings=timings,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    response_started = time.perf_counter()
+    response = {
+        "snapshot_id": state["snapshot_id"],
+        "valid_utc_hour": state["valid_utc_hour"],
+        "resolution": resolution,
+        "aggregation": (
+            "native_r9"
+            if resolution == H3_RESOLUTION
+            else "sum_r9_child_intensity"
+        ),
+        "visualization_metric": "mean_r9_events_per_hour",
+        "candidate_count": candidate_count,
+        "count": len(values),
+        "cells": values,
+    }
+    timings["response_assembly_ms"] = (
+        time.perf_counter() - response_started
+    ) * 1000.0
+    timings["resolution"] = float(resolution)
+    timings["candidate_count"] = float(candidate_count)
+    timings["returned_count"] = float(len(values))
+    return response
+
 @app.get(
     "/api/v1/intensity/viewport"
 )
@@ -1698,88 +1777,35 @@ def intensity_viewport(
         )
 
 
-    (
-        resolution,
-        cells,
-        candidate_count,
-    ) = choose_viewport_cells(
-
-        west=west,
-        south=south,
-        east=east,
-        north=north,
-
-        max_cells=(
-            MAX_VIEWPORT_CELLS
-        ),
-    )
-
-
+    endpoint_started = time.perf_counter()
+    timings: dict[str, float] = {}
     try:
-        (
-            values,
-            state,
-        ) = store.lookup_viewport(
-            cells,
-            resolution,
-            valid_utc_hour=valid_utc_hour,
+        with viewport_admission.slot():
+            return build_viewport_response(
+                west=west,
+                south=south,
+                east=east,
+                north=north,
+                valid_utc_hour=valid_utc_hour,
+                timings=timings,
+            )
+    except CapacityExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="Viewport capacity is busy; retry shortly.",
+            headers={"Retry-After": "1"},
+        ) from exc
+    finally:
+        timings["total_endpoint_ms"] = (
+            time.perf_counter() - endpoint_started
+        ) * 1000.0
+        admission_state = viewport_admission.state()
+        timings["in_flight"] = float(admission_state.in_flight)
+        timings["waiting"] = float(admission_state.waiting)
+        performance_logger.info(
+            "viewport_timing %s",
+            json.dumps(timings, sort_keys=True, separators=(",", ":")),
         )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=str(exc),
-        ) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(
-            status_code=404,
-            detail=str(exc),
-        ) from exc
-
-
-    return {
-
-        "snapshot_id":
-            state[
-                "snapshot_id"
-            ],
-
-        "valid_utc_hour":
-            state[
-                "valid_utc_hour"
-            ],
-
-        "resolution":
-            resolution,
-
-        "aggregation":
-            (
-                "native_r9"
-                if (
-                    resolution
-                    == H3_RESOLUTION
-                )
-                else
-                "sum_r9_child_intensity"
-            ),
-
-        "visualization_metric":
-            "mean_r9_events_per_hour",
-
-        # Number of cells in the rectangular H3 polyfill
-        # before filtering to the serving domain.
-        "candidate_count":
-            candidate_count,
-
-        # Number of cells actually returned from the
-        # national serving domain.
-        "count":
-            len(
-                values
-            ),
-
-        "cells":
-            values,
-    }
 
 
 # ============================================================
@@ -1791,8 +1817,9 @@ def combined_prediction(
     top_k: int,
     valid_utc_hour: str | None = None,
 ) -> dict:
-
-
+    endpoint_started = time.perf_counter()
+    timings: dict[str, float] = {}
+    intensity_started = time.perf_counter()
     try:
         lookup = store.lookup_for_prediction(
             cell,
@@ -1826,27 +1853,24 @@ def combined_prediction(
         snapshot_id,
         snapshot_path,
     ) = lookup
+    timings["intensity_lookup_ms"] = (
+        time.perf_counter() - intensity_started
+    ) * 1000.0
 
-
-    with mark_snapshot_lock:
-        mark = (
-            mark_runtime.predict(
-
-                cell=cell,
-
-                snapshot_id=(
-                    snapshot_id
-                ),
-
-                intensity_snapshot_path=(
-                    snapshot_path
-                ),
-
-                top_k=(
-                    top_k
-                ),
-            )
+    try:
+        mark = mark_runtime.predict(
+            cell=cell,
+            snapshot_id=snapshot_id,
+            intensity_snapshot_path=snapshot_path,
+            top_k=top_k,
+            timings=timings,
         )
+    except MarkCapacityExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="Mark inference capacity is busy; retry shortly.",
+            headers={"Retry-After": "1"},
+        ) from exc
 
 
     overall_events_per_hour = float(
@@ -1856,6 +1880,7 @@ def combined_prediction(
     )
 
 
+    construction_started = time.perf_counter()
     distribution = []
 
 
@@ -1896,7 +1921,7 @@ def combined_prediction(
         )
 
 
-    return {
+    response = {
 
         "h3":
             cell,
@@ -1946,6 +1971,18 @@ def combined_prediction(
                 distribution,
         },
     }
+    timings["api_result_construction_ms"] = (
+        time.perf_counter() - construction_started
+    ) * 1000.0
+    timings["total_endpoint_ms"] = (
+        time.perf_counter() - endpoint_started
+    ) * 1000.0
+    timings["top_k"] = float(top_k)
+    performance_logger.info(
+        "prediction_timing %s",
+        json.dumps(timings, sort_keys=True, separators=(",", ":")),
+    )
+    return response
 
 
 # ============================================================

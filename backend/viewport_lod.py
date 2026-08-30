@@ -357,8 +357,17 @@ class ViewportLOD:
                 ]
             )
 
+            child_count_index = (
+                None
+                if resolution == 9
+                else self.child_counts[
+                    resolution
+                ]
+            )
 
-            keys = np.asarray(
+        # Captured mmap references remain valid if a new snapshot becomes
+        # active; all CPU-heavy lookup work can safely run without the lock.
+        keys = np.asarray(
                 [
                     h3.str_to_int(
                         cell
@@ -369,13 +378,13 @@ class ViewportLOD:
             )
 
 
-            rows = np.searchsorted(
+        rows = np.searchsorted(
                 index,
                 keys,
             )
 
 
-            valid = (
+        valid = (
                 rows
                 < len(
                     index
@@ -383,7 +392,7 @@ class ViewportLOD:
             )
 
 
-            matched = np.zeros(
+        matched = np.zeros(
                 len(
                     cells
                 ),
@@ -391,16 +400,16 @@ class ViewportLOD:
             )
 
 
-            positions = np.flatnonzero(
+        positions = np.flatnonzero(
                 valid
             )
 
 
-            if len(
+        if len(
                 positions
             ):
 
-                matched[
+            matched[
                     positions
                 ] = (
                     index[
@@ -415,26 +424,26 @@ class ViewportLOD:
                 )
 
 
-            positions = np.flatnonzero(
+        positions = np.flatnonzero(
                 matched
             )
 
 
-            if not len(
+        if not len(
                 positions
             ):
 
-                return []
+            return []
 
 
-            matched_rows = (
+        matched_rows = (
                 rows[
                     positions
                 ]
             )
 
 
-            summed_per_second = np.asarray(
+        summed_per_second = np.asarray(
                 intensity[
                     matched_rows
                 ],
@@ -442,21 +451,19 @@ class ViewportLOD:
             )
 
 
-            if resolution == 9:
+        if resolution == 9:
 
-                child_counts = np.ones(
+            child_counts = np.ones(
                     len(
                         matched_rows
                     ),
                     dtype=np.uint32,
                 )
 
-            else:
+        else:
 
-                child_counts = np.asarray(
-                    self.child_counts[
-                        resolution
-                    ][
+            child_counts = np.asarray(
+                    child_count_index[
                         matched_rows
                     ],
                     dtype=np.uint32,
