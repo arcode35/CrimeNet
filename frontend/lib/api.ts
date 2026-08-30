@@ -1,6 +1,7 @@
 import { cellToLatLng, gridDisk, gridDistance, latLngToCell } from "h3-js";
 import { z } from "zod";
 import { crimeSenseApiUrl, isFixtureMode } from "@/lib/config";
+import { isAbortError } from "@/lib/interaction";
 import {
   CITIES,
   getCity,
@@ -26,6 +27,7 @@ export type CrimeNetApiErrorKind =
   | "bad-request"
   | "not-found"
   | "viewport-too-large"
+  | "busy"
   | "server"
   | "contract";
 
@@ -100,6 +102,7 @@ function errorKindForStatus(status: number): CrimeNetApiErrorKind {
   if (status === 400) return "bad-request";
   if (status === 404) return "not-found";
   if (status === 413) return "viewport-too-large";
+  if (status === 429 || status === 503) return "busy";
   if (status >= 500) return "server";
   return "bad-request";
 }
@@ -119,7 +122,7 @@ export async function fetchCrimeNetJson(
   try {
     response = await fetch(buildCrimeSenseApiUrl(path, params), { signal });
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    if (isAbortError(error)) throw error;
     throw new CrimeNetApiError("Unable to reach the CrimeSense service.", "network");
   }
   if (!response.ok) {
@@ -129,6 +132,8 @@ export async function fetchCrimeNetJson(
         ? "Zoom in to load live H3 predictions."
         : kind === "not-found"
           ? "No live prediction coverage was found for this area."
+          : kind === "busy"
+            ? "CrimeSense is busy; try the interaction again."
           : `CrimeSense service returned ${response.status}.`;
     throw new CrimeNetApiError(message, kind, response.status);
   }

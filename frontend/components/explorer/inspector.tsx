@@ -15,8 +15,9 @@ import {
   ShieldAlert,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  CrimeNetApiError,
   intensityTimelineQueryKey,
   serviceHealthQueryKey,
   type IntensityTimelineSnapshot,
@@ -32,6 +33,7 @@ import {
   type SubtypePrediction,
 } from "@/lib/inference";
 import { isNativeMarkCell, NATIVE_MARK_RESOLUTION } from "@/lib/map/lod";
+import { abortableDelay, isAbortError, LatestRequest } from "@/lib/interaction";
 import { CRIME_FAMILIES } from "@/lib/taxonomy";
 import { useExplorerStore } from "@/stores/explorer-store";
 
@@ -234,6 +236,7 @@ export function Inspector({
   const [showAllFamilies, setShowAllFamilies] = useState(false);
   const [allTypesOpen, setAllTypesOpen] = useState(false);
   const queryClient = useQueryClient();
+  const selectedCellRequest = useRef(new LatestRequest());
   const nativeSelection = Boolean(
     selectedH3 && data?.resolution === NATIVE_MARK_RESOLUTION && isNativeMarkCell(selectedH3),
   );
@@ -264,14 +267,23 @@ export function Inspector({
       : null;
   const predictionQuery = useQuery({
     queryKey: request ? cellPredictionQueryKey(request) : ["cell-prediction", "idle"],
-    queryFn: ({ signal }) => inferenceProvider.getCellPrediction({ ...request!, signal }),
+    queryFn: ({ signal }) =>
+      selectedCellRequest.current.run(async (latestSignal) => {
+        await abortableDelay(75, latestSignal);
+        return inferenceProvider.getCellPrediction({ ...request!, signal: latestSignal });
+      }, signal),
     enabled: Boolean(request),
     placeholderData: (previous) =>
       previous?.h3 === selectedH3 &&
       (!request?.snapshotId || previous.snapshotId === request.snapshotId)
         ? previous
         : undefined,
+    retry: (failures, error) =>
+      !isAbortError(error) &&
+      !(error instanceof CrimeNetApiError && error.kind === "busy") &&
+      failures < 1,
   });
+  useEffect(() => () => selectedCellRequest.current.cancel(), []);
   const snapshotMismatch = Boolean(
     request?.snapshotId &&
       predictionQuery.data?.snapshotId &&

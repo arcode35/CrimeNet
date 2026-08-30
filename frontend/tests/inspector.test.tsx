@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { latLngToCell } from "h3-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Inspector } from "@/components/explorer/inspector";
@@ -203,12 +203,14 @@ describe("cell inspector", () => {
     );
 
     expect(await screen.findByText(/Los Angeles, California/)).toBeInTheDocument();
-    expect(predictionSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        h3: losAngelesH3,
-        validUtcHour,
-        forecastHorizonHours: 6,
-      }),
+    await waitFor(() =>
+      expect(predictionSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          h3: losAngelesH3,
+          validUtcHour,
+          forecastHorizonHours: 6,
+        }),
+      ),
     );
 
     const nextValidUtcHour = "2026-08-31T05:00:00.000Z";
@@ -241,6 +243,29 @@ describe("cell inspector", () => {
       ),
     );
     expect(useExplorerStore.getState().selectedH3).toBe(losAngelesH3);
+    predictionSpy.mockRestore();
+  });
+
+  it("debounces rapid cell changes so only the final selected cell is inferred", async () => {
+    const finalH3 = latLngToCell(41.881, -87.624, 9);
+    const predictionSpy = vi.spyOn(inferenceProvider, "getCellPrediction");
+    const data = predictionResponseSchema.parse({
+      ...base,
+      cells: [h3, finalH3].map((cellId) => ({
+        h3: cellId,
+        intensity: 0.125,
+        percentile: 0.8,
+        coverage: "full",
+        missingReason: null,
+        features: [],
+      })),
+    });
+    renderInspector(data);
+
+    act(() => useExplorerStore.getState().selectCell(finalH3));
+
+    await waitFor(() => expect(predictionSpy).toHaveBeenCalled());
+    expect(predictionSpy.mock.calls.map(([request]) => request.h3)).toEqual([finalH3]);
     predictionSpy.mockRestore();
   });
 

@@ -96,18 +96,30 @@ export function GeospatialMap({
     });
     map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
     let fallbackApplied = false;
+    let lastViewportKey: string | null = null;
     const emitViewport = () => {
       const bounds = map.getBounds();
       const center = map.getCenter();
       containerRef.current?.setAttribute("data-map-center-longitude", center.lng.toFixed(5));
       containerRef.current?.setAttribute("data-map-center-latitude", center.lat.toFixed(5));
-      onViewportChangeRef.current?.({
+      const nextViewport = {
         west: bounds.getWest(),
         south: bounds.getSouth(),
         east: bounds.getEast(),
         north: bounds.getNorth(),
         zoom: map.getZoom(),
-      });
+      };
+      const viewportKey = [
+        nextViewport.west,
+        nextViewport.south,
+        nextViewport.east,
+        nextViewport.north,
+      ]
+        .map((value) => value.toFixed(4))
+        .join(":");
+      if (viewportKey === lastViewportKey) return;
+      lastViewportKey = viewportKey;
+      onViewportChangeRef.current?.(nextViewport);
     };
     const handleStyleReady = () => {
       ensureSatelliteLayer(map, mapTilerKey);
@@ -152,6 +164,7 @@ export function GeospatialMap({
     map.on("error", handleMapError);
     map.on("idle", handleMapIdle);
     map.on("moveend", emitViewport);
+    map.on("zoomend", emitViewport);
     mapRef.current = map;
     const placeDestinationMarker = (center: [number, number]) => {
       destinationMarkerRef.current?.remove();
@@ -189,6 +202,7 @@ export function GeospatialMap({
       map.off("error", handleMapError);
       map.off("idle", handleMapIdle);
       map.off("moveend", emitViewport);
+      map.off("zoomend", emitViewport);
       overlayRef.current?.finalize();
       overlayRef.current = null;
       destinationMarkerRef.current?.remove();

@@ -123,6 +123,17 @@ describe("live viewport adapter", () => {
     } satisfies Partial<CrimeNetApiError>);
   });
 
+  it("surfaces backpressure as a non-network busy state", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 429 })));
+    await expect(
+      getLiveViewport("chicago", bounds, "2026-08-29T22:00:00+00:00"),
+    ).rejects.toMatchObject({
+      kind: "busy",
+      status: 429,
+      message: "CrimeSense is busy; try the interaction again.",
+    } satisfies Partial<CrimeNetApiError>);
+  });
+
   it("sends the exact selected UTC hour with viewport bounds", async () => {
     const validUtcHour = "2026-08-30T10:00:00+00:00";
     const fetchMock = vi.fn().mockResolvedValue(
