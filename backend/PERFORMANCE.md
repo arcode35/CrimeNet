@@ -2,11 +2,26 @@
 
 ## Interactive mark inference
 
-`MarkRuntime` benchmarks 300 uncached, single-row predictions against the actual
-loaded production model at process startup. It logs p50/p95/p99 latency,
-throughput, CPU/GPU numerical agreement, and the selected path under
-`mark_inference_benchmark`. CPU is selected when its p95 is within 10% of GPU;
-otherwise the GPU runs through a bounded 3 ms microbatch queue.
+Normal service startup is deterministic and performs zero benchmark predictions.
+If `CRIMENET_MARK_INFERENCE` is unset, CrimeSense uses CPU serving. CPU mode does
+not import CuPy, initialize CUDA, or create the GPU queue/worker.
+
+```bash
+# Recommended deterministic production configuration
+export CRIMENET_MARK_INFERENCE=cpu
+
+# Explicit GPU microbatch mode
+export CRIMENET_MARK_INFERENCE=gpu_batch
+
+# Diagnostic only — benchmarks CPU vs GPU during startup
+export CRIMENET_MARK_INFERENCE=auto
+```
+
+`auto` should generally not be used in the systemd production service. It runs
+300 uncached single-row predictions on both available runtimes, logs p50/p95/p99
+latency, throughput, numerical agreement, and the recommended serving mode under
+`mark_inference_benchmark`. CPU is recommended when its p95 is within 10% of GPU;
+otherwise the bounded 3 ms GPU microbatch runtime is recommended.
 
 Run the same benchmark explicitly on a serving host with:
 
@@ -14,8 +29,9 @@ Run the same benchmark explicitly on a serving host with:
 python backend/benchmark_mark_inference.py
 ```
 
-`CRIMENET_MARK_DEVICE=cpu|gpu|auto` controls selection. A forced unavailable GPU
-fails startup rather than silently changing the requested configuration.
+The standalone script explicitly selects diagnostic `auto` mode, regardless of
+the production default. Explicit `gpu_batch` mode fails startup if CuPy/CUDA is
+unavailable rather than silently changing serving behavior.
 
 ## Viewport GZip
 
