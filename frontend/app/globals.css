@@ -113,29 +113,11 @@ input:focus-visible,
   gap: 10px;
   min-width: 270px;
 }
-.brand-mark {
-  width: 29px;
-  height: 29px;
-  display: grid;
-  place-items: center;
-  border: 1px solid rgba(139, 202, 197, 0.32);
-  background: rgba(109, 180, 176, 0.09);
-  color: var(--accent-strong);
-}
-.brand > div {
-  display: flex;
-  flex-direction: column;
-  line-height: 1;
-  gap: 4px;
-}
-.brand strong {
-  font-size: 13px;
-  letter-spacing: 0.2em;
-}
-.brand small {
-  font-size: 7px;
-  letter-spacing: 0.24em;
-  color: #788487;
+.brand-logo {
+  display: block;
+  width: 168px;
+  height: auto;
+  object-fit: contain;
 }
 .top-bar nav {
   display: flex;
@@ -3280,7 +3262,6 @@ input:focus-visible,
     height: 52px;
     padding: 0 10px;
   }
-  .brand small,
   .command-trigger span,
   .command-trigger > svg,
   .top-actions > .fixture-flag {
@@ -3296,6 +3277,9 @@ input:focus-visible,
   }
   .brand {
     flex: 1;
+  }
+  .brand-logo {
+    width: 140px;
   }
   .command-trigger {
     width: 37px;

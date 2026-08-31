@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./globals.css";
+import favicon from "@/assets/logo_icon.png";
 import { Providers } from "@/components/providers";
 
 const sans = Geist({ variable: "--font-sans", subsets: ["latin"] });
@@ -12,6 +13,11 @@ export const metadata: Metadata = {
   description:
     "CrimeSense is an interactive geospatial application for exploring reported crime intensity across space and time.",
   applicationName: "CrimeSense",
+  icons: {
+    icon: [{ url: favicon.src, type: "image/png" }],
+    shortcut: [{ url: favicon.src, type: "image/png" }],
+    apple: [{ url: favicon.src, type: "image/png" }],
+  },
   openGraph: {
     title: "CrimeSense — Spatiotemporal Crime Intelligence",
     description:
