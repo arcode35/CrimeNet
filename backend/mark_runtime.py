@@ -11,10 +11,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-try:
-    import cupy as cp
-except ImportError:  # CPU-only development and serving remain supported.
-    cp = None
 import h3
 import numpy as np
 import pandas as pd
@@ -71,17 +67,42 @@ EXPECTED_NUM_CLASSES = 87
 
 CACHE_SIZE = 10_000
 MARK_BENCHMARK_ROWS = max(200, int(os.getenv("CRIMENET_MARK_BENCHMARK_ROWS", "300")))
-MARK_DEVICE = os.getenv("CRIMENET_MARK_DEVICE", "auto").lower()
 MARK_CPU_THREADS = max(1, int(os.getenv("CRIMENET_MARK_CPU_THREADS", "1")))
 GPU_MICROBATCH_WINDOW_SECONDS = 0.003
 GPU_MICROBATCH_MAX_ROWS = 64
 GPU_MICROBATCH_QUEUE_SIZE = 128
+MARK_INFERENCE_MODES = frozenset({"cpu", "gpu_batch", "auto"})
 
 performance_logger = logging.getLogger("uvicorn.error")
 
 
 class MarkCapacityExceeded(RuntimeError):
     pass
+
+
+def resolve_mark_inference_mode(configured: str | None = None) -> str:
+    raw_mode = (
+        configured
+        if configured is not None
+        else os.getenv("CRIMENET_MARK_INFERENCE", "cpu")
+    )
+    mode = raw_mode.strip().lower()
+    if mode not in MARK_INFERENCE_MODES:
+        raise RuntimeError(
+            f"Invalid CRIMENET_MARK_INFERENCE={raw_mode!r}. "
+            "Expected one of: cpu, gpu_batch, auto."
+        )
+    return mode
+
+
+def load_cupy():
+    try:
+        import cupy
+    except ImportError as exc:
+        raise RuntimeError(
+            "GPU mark inference requires the CuPy CUDA runtime."
+        ) from exc
+    return cupy
 
 
 @dataclass
@@ -164,7 +185,16 @@ def normalize_utc(
 
 class MarkRuntime:
 
-    def __init__(self) -> None:
+    def __init__(self, *, inference_mode: str | None = None) -> None:
+
+        self.configured_inference_mode = resolve_mark_inference_mode(
+            inference_mode
+        )
+        performance_logger.info(
+            "mark_inference mode=%s benchmark=%s",
+            self.configured_inference_mode,
+            "true" if self.configured_inference_mode == "auto" else "false",
+        )
 
         # ----------------------------------------------------
         # Static national store
@@ -248,33 +278,22 @@ class MarkRuntime:
             flush=True,
         )
 
-        self.cpu_bst = xgb.Booster()
-
-        self.cpu_bst.load_model(
-            MARK_MODEL_PATH
-        )
-
-        self.cpu_bst.set_param(
-            {
-                "device":
-                    "cpu",
-
-                "nthread":
-                    MARK_CPU_THREADS,
-            }
-        )
-
-        # Kept as a compatibility alias for runtime diagnostics.
-        self.bst = self.cpu_bst
+        self.cpu_bst: xgb.Booster | None = None
+        self.gpu_bst: xgb.Booster | None = None
+        self.cp = None
+        self.gpu_queue: queue.Queue[_GpuBatchItem] | None = None
+        self.inference_device = "cpu"
+        self.inference_benchmark: dict | None = None
+        self._initialize_model_for_mode(self.configured_inference_mode)
 
 
         self.model_names = list(
-            self.cpu_bst.feature_names
+            self.bst.feature_names
             or []
         )
 
         self.model_types = list(
-            self.cpu_bst.feature_types
+            self.bst.feature_types
             or []
         )
 
@@ -293,7 +312,7 @@ class MarkRuntime:
 
 
         config = json.loads(
-            self.cpu_bst.save_config()
+            self.bst.save_config()
         )
 
         self.num_classes = int(
@@ -385,23 +404,74 @@ class MarkRuntime:
         self.inflight_lock = threading.Lock()
         self.inflight: dict[tuple[str, str], _PredictionFlight] = {}
 
-        # Benchmark the actual loaded production model at startup. Interactive
-        # single-row inference uses CPU when it is within 10% of GPU p95. If GPU
-        # is materially faster, requests use the bounded microbatch worker.
-        self.gpu_bst: xgb.Booster | None = None
-        self.gpu_queue: queue.Queue[_GpuBatchItem] | None = None
-        self.inference_device = "cpu"
-        self.inference_benchmark = self._select_inference_device()
+        self._activate_inference_mode(self.configured_inference_mode)
 
 
         print(
             "Mark model ready | "
             f"features={len(self.model_names)} "
             f"classes={self.num_classes} "
-            f"labels={self.labels_available} "
-            f"inference_device={self.inference_device}",
+            f"labels={self.labels_available}",
             flush=True,
         )
+
+
+    def _load_booster(self, device: str) -> xgb.Booster:
+        booster = xgb.Booster()
+        booster.load_model(MARK_MODEL_PATH)
+        parameters: dict[str, str | int] = {"device": device}
+        if device == "cpu":
+            parameters["nthread"] = MARK_CPU_THREADS
+        booster.set_param(parameters)
+        return booster
+
+
+    def _initialize_model_for_mode(self, mode: str) -> None:
+        if mode == "gpu_batch":
+            self.gpu_bst = self._load_booster("cuda:0")
+            self.bst = self.gpu_bst
+            return
+
+        self.cpu_bst = self._load_booster("cpu")
+        self.bst = self.cpu_bst
+
+
+    def _initialize_gpu_runtime(self) -> None:
+        cupy = load_cupy()
+        try:
+            device_count = cupy.cuda.runtime.getDeviceCount()
+        except Exception as exc:
+            raise RuntimeError(
+                "GPU mark inference could not initialize CUDA."
+            ) from exc
+        if device_count < 1:
+            raise RuntimeError("GPU mark inference found no CUDA devices.")
+        self.cp = cupy
+
+
+    def _start_gpu_batch_worker(self) -> None:
+        self.gpu_queue = queue.Queue(maxsize=GPU_MICROBATCH_QUEUE_SIZE)
+        threading.Thread(
+            target=self._gpu_batch_worker,
+            name="crimenet-mark-gpu-batcher",
+            daemon=True,
+        ).start()
+
+
+    def _activate_inference_mode(self, mode: str) -> None:
+        if mode == "cpu":
+            self.inference_device = "cpu"
+            self.inference_benchmark = None
+            return
+
+        if mode == "gpu_batch":
+            self._initialize_gpu_runtime()
+            self.inference_device = "gpu_batch"
+            self.inference_benchmark = None
+            self._start_gpu_batch_worker()
+            return
+
+        self.inference_benchmark = self._select_inference_device()
 
 
     # ========================================================
@@ -452,21 +522,18 @@ class MarkRuntime:
 
 
     def _predict_gpu_direct(self, features: np.ndarray) -> np.ndarray:
-        if cp is None or self.gpu_bst is None:
+        if self.cp is None or self.gpu_bst is None:
             raise RuntimeError("GPU mark inference is unavailable")
-        features_gpu = cp.asarray(features, dtype=cp.float32)
+        features_gpu = self.cp.asarray(features, dtype=self.cp.float32)
         margins_gpu = self.gpu_bst.inplace_predict(
             features_gpu,
             predict_type="margin",
             validate_features=False,
         )
-        return np.asarray(cp.asnumpy(margins_gpu), dtype=np.float32)
+        return np.asarray(self.cp.asnumpy(margins_gpu), dtype=np.float32)
 
 
     def _select_inference_device(self) -> dict:
-        if MARK_DEVICE not in {"auto", "cpu", "gpu"}:
-            raise RuntimeError("CRIMENET_MARK_DEVICE must be auto, cpu, or gpu")
-
         rows = self._benchmark_feature_rows()
         for row in rows[:10]:
             self._predict_cpu_margins(row.reshape(1, -1))
@@ -485,17 +552,15 @@ class MarkRuntime:
         gpu_numerically_equivalent = True
 
         gpu_available = False
-        if cp is not None:
-            try:
-                gpu_available = cp.cuda.runtime.getDeviceCount() > 0
-            except Exception:
-                gpu_available = False
+        try:
+            self._initialize_gpu_runtime()
+            gpu_available = True
+        except RuntimeError as exc:
+            performance_logger.warning("mark_gpu_benchmark_unavailable error=%r", exc)
 
         if gpu_available:
             try:
-                self.gpu_bst = xgb.Booster()
-                self.gpu_bst.load_model(MARK_MODEL_PATH)
-                self.gpu_bst.set_param({"device": "cuda:0"})
+                self.gpu_bst = self._load_booster("cuda:0")
                 for row in rows[:10]:
                     self._predict_gpu_direct(row.reshape(1, -1))
                 gpu_latencies = []
@@ -528,8 +593,6 @@ class MarkRuntime:
                 benchmark["max_cpu_gpu_probability_difference"] = max_probability_difference
                 benchmark["cpu_gpu_probabilities_equivalent"] = gpu_numerically_equivalent
             except Exception as exc:
-                if MARK_DEVICE == "gpu":
-                    raise
                 performance_logger.warning("mark_gpu_benchmark_failed error=%r", exc)
                 self.gpu_bst = None
 
@@ -539,34 +602,22 @@ class MarkRuntime:
             self.gpu_bst is not None
             and gpu_result is not None
             and (
-                MARK_DEVICE == "gpu"
-                or (
-                    MARK_DEVICE == "auto"
-                    and (
-                        not gpu_numerically_equivalent
-                        or float(gpu_result["p95_ms"]) < cpu_p95 / 1.10
-                    )
-                )
+                not gpu_numerically_equivalent
+                or float(gpu_result["p95_ms"]) < cpu_p95 / 1.10
             )
         )
-        if MARK_DEVICE == "gpu" and not use_gpu:
-            raise RuntimeError("GPU mark inference was requested but is unavailable")
         if use_gpu:
-            self.inference_device = "gpu_microbatch"
-            self.gpu_queue = queue.Queue(maxsize=GPU_MICROBATCH_QUEUE_SIZE)
+            self.inference_device = "gpu_batch"
             self.bst = self.gpu_bst
             self.cpu_bst = None
-            threading.Thread(
-                target=self._gpu_batch_worker,
-                name="crimenet-mark-gpu-batcher",
-                daemon=True,
-            ).start()
+            self._start_gpu_batch_worker()
         else:
             self.inference_device = "cpu"
             self.gpu_bst = None
             self.bst = self.cpu_bst
 
         benchmark["selected"] = self.inference_device
+        benchmark["recommended_serving_mode"] = self.inference_device
         performance_logger.info(
             "mark_inference_benchmark %s",
             json.dumps(benchmark, sort_keys=True, separators=(",", ":")),
@@ -620,7 +671,7 @@ class MarkRuntime:
 
 
     def _predict_margins(self, features: np.ndarray) -> np.ndarray:
-        if self.inference_device == "gpu_microbatch":
+        if self.inference_device == "gpu_batch":
             return self._predict_gpu_microbatch(features)
         return self._predict_cpu_margins(features)
 
@@ -1494,7 +1545,7 @@ class MarkRuntime:
                 time.perf_counter() - prediction_started
             ) * 1000.0
             timings["inference_device_gpu"] = (
-                1.0 if self.inference_device == "gpu_microbatch" else 0.0
+                1.0 if self.inference_device == "gpu_batch" else 0.0
             )
 
 
