@@ -7,7 +7,7 @@ test("landing page explains the platform without overflow", async ({ page }, tes
 
   await page.goto("/");
   await expect(page.getByText("CRIMESENSE").first()).toBeVisible();
-  await expect(page.getByText("POWERED BY CRIMENET")).toHaveCount(1);
+  await expect(page.getByRole("img", { name: "CrimeSense" })).toHaveCount(2);
   await expect(page.getByRole("heading", { name: /spatiotemporal intelligence/i })).toBeVisible();
   await expect(
     page.getByText(/More than 17 million municipal and county crime records/),

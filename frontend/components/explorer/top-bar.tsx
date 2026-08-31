@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { Activity, Command, Cpu, Hexagon, Search } from "lucide-react";
+import { Activity, Command, Cpu, Search } from "lucide-react";
+import { BrandLogo } from "@/components/brand-logo";
 import { useExplorerStore } from "@/stores/explorer-store";
 
 export function TopBar({
@@ -17,13 +18,7 @@ export function TopBar({
   return (
     <header className="top-bar">
       <div className="brand">
-        <span className="brand-mark">
-          <Hexagon size={17} strokeWidth={1.5} />
-        </span>
-        <div>
-          <strong>CRIMESENSE</strong>
-          <small>POWERED BY CRIMENET</small>
-        </div>
+        <BrandLogo className="brand-logo" priority />
       </div>
       <nav aria-label="Primary navigation">
         <Link href="/explorer" className="nav-active">

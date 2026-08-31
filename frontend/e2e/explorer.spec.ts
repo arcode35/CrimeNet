@@ -6,7 +6,7 @@ test("primary explorer and model flow", async ({ page }, testInfo) => {
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
   page.on("console", (message) => {
     const source = message.location().url;
-    if (message.type() === "error" && !source.endsWith("/favicon.ico")) {
+    if (message.type() === "error") {
       runtimeErrors.push(`${source || "browser"}: ${message.text()}`);
     }
   });

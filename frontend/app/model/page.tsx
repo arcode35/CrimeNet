@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { BrandLogo } from "@/components/brand-logo";
 import {
   ArrowDownRight,
   ArrowLeft,
@@ -10,7 +11,6 @@ import {
   Database,
   Globe2,
   Grid3X3,
-  Hexagon,
   Layers3,
   MoonStar,
   Server,
@@ -204,13 +204,7 @@ export default function ModelPage() {
       <header className="cs-nav">
         <div className="cs-nav-inner">
           <Link href="/" className="cs-brand" aria-label="CrimeSense home">
-            <span className="cs-brand-mark">
-              <Hexagon size={17} strokeWidth={1.7} />
-            </span>
-            <span className="cs-brand-copy">
-              <strong>CRIMESENSE</strong>
-              <small>POWERED BY CRIMENET</small>
-            </span>
+            <BrandLogo className="cs-brand-logo" priority />
           </Link>
 
           <nav aria-label="Model navigation" className="cs-nav-links">

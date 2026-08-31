@@ -107,26 +107,13 @@ body:has(.cs-model-page) {
   opacity: 0.85;
 }
 
-.cs-brand-mark {
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--cs-line-strong);
-  background: rgba(255, 255, 255, 0.025);
+.cs-brand-logo {
+  display: block;
+  width: 178px;
+  height: auto;
+  object-fit: contain;
 }
 
-.cs-brand-copy {
-  display: grid;
-  gap: 2px;
-}
-
-.cs-brand-copy strong {
-  font-size: 12px;
-  letter-spacing: 0.16em;
-}
-
-.cs-brand-copy small,
 .cs-prod-state,
 .cs-nav-links,
 .cs-kicker,
@@ -1119,6 +1106,10 @@ body:has(.cs-model-page) {
 
   .cs-nav-links {
     display: none;
+  }
+
+  .cs-brand-logo {
+    width: 154px;
   }
 
   .cs-prod-state {

@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 import Link from "next/link";
+import { BrandLogo } from "@/components/brand-logo";
 import {
   ArrowDown,
   ArrowRight,
@@ -211,13 +212,7 @@ function PublicNav() {
   return (
     <header className="public-nav">
       <Link href="/" className="brand">
-        <span className="brand-mark">
-          <Hexagon size={17} strokeWidth={1.5} />
-        </span>
-        <div>
-          <strong>CRIMESENSE</strong>
-          <small>SPATIOTEMPORAL INTELLIGENCE</small>
-        </div>
+        <BrandLogo className="brand-logo" priority />
       </Link>
       <nav aria-label="Landing navigation">
         <a href="#overview">Overview</a>
@@ -864,13 +859,7 @@ export function LandingPage() {
       </section>
       <footer className="landing-footer">
         <div className="brand">
-          <span className="brand-mark">
-            <Hexagon size={16} />
-          </span>
-          <div>
-            <strong>CRIMESENSE</strong>
-            <small>POWERED BY CRIMENET</small>
-          </div>
+          <BrandLogo className="brand-logo" />
         </div>
         <p>
           Statistical modeling of reported event intensity. Designed for analytical use with
