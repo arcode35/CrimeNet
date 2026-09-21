@@ -44,18 +44,23 @@ INTENSITY_POINTER = (
 )
 
 
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
 ENV_BUILDER = (
-    SERVING_ROOT
+    BACKEND_ROOT
+    / "snapshots"
     / "build_environmental_snapshot.py"
 )
 
 INTENSITY_BUILDER = (
-    SERVING_ROOT
+    BACKEND_ROOT
+    / "snapshots"
     / "build_national_intensity.py"
 )
 
 FORECAST_BUILDER = (
-    SERVING_ROOT
+    BACKEND_ROOT
+    / "snapshots"
     / "build_forecast_horizon.py"
 )
 

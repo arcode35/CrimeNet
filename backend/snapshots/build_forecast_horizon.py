@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import uuid
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -18,8 +19,9 @@ INTENSITY_SNAPSHOT_ROOT = ROOT / "intensity_snapshots"
 INTENSITY_POINTER = ROOT / "intensity_current.json"
 TIMELINE_PATH = ROOT / "intensity_timeline.json"
 
-ENV_BUILDER = SERVING_ROOT / "build_environmental_snapshot.py"
-INTENSITY_BUILDER = SERVING_ROOT / "build_national_intensity.py"
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+ENV_BUILDER = BACKEND_ROOT / "snapshots" / "build_environmental_snapshot.py"
+INTENSITY_BUILDER = BACKEND_ROOT / "snapshots" / "build_national_intensity.py"
 
 
 def load_json(path: Path) -> dict:
@@ -52,7 +54,60 @@ def hour_text(dt: datetime) -> str:
 
 def snapshot_id(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M")
+SNAPSHOT_RETAIN_PAST_HOURS = max(
+    0,
+    int(os.environ.get("CRIMENET_SNAPSHOT_RETAIN_PAST_HOURS", "2")),
+)
 
+
+def prune_snapshot_root(
+    root: Path,
+    *,
+    current_hour: datetime,
+    forecast_hours: int,
+) -> None:
+    """
+    Keep only:
+      current - retention ... current + forecast horizon.
+
+    Only canonical timestamp directories are touched.
+    Temporary/non-snapshot directories are left alone.
+    """
+
+    if not root.exists():
+        return
+
+    oldest = current_hour - timedelta(
+        hours=SNAPSHOT_RETAIN_PAST_HOURS
+    )
+    newest = current_hour + timedelta(
+        hours=forecast_hours
+    )
+
+    removed = 0
+
+    for path in root.iterdir():
+
+        if not path.is_dir():
+            continue
+
+        try:
+            timestamp = datetime.strptime(
+                path.name,
+                "%Y%m%dT%H%M",
+            ).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+
+        if timestamp < oldest or timestamp > newest:
+            print(f"PRUNE {path}", flush=True)
+            shutil.rmtree(path)
+            removed += 1
+
+    print(
+        f"Pruned {removed} snapshots from {root}",
+        flush=True,
+    )
 
 def run_checked(command: list[str]) -> None:
     print("RUN", " ".join(command), flush=True)
@@ -184,7 +239,22 @@ def main() -> None:
                 "snapshots": entries,
             },
         )
+    # Remove snapshots that have fallen outside the serving window.
+    #
+    # We intentionally do this only after the new timeline has been
+    # successfully materialized so pruning cannot destroy the previous
+    # working forecast while a replacement is still being built.
+    prune_snapshot_root(
+        ENV_SNAPSHOT_ROOT,
+        current_hour=current_hour,
+        forecast_hours=args.hours,
+    )
 
+    prune_snapshot_root(
+        INTENSITY_SNAPSHOT_ROOT,
+        current_hour=current_hour,
+        forecast_hours=args.hours,
+    )
     print(f"\nTimeline published: {TIMELINE_PATH}")
     print(f"Available snapshots: {len(entries)} (live + {len(entries)-1} forecast)")
     print("intensity_current.json was not advanced by forecast generation.")

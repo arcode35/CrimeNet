@@ -4,12 +4,18 @@ import argparse
 import json
 import os
 import shutil
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from intensity_lod import write_lod_intensities
+
+# Keep direct script execution working with package imports.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from backend.spatial.intensity_lod import write_lod_intensities
 import cupy as cp
 import numpy as np
 import pandas as pd

@@ -15,9 +15,9 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
-from mark_runtime import MarkCapacityExceeded, MarkRuntime
-from request_control import BoundedAdmission, CapacityExceeded
-from viewport_response import build_viewport_rows
+from backend.inference.mark_runtime import MarkCapacityExceeded, MarkRuntime
+from backend.api.request_control import BoundedAdmission, CapacityExceeded
+from backend.spatial.viewport_response import build_viewport_rows
 
 
 # ============================================================

@@ -26,7 +26,7 @@ otherwise the bounded 3 ms GPU microbatch runtime is recommended.
 Run the same benchmark explicitly on a serving host with:
 
 ```shell
-python backend/benchmark_mark_inference.py
+python backend/benchmarks/benchmark_mark_inference.py
 ```
 
 The standalone script explicitly selects diagnostic `auto` mode, regardless of
