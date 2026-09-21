@@ -52,21 +52,21 @@ The project is deliberately **data-first and modeling-second**: the central engi
 
 ### Current production geographies
 
-* Atlanta
-* Baltimore
-* Chandler, AZ
-* Chicago
-* Dallas
-* Denver
-* Fort Worth
-* Los Angeles County Sheriff
-* Marin County Sheriff, CA
-* Montgomery County, MD
-* New York City
-* San Francisco
-* Seattle
-* Sonoma County Sheriff, CA
-* Washington, DC
+- Atlanta
+- Baltimore
+- Chandler, AZ
+- Chicago
+- Dallas
+- Denver
+- Fort Worth
+- Los Angeles County Sheriff
+- Marin County Sheriff, CA
+- Montgomery County, MD
+- New York City
+- San Francisco
+- Seattle
+- Sonoma County Sheriff, CA
+- Washington, DC
 
 Additional source adapters exist for other jurisdictions, but the current audited production forecasting footprint is the 15-source set above.
 
@@ -165,16 +165,20 @@ The same canonical feature definitions are used from historical training through
 
 [**CrimeSense**](https://crimesense.ai) is the interactive product layer built on CrimeNet.
 
+<p align="center">
+  <img src="docs/images/explorer.png" alt="CrimeSense interactive geospatial risk explorer" width="100%">
+</p>
+
 The current interface exposes the output of the end-to-end forecasting pipeline rather than querying raw model objects directly.
 
 It supports:
 
-* navigation across the multi-city geospatial risk surface
-* movement through the next **24 forecast hours**
-* multiple spatial resolutions for overview and local inspection
-* per-cell predicted crime intensity
-* conditional distributions across **87 crime subtypes**
-* production inference snapshots generated from the same feature contract used in training
+- navigation across the multi-city geospatial risk surface
+- movement through the next **24 forecast hours**
+- multiple spatial resolutions for overview and local inspection
+- per-cell predicted crime intensity
+- conditional distributions across **87 crime subtypes**
+- production inference snapshots generated from the same feature contract used in training
 
 The UI is intentionally the final layer of the architecture. The larger project is the infrastructure required to generate the surface correctly and reproducibly.
 
@@ -186,12 +190,12 @@ The UI is intentionally the final layer of the architecture. The larger project 
 
 Raw municipal files and external source artifacts are preserved before transformation to support:
 
-* deterministic replay
-* source-level auditing
-* historical backfills
-* schema debugging
-* recovery from failed transformations
-* reprocessing without repeatedly downloading upstream data
+- deterministic replay
+- source-level auditing
+- historical backfills
+- schema debugging
+- recovery from failed transformations
+- reprocessing without repeatedly downloading upstream data
 
 Large datasets and generated model artifacts live in object storage rather than Git.
 
@@ -201,13 +205,13 @@ Each source enters through an explicit adapter. Source-specific parsing is isola
 
 The ingestion layer handles:
 
-* CSV
-* Parquet
-* GeoJSON
-* multi-file exports
-* malformed or ragged CSVs
-* historical schema changes
-* source-specific timestamp and identifier conventions
+- CSV
+- Parquet
+- GeoJSON
+- multi-file exports
+- malformed or ragged CSVs
+- historical schema changes
+- source-specific timestamp and identifier conventions
 
 ## Silver: canonical crime model
 
@@ -215,20 +219,20 @@ Silver standardizes heterogeneous source records into one common offense represe
 
 The current audited production footprint contains:
 
-* **16.7M audited crime events**
-* **15 production sources**
-* **87 canonical crime subtypes**
+- **16.7M audited crime events**
+- **15 production sources**
+- **87 canonical crime subtypes**
 
 Normalization handles differences in:
 
-* identifiers
-* timestamps
-* coordinates
-* addresses
-* offense descriptions and codes
-* null encodings
-* duplicate behavior
-* historical source-schema changes
+- identifiers
+- timestamps
+- coordinates
+- addresses
+- offense descriptions and codes
+- null encodings
+- duplicate behavior
+- historical source-schema changes
 
 The result is a single crime-event contract consumed by downstream spatial indexing, feature generation, training, evaluation, and inference.
 
@@ -244,20 +248,20 @@ The socioeconomic store is derived from U.S. Census / ACS data and materialized 
 
 Current national coverage:
 
-* **25,563,443 unique H3 resolution-9 cells**
-* **all 50 states plus Washington, DC**
-* **99.83% Census socioeconomic match coverage**
+- **25,563,443 unique H3 resolution-9 cells**
+- **all 50 states plus Washington, DC**
+- **99.83% Census socioeconomic match coverage**
 
 Features include:
 
-* population
-* median age
-* median household income
-* poverty rate
-* unemployment rate
-* vacancy rate
-* renter occupancy
-* household vehicle availability
+- population
+- median age
+- median household income
+- poverty rate
+- unemployment rate
+- vacancy rate
+- renter occupancy
+- household vehicle availability
 
 Historical observations use Census vintages that were actually available at the prediction timestamp.
 
@@ -267,23 +271,23 @@ OpenStreetMap / Geofabrik data is transformed into reusable H3-aggregated repres
 
 Features include:
 
-* total road-length density
-* major-road density
-* residential-road density
-* service-road density
-* intersection density
-* dead-end density
-* building density
-* POI density
-* nightlife density
-* food density
-* retail density
-* transit density
-* road-class ratios
-* one-way-road ratio
-* POI-category entropy
-* land-use entropy
-* commercial/residential mix
+- total road-length density
+- major-road density
+- residential-road density
+- service-road density
+- intersection density
+- dead-end density
+- building density
+- POI density
+- nightlife density
+- food density
+- retail density
+- transit density
+- road-class ratios
+- one-way-road ratio
+- POI-category entropy
+- land-use entropy
+- commercial/residential mix
 
 OSM snapshots are version-aware so historical examples can be joined against spatial context consistent with information availability.
 
@@ -320,13 +324,13 @@ Conceptually, every historical join has to answer:
 
 The same rule is applied to:
 
-* Census features
-* OSM features
-* environmental features
-* temporal crime-history features
-* train/validation/test assignment
-* point-process integration support
-* model evaluation
+- Census features
+- OSM features
+- environmental features
+- temporal crime-history features
+- train/validation/test assignment
+- point-process integration support
+- model evaluation
 
 ---
 
@@ -344,10 +348,10 @@ CrimeNet uses `pvlib`-derived solar calculations to represent the physical light
 
 Features include:
 
-* solar elevation
-* solar azimuth
-* daylight state
-* lighting condition
+- solar elevation
+- solar azimuth
+- daylight state
+- lighting condition
 
 This gives the model a physically grounded representation of lighting rather than relying on clock time alone.
 
@@ -367,12 +371,12 @@ CrimeNet represents crime as a spatiotemporal event-intensity problem rather tha
 
 Observed offenses are converted into a leakage-safe event spine containing:
 
-* canonical spatial keys
-* timestamps
-* source identity
-* crime labels
-* split assignment
-* point-in-time feature eligibility
+- canonical spatial keys
+- timestamps
+- source identity
+- crime labels
+- split assignment
+- point-in-time feature eligibility
 
 Historical events remain part of the event spine even if optional enrichment fields are unavailable.
 
@@ -382,12 +386,12 @@ Point-process likelihoods require exposure over non-event space-time.
 
 CrimeNet therefore constructs source-aware Monte Carlo integration samples over authoritative reporting domains using:
 
-* **H3 cell × continuous time** as the integration measure
-* source-specific temporal coverage
-* outcome-independent sampling support
-* deterministic source-level random seeds
-* integration weights
-* strict source-domain contracts
+- **H3 cell × continuous time** as the integration measure
+- source-specific temporal coverage
+- outcome-independent sampling support
+- deterministic source-level random seeds
+- integration weights
+- strict source-domain contracts
 
 Sampling never extends a source outside its declared temporal support.
 
@@ -411,28 +415,28 @@ This distinction is important: the published numbers should not be interpreted a
 
 Observed event rows and integration rows are combined with:
 
-* national socioeconomic features
-* national OSM features
-* weather
-* solar and lighting state
-* calendar context
-* temporal crime-history features
-* event/integration weights
-* canonical crime labels
-* source-aware split assignment
+- national socioeconomic features
+- national OSM features
+- weather
+- solar and lighting state
+- calendar context
+- temporal crime-history features
+- event/integration weights
+- canonical crime labels
+- source-aware split assignment
 
 The current full-scale pipeline produces **180M+ leakage-safe spatiotemporal examples**.
 
 Publication checks include:
 
-* structural null validation
-* split correctness
-* future-feature leakage
-* integration-weight validity
-* feature coverage
-* weather coverage
-* source/split/row-type counts
-* immutable snapshot identity
+- structural null validation
+- split correctness
+- future-feature leakage
+- integration-weight validity
+- feature coverage
+- weather coverage
+- source/split/row-type counts
+- immutable snapshot identity
 
 ---
 
@@ -446,13 +450,13 @@ The intensity model estimates expected event activity as a function of location 
 
 The production modeling workflow includes:
 
-* point-process / Poisson-style intensity modeling
-* GPU-accelerated XGBoost training
-* Optuna hyperparameter optimization
-* chronological temporal validation
-* calibration analysis
-* feature-importance analysis
-* reproducible model artifacts and training metadata
+- point-process / Poisson-style intensity modeling
+- GPU-accelerated XGBoost training
+- Optuna hyperparameter optimization
+- chronological temporal validation
+- calibration analysis
+- feature-importance analysis
+- reproducible model artifacts and training metadata
 
 The current published validation results below correspond to:
 
@@ -506,9 +510,9 @@ NLL reduction =
 
 The final validation covered:
 
-* **15,988,997 evaluation rows**
-* **1,537,647 observed crime events**
-* all **15 production sources**
+- **15,988,997 evaluation rows**
+- **1,537,647 observed crime events**
+- all **15 production sources**
 
 | Metric               | Constant-intensity baseline | CrimeNet intensity model |
 | -------------------- | --------------------------: | -----------------------: |
@@ -551,11 +555,11 @@ Performance varies by jurisdiction.
 
 Among the larger municipal datasets, notable validation results include:
 
-* **San Francisco:** 16.9% lower NLL
-* **New York City:** 16.1% lower NLL across 571,310 observed validation events
-* **Chicago:** 10.9% lower NLL across 256,804 events
-* **Seattle:** 11.1% lower NLL with a +4.7% aggregate event-count calibration error
-* **Montgomery County, MD:** 13.4% lower NLL
+- **San Francisco:** 16.9% lower NLL
+- **New York City:** 16.1% lower NLL across 571,310 observed validation events
+- **Chicago:** 10.9% lower NLL across 256,804 events
+- **Seattle:** 11.1% lower NLL with a +4.7% aggregate event-count calibration error
+- **Montgomery County, MD:** 13.4% lower NLL
 
 ## Calibration
 
@@ -592,10 +596,10 @@ This measures improvement in the likelihood assigned to the observed spatiotempo
 
 It is **not**:
 
-* a 12.8% increase in classification accuracy
-* a 12.8% reduction in crime-count error
-* a test-set result
-* a comparison against the best published crime-forecasting system
+- a 12.8% increase in classification accuracy
+- a 12.8% reduction in crime-count error
+- a test-set result
+- a comparison against the best published crime-forecasting system
 
 A stronger scientific comparison would require additional historical, spatial, temporal, and point-process baselines evaluated under the same domain and split contract.
 
@@ -621,21 +625,21 @@ The test split will only provide a meaningful final estimate if model architectu
 
 The implemented research architecture supports:
 
-* city embeddings
-* offense-family / subtype embeddings
-* lighting-state embeddings
-* continuous numerical covariates
-* event exposure
-* marked-event likelihoods
-* temporal intensity modeling
+- city embeddings
+- offense-family / subtype embeddings
+- lighting-state embeddings
+- continuous numerical covariates
+- event exposure
+- marked-event likelihoods
+- temporal intensity modeling
 
 Research directions include:
 
-* covariate-conditioned neural Hawkes processes
-* hierarchical crime-taxonomy structure
-* continuous-time spatial context
-* graph-based neighborhood interaction
-* explicit observation / reporting models
+- covariate-conditioned neural Hawkes processes
+- hierarchical crime-taxonomy structure
+- continuous-time spatial context
+- graph-based neighborhood interaction
+- explicit observation / reporting models
 
 Omega is evaluated against production tree-based and historical baselines rather than assumed to be superior.
 
@@ -651,13 +655,13 @@ For every forecast timestamp, CrimeNet reconstructs the feature state needed to 
 
 The inference pipeline resolves:
 
-* static socioeconomic context
-* built-environment features
-* calendar state
-* future-hour weather context
-* solar geometry
-* lighting state
-* recent crime-history features
+- static socioeconomic context
+- built-environment features
+- calendar state
+- future-hour weather context
+- solar geometry
+- lighting state
+- recent crime-history features
 
 It then runs **24 independently inferred forecast hours**.
 
@@ -675,12 +679,12 @@ CrimeNet therefore materializes multiple levels of spatial detail for serving.
 
 The serving layer is responsible for:
 
-* H3-based forecast storage
-* viewport-aware retrieval
-* aggregation across spatial resolutions
-* efficient map payloads
-* individual-cell inspection
-* forecast-hour selection
+- H3-based forecast storage
+- viewport-aware retrieval
+- aggregation across spatial resolutions
+- efficient map payloads
+- individual-cell inspection
+- forecast-hour selection
 
 The result is a map that can move between regional overview and local inspection without requiring the browser to load the entire high-resolution surface.
 
@@ -694,23 +698,23 @@ CrimeNet separates durable data from disposable compute.
 
 Used for:
 
-* source normalization
-* large joins
-* H3 feature construction
-* national feature-store generation
-* historical backfills
-* Parquet materialization
-* spatial preprocessing
-* final-model-table assembly
+- source normalization
+- large joins
+- H3 feature construction
+- national feature-store generation
+- historical backfills
+- Parquet materialization
+- spatial preprocessing
+- final-model-table assembly
 
 ## GPU workloads
 
 Used for:
 
-* XGBoost training and HPO
-* neural point-process training
-* large inference workloads
-* aerial / satellite representation learning
+- XGBoost training and HPO
+- neural point-process training
+- large inference workloads
+- aerial / satellite representation learning
 
 Large experiments have run on cloud machines with **up to 8× RTX 5090-class GPUs** and hundreds of gigabytes of host memory.
 
@@ -722,17 +726,17 @@ Training and inference workers are disposable. Dataset snapshots, manifests, fea
 
 CrimeNet also contains an imagery feature pipeline using:
 
-* **NAIP** high-resolution aerial imagery
-* **Sentinel-2 L2A** multispectral satellite imagery
+- **NAIP** high-resolution aerial imagery
+- **Sentinel-2 L2A** multispectral satellite imagery
 
 The pipeline supports:
 
-* scene discovery
-* spatial deduplication
-* retrieval
-* preprocessing
-* embedding generation
-* versioned feature storage
+- scene discovery
+- spatial deduplication
+- retrieval
+- preprocessing
+- embedding generation
+- versioned feature storage
 
 Image-derived representations are currently an experimental enrichment path rather than a required dependency of the production CrimeSense forecast.
 
@@ -744,27 +748,27 @@ The data platform is orchestrated with **Dagster**.
 
 Assets cover:
 
-* source landing
-* Bronze ingestion
-* Silver normalization
-* event-spine construction
-* national socioeconomic features
-* national OSM features
-* environmental features
-* temporal-history features
-* integration sampling
-* final-model-table construction
-* model training
-* evaluation
+- source landing
+- Bronze ingestion
+- Silver normalization
+- event-spine construction
+- national socioeconomic features
+- national OSM features
+- environmental features
+- temporal-history features
+- integration sampling
+- final-model-table construction
+- model training
+- evaluation
 
 This provides:
 
-* dependency-aware execution
-* structured logging
-* materialization metadata
-* failure isolation
-* backfills
-* reproducible re-runs
+- dependency-aware execution
+- structured logging
+- materialization metadata
+- failure isolation
+- backfills
+- reproducible re-runs
 
 Production serving is kept operationally separate from offline training orchestration so forecast generation and the web product are not coupled to a Dagster development process.
 
@@ -776,20 +780,20 @@ CrimeNet fails closed when core contracts are violated.
 
 Checks include:
 
-* required-field validation
-* timestamp parsing
-* coordinate bounds
-* source-key deduplication
-* canonical-taxonomy coverage
-* spatial-match validation
-* feature-key uniqueness
-* point-in-time eligibility
-* join-cardinality checks
-* temporal-support validation
-* train/validation/test leakage controls
-* integration-weight validation
-* feature-coverage monitoring
-* immutable snapshot identity and lineage
+- required-field validation
+- timestamp parsing
+- coordinate bounds
+- source-key deduplication
+- canonical-taxonomy coverage
+- spatial-match validation
+- feature-key uniqueness
+- point-in-time eligibility
+- join-cardinality checks
+- temporal-support validation
+- train/validation/test leakage controls
+- integration-weight validation
+- feature-coverage monitoring
+- immutable snapshot identity and lineage
 
 Model lineage can be traced conceptually through:
 
@@ -817,53 +821,53 @@ The published intensity validation run also stores its model configuration, runt
 
 ## Data engineering
 
-* Python
-* Dagster
-* Polars
-* PyArrow
-* Apache Spark / PySpark
-* Delta Lake / delta-rs
-* H3
-* DuckDB
-* object storage
+- Python
+- Dagster
+- Polars
+- PyArrow
+- Apache Spark / PySpark
+- Delta Lake / delta-rs
+- H3
+- DuckDB
+- object storage
 
 ## Geospatial and external data
 
-* OpenStreetMap / Geofabrik
-* U.S. Census ACS
-* Census TIGER/Line
-* Open-Meteo-compatible weather data
-* `pvlib`
-* NAIP
-* Sentinel-2 L2A
+- OpenStreetMap / Geofabrik
+- U.S. Census ACS
+- Census TIGER/Line
+- Open-Meteo-compatible weather data
+- `pvlib`
+- NAIP
+- Sentinel-2 L2A
 
 ## Machine learning
 
-* XGBoost
-* PyTorch
-* Optuna
-* CUDA / GPU training
-* temporal validation
-* point-process likelihood evaluation
-* calibration analysis
-* marked temporal point-process research
+- XGBoost
+- PyTorch
+- Optuna
+- CUDA / GPU training
+- temporal validation
+- point-process likelihood evaluation
+- calibration analysis
+- marked temporal point-process research
 
 ## Serving and product
 
-* FastAPI
-* Next.js / React
-* MapLibre
-* H3 multi-resolution spatial serving
-* production inference snapshots
+- FastAPI
+- Next.js / React
+- MapLibre
+- H3 multi-resolution spatial serving
+- production inference snapshots
 
 ## Engineering
 
-* `uv`
-* `pytest`
-* GitHub Actions
-* Python packaging
-* configuration-driven pipelines
-* immutable dataset / model artifacts
+- `uv`
+- `pytest`
+- GitHub Actions
+- Python packaging
+- configuration-driven pipelines
+- immutable dataset / model artifacts
 
 ---
 
@@ -928,65 +932,65 @@ Environment-specific storage and service credentials should be provided through 
 
 ## Completed
 
-* [x] 15-source audited production crime footprint
-* [x] Canonical 87-subtype crime taxonomy
-* [x] 12-year historical modeling horizon
-* [x] National H3-r9 socioeconomic feature store
-* [x] National OpenStreetMap feature store
-* [x] National feature-store structural audits
-* [x] TIGER/Line geographic mapping
-* [x] Historical weather enrichment
-* [x] Solar and lighting enrichment
-* [x] Leakage-safe feature-availability logic
-* [x] Event-spine construction
-* [x] Source-specific temporal-support contracts
-* [x] Monte Carlo integration sampling
-* [x] 180M+ example final model table
-* [x] Chronological train/validation/test split contract
-* [x] Production intensity modeling pipeline
-* [x] Conditional 87-subtype mark modeling pipeline
-* [x] Optuna hyperparameter-optimization infrastructure
-* [x] Temporal evaluation infrastructure
-* [x] 2024 full-scale temporal validation
-* [x] Training-serving feature contract
-* [x] Future-state feature reconstruction
-* [x] Rolling 24-hour inference
-* [x] Production inference snapshot materialization
-* [x] Multi-resolution H3 serving layer
-* [x] FastAPI inference service
-* [x] Interactive CrimeSense geospatial explorer
-* [x] Public CrimeSense deployment at [crimesense.ai](https://crimesense.ai)
-* [x] CrimeNet Omega initial implementation
-* [x] NAIP and Sentinel-2 imagery pipelines
-* [x] Dagster orchestration
-* [x] GitHub Actions CI
+- [x] 15-source audited production crime footprint
+- [x] Canonical 87-subtype crime taxonomy
+- [x] 12-year historical modeling horizon
+- [x] National H3-r9 socioeconomic feature store
+- [x] National OpenStreetMap feature store
+- [x] National feature-store structural audits
+- [x] TIGER/Line geographic mapping
+- [x] Historical weather enrichment
+- [x] Solar and lighting enrichment
+- [x] Leakage-safe feature-availability logic
+- [x] Event-spine construction
+- [x] Source-specific temporal-support contracts
+- [x] Monte Carlo integration sampling
+- [x] 180M+ example final model table
+- [x] Chronological train/validation/test split contract
+- [x] Production intensity modeling pipeline
+- [x] Conditional 87-subtype mark modeling pipeline
+- [x] Optuna hyperparameter-optimization infrastructure
+- [x] Temporal evaluation infrastructure
+- [x] 2024 full-scale temporal validation
+- [x] Training-serving feature contract
+- [x] Future-state feature reconstruction
+- [x] Rolling 24-hour inference
+- [x] Production inference snapshot materialization
+- [x] Multi-resolution H3 serving layer
+- [x] FastAPI inference service
+- [x] Interactive CrimeSense geospatial explorer
+- [x] Public CrimeSense deployment at [crimesense.ai](https://crimesense.ai)
+- [x] CrimeNet Omega initial implementation
+- [x] NAIP and Sentinel-2 imagery pipelines
+- [x] Dagster orchestration
+- [x] GitHub Actions CI
 
 ## Intentionally not completed
 
-* [ ] **Final evaluation on the sealed 2025+ test set**
+- [ ] **Final evaluation on the sealed 2025+ test set**
 
 The test set has deliberately not been opened during model development.
 
 ## In progress
 
-* [ ] Full-scale CrimeNet Omega experimentation
-* [ ] Stronger historical and spatiotemporal baseline comparisons
-* [ ] Calibration refinement
-* [ ] Hierarchical marked-event modeling
-* [ ] Explicit reporting / observation model
-* [ ] Larger-scale imagery integration into the production feature contract
-* [ ] Additional source promotion beyond the current 15-source production footprint
-* [ ] Production monitoring and forecast-quality observability
+- [ ] Full-scale CrimeNet Omega experimentation
+- [ ] Stronger historical and spatiotemporal baseline comparisons
+- [ ] Calibration refinement
+- [ ] Hierarchical marked-event modeling
+- [ ] Explicit reporting / observation model
+- [ ] Larger-scale imagery integration into the production feature contract
+- [ ] Additional source promotion beyond the current 15-source production footprint
+- [ ] Production monitoring and forecast-quality observability
 
 ## Planned
 
-* [ ] Frozen-model evaluation on the untouched test horizon
-* [ ] Streaming source ingestion
-* [ ] Kafka / Flink event pipeline
-* [ ] Automated drift detection
-* [ ] Scheduled retraining
-* [ ] Low-latency online feature retrieval where justified
-* [ ] Expansion of the production forecast footprint beyond the current 15 geographies
+- [ ] Frozen-model evaluation on the untouched test horizon
+- [ ] Streaming source ingestion
+- [ ] Kafka / Flink event pipeline
+- [ ] Automated drift detection
+- [ ] Scheduled retraining
+- [ ] Low-latency online feature retrieval where justified
+- [ ] Expansion of the production forecast footprint beyond the current 15 geographies
 
 ---
 
@@ -996,21 +1000,21 @@ CrimeNet models **observed crime and reporting patterns across geographic areas 
 
 It does **not** model an individual's propensity to commit a crime and is not designed to:
 
-* identify likely offenders
-* predict person-level criminal behavior
-* support person-level surveillance
-* make automated policing decisions
-* determine guilt, dangerousness, or intent
-* replace public-policy or domain-expert review
+- identify likely offenders
+- predict person-level criminal behavior
+- support person-level surveillance
+- make automated policing decisions
+- determine guilt, dangerousness, or intent
+- replace public-policy or domain-expert review
 
 Observed crime records can reflect:
 
-* reporting behavior
-* police deployment
-* enforcement intensity
-* data-collection practices
-* municipal policy
-* historical bias
+- reporting behavior
+- police deployment
+- enforcement intensity
+- data-collection practices
+- municipal policy
+- historical bias
 
 A technically calibrated prediction of recorded crime is therefore **not necessarily an unbiased estimate of all crime that occurred or will occur**.
 
@@ -1024,16 +1028,16 @@ CrimeNet grew out of **AcciNet**, an earlier statewide geospatial crash-risk pla
 
 CrimeNet extends that engineering approach into a substantially larger system with:
 
-* heterogeneous public-data ingestion
-* national feature infrastructure
-* point-in-time feature correctness
-* source-specific temporal support
-* hundreds of millions of model examples
-* distributed GPU experimentation
-* production future-state inference
-* multi-resolution geospatial serving
-* continuous-time event-modeling research
-* a live interactive product
+- heterogeneous public-data ingestion
+- national feature infrastructure
+- point-in-time feature correctness
+- source-specific temporal support
+- hundreds of millions of model examples
+- distributed GPU experimentation
+- production future-state inference
+- multi-resolution geospatial serving
+- continuous-time event-modeling research
+- a live interactive product
 
 The project is intentionally built as an engineering and ML system rather than a one-off modeling notebook.
 
