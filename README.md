@@ -18,6 +18,7 @@
 <p align="center">
   <img src="docs/images/explorer.png" alt="CrimeSense interactive geospatial risk explorer" width="100%">
 </p>
+
 **CrimeSense** is the interactive forecasting product.
 
 **CrimeNet** is the data, feature, machine-learning, and inference system that powers it.
