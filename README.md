@@ -15,6 +15,9 @@
 
 > **Live product:** https://crimesense.ai
 
+<p align="center">
+  <img src="docs/images/explorer.png" alt="CrimeSense interactive geospatial risk explorer" width="100%">
+</p>
 **CrimeSense** is the interactive forecasting product.
 
 **CrimeNet** is the data, feature, machine-learning, and inference system that powers it.
@@ -164,10 +167,6 @@ The same canonical feature definitions are used from historical training through
 # CrimeSense
 
 [**CrimeSense**](https://crimesense.ai) is the interactive product layer built on CrimeNet.
-
-<p align="center">
-  <img src="docs/images/explorer.png" alt="CrimeSense interactive geospatial risk explorer" width="100%">
-</p>
 
 The current interface exposes the output of the end-to-end forecasting pipeline rather than querying raw model objects directly.
 
