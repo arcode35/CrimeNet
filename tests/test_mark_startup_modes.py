@@ -2,18 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 import numpy as np
 
-
-BACKEND_ROOT = Path(__file__).resolve().parents[1] / "backend"
-sys.path.insert(0, str(BACKEND_ROOT))
-
-from mark_runtime import MarkRuntime, resolve_mark_inference_mode  # noqa: E402
+from backend.inference.mark_runtime import MarkRuntime, resolve_mark_inference_mode
 
 
 class _FakeBooster:
@@ -89,7 +84,7 @@ def test_real_unset_startup_runs_zero_benchmarks_and_never_initializes_cuda(
     monkeypatch.delenv("CRIMENET_MARK_INFERENCE", raising=False)
     model_path = tmp_path / "model.ubj"
     model_path.write_bytes(b"model-placeholder")
-    monkeypatch.setattr("mark_runtime.MARK_MODEL_PATH", model_path)
+    monkeypatch.setattr("backend.inference.mark_runtime.MARK_MODEL_PATH", model_path)
 
     def fake_np_load(path, mmap_mode=None):
         path = Path(path)
@@ -105,8 +100,8 @@ def test_real_unset_startup_runs_zero_benchmarks_and_never_initializes_cuda(
     benchmark = Mock(side_effect=AssertionError("benchmark must not run"))
     initialize_gpu = Mock(side_effect=AssertionError("CUDA must not initialize"))
     start_worker = Mock(side_effect=AssertionError("GPU worker must not start"))
-    monkeypatch.setattr("mark_runtime.np.load", fake_np_load)
-    monkeypatch.setattr("mark_runtime.load_json", fake_load_json)
+    monkeypatch.setattr("backend.inference.mark_runtime.np.load", fake_np_load)
+    monkeypatch.setattr("backend.inference.mark_runtime.load_json", fake_load_json)
     monkeypatch.setattr(MarkRuntime, "_load_booster", lambda _self, _device: _FakeBooster())
     monkeypatch.setattr(
         MarkRuntime,
@@ -194,7 +189,7 @@ def test_invalid_mode_fails_before_loading_serving_artifacts(
 ) -> None:
     monkeypatch.setenv("CRIMENET_MARK_INFERENCE", "foo")
     artifact_load = Mock(side_effect=AssertionError("artifacts must not load"))
-    monkeypatch.setattr("mark_runtime.np.load", artifact_load)
+    monkeypatch.setattr("backend.inference.mark_runtime.np.load", artifact_load)
 
     with pytest.raises(
         RuntimeError,

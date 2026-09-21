@@ -1,17 +1,11 @@
 from __future__ import annotations
 
-import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import pytest
 
-
-BACKEND_ROOT = Path(__file__).resolve().parents[1] / "backend"
-sys.path.insert(0, str(BACKEND_ROOT))
-
-from request_control import BoundedAdmission, CapacityExceeded  # noqa: E402
+from backend.api.request_control import BoundedAdmission, CapacityExceeded
 
 
 def test_expensive_request_concurrency_and_waiting_are_bounded() -> None:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -9,12 +8,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-
-BACKEND_ROOT = Path(__file__).resolve().parents[1] / "backend"
-sys.path.insert(0, str(BACKEND_ROOT))
-
-from mark_runtime import MarkRuntime  # noqa: E402
-from viewport_response import build_viewport_rows  # noqa: E402
+from backend.inference.mark_runtime import MarkRuntime
+from backend.spatial.viewport_response import build_viewport_rows
 
 
 def test_vectorized_viewport_rows_match_reference_values() -> None:
